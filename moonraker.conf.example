@@ -1,0 +1,10 @@
+# Add this to your moonraker.conf
+
+[update_manager HappyToolchanger]
+type: git_repo
+path: ~/HappyToolchanger
+origin: https://github.com/daTobi1/HappyToolchanger.git
+primary_branch: main
+is_system_service: True
+managed_services: happytoolchanger-webapp klipper
+install_script: install.sh
