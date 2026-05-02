@@ -1,0 +1,221 @@
+<html>
+  <title>Offset</title>
+  <head>
+    <script
+      src="https://code.jquery.com/jquery-3.7.1.min.js"
+      integrity="sha256-/JqT3SQfawRcv/BIHPThkBvs0OEvtFFmqPF/lYI/Cxo="
+      crossorigin="anonymous"
+    >
+    </script>
+
+    <link 
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" 
+      rel="stylesheet" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" 
+      crossorigin="anonymous"
+    >
+
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+
+    <script 
+      src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" 
+      integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" 
+      crossorigin="anonymous"
+    >
+    </script>
+
+    <script src="./js/camera.js"></script>
+
+    <!-- ? IMPORTANT: tools.js must load BEFORE index.js (updateTools is used in index.js) -->
+    <script src="./js/tools.js"></script>
+    <script src="./js/index.js"></script>
+
+    <script src="./js/gcode.js"></script>
+    <script src="https://cdn.counter.dev/script.js" data-id="d73a34d6-f01a-48a9-9745-e37084c8c372" data-utcoffset="-4"></script>
+
+    <link rel="stylesheet" href="./css/camera.css">
+
+    <style>
+        .modal-content { border-radius: 10px; }
+        .form-control:focus {
+            border-color: #80bdff;
+            box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25);
+        }
+        #camera-select { display: none; }
+        .camera-option {
+            cursor: pointer;
+            transition: background-color 0.2s;
+            border: 1px solid #dee2e6;
+            margin-bottom: 10px;
+            border-radius: 5px;
+        }
+        .camera-option:hover { background-color: #f8f9fa; }
+        .camera-option.selected {
+            border-color: #0d6efd;
+            background-color: #e7f1ff;
+        }
+        .camera-preview {
+            width: 160px;
+            height: 120px;
+            object-fit: cover;
+            border-radius: 4px;
+        }
+        .camera-list-container {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        #camContainer { display: none; }
+    </style>
+  </head>
+
+  <body data-bs-theme="dark">
+    <!-- Printer IP Modal -->
+    <div class="modal fade" id="printerModal" data-bs-backdrop="static" tabindex="-1" aria-labelledby="printerModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="printerModalLabel">Printer Configuration</h5>
+                </div>
+                <div class="modal-body">
+                    <!-- IP Address Input -->
+                    <div class="mb-3">
+                        <label for="printerIp" class="form-label">Printer IP Address</label>
+                        <div class="input-group">
+                            <input type="text" class="form-control" id="printerIp" placeholder="Enter IP address (e.g., 192.168.1.100)">
+                            <button class="btn btn-outline-danger" type="button" id="disconnectBtn" style="display: none;">
+                                Disconnect
+                            </button>
+                        </div>
+                        <div id="ipError" class="text-danger mt-2" style="display: none;">
+                            Invalid IP address format
+                        </div>
+                    </div>
+
+                    <!-- Camera Selection -->
+                    <div id="camera-select" class="mb-3">
+                        <label class="form-label">Select Camera</label>
+                        <div class="camera-list-container">
+                            <div id="cameraList" class="list-group"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-primary" id="saveIpBtn">Save IP</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="container text-center">
+        <div class="row">
+            <div class="col p-3">
+                <div class="border border-secondary-subtle rounded bg-body-tertiary p-2">
+                    <div class="row p-2 pb-2">
+                        <button name="ChangePrinter" id="ChangePrinter">Change Printer / Camera</button>
+                    </div>
+                    <div class="row p-2 pb-2">
+                        <div class="row p-2">
+                            <div class="col-6">
+                                <button type="button" class="btn btn-secondary w-100" id="flip-horizontal">
+                                    <i class="bi bi-arrow-left-right"></i> Flip Horizontal
+                                </button>
+                            </div>
+                            <div class="col-6">
+                                <button type="button" class="btn btn-secondary w-100" id="flip-vertical">
+                                    <i class="bi bi-arrow-down-up"></i> Flip Vertical
+                                </button>
+                            </div>
+                        </div>
+                        <div id="camContainer" class="img-overlay-wrap">
+                        <img id="zoom-image" src="" width="800"/>
+                        <svg viewBox="0 0 200 200">
+                            <circle cx="100" cy="75" r="50" stroke="red" stroke-width="0.25" fill="none"/>
+                            <line x1="100" y1="15" x2="100" y2="135" stroke="red" stroke-width="0.25" />
+                            <line x1="40" y1="75" x2="160" y2="75" stroke="red" stroke-width="0.25" />
+                        </svg>
+                        </div>
+                        <div class="row p-2">
+                        <div class="col-1"><i class="bi bi-zoom-out"></i></div>
+                        <div class="col-10"><input type="range" class="form-range" min="0" max="600" value="0" id="zoom-range"></div>
+                        <div class="col-1"><i class="bi bi-zoom-in"></i></div>
+                        </div>
+                        <div class="row p-2">
+                        <div class="col-1"><i class="bi bi-brightness-low"></i></div>
+                        <div class="col-10"><input type="range" class="form-range" min="0" max="400" id="contrast-range"></div>
+                        <div class="col-1"><i class="bi bi-brightness-high"></i></div>
+                        </div>
+                    </div>
+
+                    <div id="positioning">
+                        <div class="row justify-content-center">
+                        <ul class="list-group list-group-horizontal-sm justify-content-center pb-2">
+                            <li class="list-group-item"><span>X: </span><span id="pos-x">0.0</span></li>
+                            <li class="list-group-item"><span>Y: </span><span id="pos-y">0.0</span></li>
+                            <li class="list-group-item"><span>Z: </span><span id="pos-z">0.0</span></li>
+                        </ul>
+                        </div>
+
+                        <div class="row">
+                        <div class="btn-toolbar justify-content-center" role="toolbar" aria-label="Homing Toolbar">
+                            <div class="btn-group btn-group-sm ps-5 pe-5 pb-1" role="group">
+                            <button type="button" class="btn btn-danger border" id="home-all">HOME ALL</button>
+                            <button type="button" class="btn btn-danger border" id="qgl">QGL</button>
+                            <button type="button" class="btn btn-secondary border" id="cam-position">CAM POS</button>
+                            <button type="button" class="btn btn-danger border" id="disable-motors">DISABLE</button>
+                            </div>
+                        </div>
+                        </div>
+
+                        <div class="row justify-content-center pb-2">
+                            <div class="col-auto">
+                                <div class="input-group input-group-sm">
+                                    <span class="input-group-text">Cam X</span>
+                                    <input type="number" class="form-control" id="cam-pos-x" style="width:70px;" step="0.1">
+                                    <span class="input-group-text">Y</span>
+                                    <input type="number" class="form-control" id="cam-pos-y" style="width:70px;" step="0.1">
+                                    <span class="input-group-text">Z</span>
+                                    <input type="number" class="form-control" id="cam-pos-z" style="width:70px;" step="0.1" value="30">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="BouncePositionBar"></div>
+                        <div id="BigPositionBar"></div>
+                    </div>
+                </div>
+                <div id="klipper-console" class="border border-secondary-subtle rounded bg-body-tertiary p-2 mt-3" style="display:none;">
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <span class="fs-6">Klipper Console</span>
+                        <button type="button" class="btn btn-outline-secondary btn-sm" id="console-clear">Clear</button>
+                    </div>
+                    <div id="console-output" style="height:200px; overflow-y:auto; font-family:monospace; font-size:0.75rem; background:#0d1117; color:#c9d1d9; border-radius:6px; padding:8px; white-space:pre-wrap; word-break:break-all;"></div>
+                </div>
+            </div>
+
+            <div class="col p-3">
+                <div class="border border-secondary-subtle rounded bg-body-tertiary p-2 mb-3">
+                <div class="row p-2 pb-2">
+                    <div class="col-9">
+                    <input type="text" class="w-100 form-control" placeholder="" id="gcode-input">
+                    </div>
+                    <div class="col-3">
+                    <button type="button" class="btn btn-dark w-100" id="gcode-send">Send</button>
+                    </div>
+                </div>
+                </div>
+
+                <div class="accordion" id="offset-accordion"></div>
+            </div>
+        </div>
+    </div>
+    <!-- Toast notifications -->
+    <div class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index:9999;">
+      <div id="offset-toast" class="toast align-items-center border-0" role="alert" aria-live="assertive" aria-atomic="true">
+        <div class="d-flex">
+          <div class="toast-body" id="toast-message"></div>
+          <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+        </div>
+      </div>
+    </div>
+  </body>
+  <footer></footer>
+</html>
