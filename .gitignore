@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Backups
+*.bak
+*.orig
+
+# Mainsail
+mainsail/node_modules/
+mainsail/.git/
+
+# Venv (created by install.sh on printer)
+*-env/
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
