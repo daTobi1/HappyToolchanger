@@ -1,0 +1,176 @@
+<template>
+    <e-chart
+        ref="historyFilamentUsage"
+        v-observe-visibility="visibilityChanged"
+        :option="chartOptions"
+        :autoresize="true"
+        :init-options="{ renderer: 'svg' }"
+        style="height: 175px; width: 100%"></e-chart>
+</template>
+
+<script lang="ts">
+import Component from 'vue-class-component'
+import { Mixins, Ref, Watch } from 'vue-property-decorator'
+import BaseMixin from '../mixins/base'
+import type { ECharts } from 'echarts/core'
+import type { ECBasicOption, TopLevelFormatterParams } from 'echarts/types/dist/shared.d'
+import type { EChartRef } from '@/types/echarts'
+import ThemeMixin from '../mixins/theme'
+import HistoryMixin from '@/components/mixins/history'
+import { ServerHistoryStateJob } from '@/store/server/history/types'
+
+@Component
+export default class HistoryPrinttimeAvg extends Mixins(BaseMixin, HistoryMixin, ThemeMixin) {
+    @Ref('historyFilamentUsage') readonly historyFilamentUsage!: EChartRef | undefined
+
+    formatTooltip(params: TopLevelFormatterParams): string {
+        const entry = Array.isArray(params) ? params[0] : params
+        if (!Array.isArray(entry?.data) || typeof entry.data[0] !== 'number' || typeof entry.data[1] !== 'number')
+            return ''
+
+        const marker = typeof entry.marker === 'string' ? entry.marker : ''
+        const outputDate = this.formatDate(entry.data[0])
+        const outputValue = Math.round(entry.data[1] * 10) / 10
+
+        return `${marker}${outputDate}: ${outputValue}m`
+    }
+
+    get chartOptions(): ECBasicOption {
+        return {
+            animation: false,
+            grid: {
+                top: 25,
+                right: 40,
+                bottom: 30,
+                left: 40,
+            },
+            tooltip: {
+                trigger: 'axis',
+                borderWidth: 0,
+                formatter: (params: TopLevelFormatterParams) => this.formatTooltip(params),
+            },
+            xAxis: {
+                type: 'time',
+                min: new Date().setHours(0, 0, 0) - 60 * 60 * 24 * 14 * 1000,
+                max: new Date().setHours(0, 0, 0),
+                minInterval: 60 * 60 * 24 * 1000,
+                splitLine: {
+                    show: true,
+                    lineStyle: {
+                        color: this.fgColorLow,
+                    },
+                },
+                axisLabel: {
+                    color: this.fgColorLow,
+                    margin: 10,
+                },
+            },
+            yAxis: {
+                name: this.$t('History.HistoryFilamentUsage'),
+                type: 'value',
+                minInterval: 10,
+                maxInterval: 100,
+                nameLocation: 'end',
+                nameGap: 5,
+                nameTextStyle: {
+                    color: this.fgColorLow,
+                    align: 'left',
+                },
+                splitLine: {
+                    lineStyle: {
+                        color: this.fgColorLow,
+                    },
+                },
+                axisLabel: {
+                    color: this.fgColorLow,
+                    formatter: '{value}',
+                    //rotate: 90,
+                    //showMaxLabel: false,
+                    showMinLabel: true,
+                    margin: 5,
+                },
+                axisLine: {
+                    show: true,
+                    lineStyle: {
+                        color: this.fgColorMid,
+                    },
+                },
+            },
+            color: ['#BDBDBD'],
+            series: [
+                {
+                    type: 'bar',
+                    data: this.filamentUsageArray,
+                    showSymbol: false,
+                },
+            ],
+        }
+    }
+
+    get filamentUsageArray(): [number, number][] {
+        const output: [number, number][] = []
+        const startDate = new Date()
+        startDate.setDate(startDate.getDate() - 14)
+        startDate.setHours(0, 0, 0, 0)
+
+        let jobsFiltered = [
+            ...this.allJobs.filter(
+                (job: ServerHistoryStateJob) => new Date(job.start_time * 1000) >= startDate && job.filament_used > 0
+            ),
+        ]
+        if (this.selectedJobs.length)
+            jobsFiltered = [
+                ...this.selectedJobs.filter(
+                    (job: ServerHistoryStateJob) =>
+                        new Date(job.start_time * 1000) >= startDate && job.filament_used > 0
+                ),
+            ]
+
+        for (let i = 0; i <= 14; i++) {
+            const tmpDate = new Date(startDate.getTime())
+            tmpDate.setDate(tmpDate.getDate() + i)
+            tmpDate.setHours(0, 0, 0, 0)
+
+            output.push([tmpDate.getTime(), 0])
+        }
+
+        if (jobsFiltered.length) {
+            jobsFiltered.forEach((current) => {
+                const currentStartDate = new Date(current.start_time * 1000).setHours(0, 0, 0, 0)
+                const index = output.findIndex((element) => element[0] === currentStartDate)
+                if (index !== -1) output[index][1] += Math.round(current.filament_used) / 1000
+            })
+        }
+
+        return output.sort((a, b) => {
+            return b[0] - a[0]
+        })
+    }
+
+    get chart(): ECharts | null {
+        return this.historyFilamentUsage?.chart ?? null
+    }
+
+    beforeDestroy() {
+        if (typeof window === 'undefined') return
+        if (this.chart) this.chart.dispose()
+    }
+
+    @Watch('filamentUsageArray')
+    filamentUsageArrayChanged(newVal: [number, number][]) {
+        this.chart?.setOption(
+            {
+                series: {
+                    data: newVal,
+                },
+            },
+            false,
+            true
+        )
+    }
+
+    visibilityChanged(isVisible: boolean) {
+        if (isVisible) this.chart?.resize()
+    }
+}
+</script>

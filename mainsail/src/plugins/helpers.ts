@@ -1,0 +1,596 @@
+import { FileStateFile } from '@/store/files/types'
+import { PrinterStateMacroParams } from '@/store/printer/types'
+import {
+    mdiAlertOutline,
+    mdiCheckboxMarkedCircleOutline,
+    mdiCloseCircleOutline,
+    mdiFlash,
+    mdiGauge,
+    mdiLightningBoltOutline,
+    mdiMeterElectricOutline,
+    mdiProgressClock,
+    mdiScale,
+    mdiThermometer,
+} from '@mdi/js'
+import Vue from 'vue'
+import { VColorPickerColor } from '@/types/vuetify'
+
+export const isRecord = (value: unknown): value is Record<string, unknown> => {
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Parses an unknown value into a finite number.
+ *
+ * If parsing fails (`NaN`) or yields a non-finite value (`Infinity`, `-Infinity`),
+ * the provided fallback is returned instead.
+ *
+ * This is useful for Klipper/Moonraker config values that may be delivered as strings
+ * (e.g. `"250"`, `"0.400"`) while callers require a safe `number`.
+ *
+ * @param value - Input value to parse.
+ * @param fallback - Value returned when parsing does not produce a finite number.
+ * @returns Parsed finite number, or `fallback`.
+ *
+ * @example
+ * parseNumber('250', 0) // 250
+ * parseNumber('0.400', 0) // 0.4
+ * parseNumber('abc', 170) // 170
+ */
+export const parseNumber = (value: unknown, fallback: number): number => {
+    const parsedValue = Number(value)
+
+    return Number.isFinite(parsedValue) ? parsedValue : fallback
+}
+
+export const setDataDeep = (currentState: unknown, payload: unknown): void => {
+    if (!isRecord(currentState) || !isRecord(payload)) return
+
+    Object.keys(payload).forEach((key: string) => {
+        const value = payload[key]
+        const currentValue = currentState[key]
+
+        if (isRecord(value) && isRecord(currentValue)) {
+            setDataDeep(currentValue, value)
+            return
+        }
+
+        Vue.set(currentState, key, value)
+    })
+}
+
+export const findDirectory = (folder: FileStateFile[], dirArray: string[]): FileStateFile[] | null => {
+    if (folder !== undefined && folder !== null && dirArray.length) {
+        const parent = folder?.find((element: FileStateFile) => element.isDirectory && element.filename === dirArray[0])
+        if (parent) {
+            dirArray.shift()
+
+            if (parent.childrens && dirArray.length) return findDirectory(parent.childrens, dirArray)
+            else if (parent.childrens) return parent.childrens
+        }
+
+        return folder
+    }
+
+    return null
+}
+
+export const caseInsensitiveSort = <T extends object>(values: T[], ...orderTypes: (keyof T)[]): T[] => {
+    return values.sort((a, b) => {
+        for (const orderType of orderTypes) {
+            const valA: unknown = a[orderType]
+            const valB: unknown = b[orderType]
+
+            if (typeof valA !== 'string' || typeof valB !== 'string') continue
+
+            const result = valA.localeCompare(valB, undefined, {
+                numeric: true,
+                sensitivity: 'base',
+            })
+            if (result !== 0) return result
+        }
+        return 0
+    })
+}
+
+export const capitalize = (str: string): string => {
+    return str.charAt(0).toUpperCase() + str.slice(1)
+}
+
+export const camelize = (str: string): string => {
+    return str
+        .replace(/_/g, ' ')
+        .replace(/^\w|[A-Z]|\b\w/g, (word, index) => {
+            return index === 0 ? word.toLowerCase() : word.toUpperCase()
+        })
+        .replace(/\s+/g, '')
+}
+
+export function formatConsoleMessage(message: string): string {
+    // remove !! at error msg start
+    message = message.replace(/^!! /g, '')
+    // remove !! after \n new line
+    message = message.replace(/\n!! /g, '\n')
+    // remove // at command msg start
+    message = message.replace(/^\/\/ /g, '')
+    // remove // at \n new line
+    message = message.replace(/\n\/\/ /g, '\n')
+    // remove echo
+    message = message.replace(/^echo:/g, '')
+    // remove debug
+    message = message.replace(/^debug:/g, '')
+    // replace linebreaks with html <br>
+    message = message.replace('\n// ', '<br>')
+    message = message.replace(/\r\n|\r|\n/g, '<br>')
+
+    return message.trim()
+}
+
+export const convertName = (name: string): string => {
+    let output = ''
+    name = name.replace(/_/g, ' ')
+    name.split(' ').forEach((split) => {
+        output += ' ' + split.charAt(0).toUpperCase() + split.slice(1)
+    })
+    output = output.slice(1)
+
+    return output
+}
+
+export const formatFilesize = (fileSizeInBytes: number): string => {
+    let i = -1
+    const byteUnits = [' kB', ' MB', ' GB', ' TB', ' PB', ' EB', ' ZB', ' YB']
+    do {
+        fileSizeInBytes = fileSizeInBytes / 1024
+        i++
+    } while (fileSizeInBytes > 1024)
+
+    return Math.max(fileSizeInBytes, 0.1).toFixed(1) + byteUnits[i]
+}
+
+export const formatFrequency = (frequency: number): string => {
+    let i = -1
+    const units = [' kHz', ' MHz', ' GHz']
+    do {
+        frequency = frequency / 1000
+        i++
+    } while (frequency > 1000)
+
+    return Math.max(frequency, 0.1).toFixed() + units[i]
+}
+
+export const formatPrintTime = (totalSeconds: number, boolDays = true): string => {
+    if (!totalSeconds) return '--'
+
+    const output: string[] = []
+
+    if (boolDays) {
+        const days = Math.floor(totalSeconds / (3600 * 24))
+        if (days) {
+            totalSeconds %= 3600 * 24
+            output.push(`${days}d`)
+        }
+    }
+
+    const hours = Math.floor(totalSeconds / 3600)
+    totalSeconds %= 3600
+    if (hours) output.push(`${hours}h`)
+
+    const minutes = Math.floor(totalSeconds / 60)
+    if (minutes) output.push(`${minutes}m`)
+
+    const seconds = totalSeconds % 60
+    if (seconds) output.push(`${seconds.toFixed(0)}s`)
+
+    return output.join(' ')
+}
+
+export const sortFiles = (items: FileStateFile[] | null, sortBy: string[], sortDesc: boolean[]): FileStateFile[] => {
+    const sortBySingle = sortBy.length ? sortBy[0] : 'filename'
+    const sortDescSingle = sortDesc[0]
+
+    const reduceArrayToNumber = (value: unknown[]): number => {
+        return value.reduce((sum: number, item: unknown) => sum + (typeof item === 'number' ? item : 0), 0)
+    }
+
+    if (items !== null) {
+        // Sort by index
+        items.sort((a: FileStateFile, b: FileStateFile) => {
+            const valueA = a[sortBySingle]
+            const valueB = b[sortBySingle]
+
+            if (valueA === valueB) return 0
+            if (valueA === null || valueA === undefined) return -1
+            if (valueB === null || valueB === undefined) return 1
+
+            if (typeof valueA === 'string' && typeof valueB === 'string') {
+                return valueA.localeCompare(valueB, undefined, { sensitivity: 'base' })
+            }
+
+            if (Array.isArray(valueA) && Array.isArray(valueB)) {
+                return reduceArrayToNumber(valueA) - reduceArrayToNumber(valueB)
+            }
+
+            if (valueA instanceof Date && valueB instanceof Date) {
+                return valueA.getTime() - valueB.getTime()
+            }
+
+            if (typeof valueA === 'number' && typeof valueB === 'number') {
+                return valueA - valueB
+            }
+
+            return String(valueA).localeCompare(String(valueB), undefined, { numeric: true, sensitivity: 'base' })
+        })
+
+        // Deal with descending order
+        if (sortDescSingle) items.reverse()
+
+        // Then make sure directories come first
+        items.sort((a: FileStateFile, b: FileStateFile) =>
+            a.isDirectory === b.isDirectory ? 0 : a.isDirectory ? -1 : 1
+        )
+    }
+
+    return items ?? []
+}
+
+export function strLongestEqual(a: string, b: string): string {
+    const l = Math.min(a?.length ?? Number.MAX_VALUE, b?.length ?? Number.MAX_VALUE)
+    let i = 0
+    while (i < l && (a.charCodeAt(i) ^ b.charCodeAt(i)) === 0) {
+        i += 1
+    }
+    return a.substring(0, i)
+}
+
+export function getMacroParams(macro: { gcode: string }): PrinterStateMacroParams {
+    const paramRegex =
+        /{%?.*?params\.([A-Za-z_0-9]+)(?:\|(int|string|double))?(?:\|default\('?"?(.*?)"?'?\))?(?:\|(int|string))?.*?%?}/
+
+    let params = paramRegex.exec(macro.gcode)
+    let currentMatch = macro.gcode
+    let ret: PrinterStateMacroParams = null
+    while (params) {
+        if (ret === null) {
+            ret = {}
+        }
+        const name = params[1]
+        const t: 'int' | 'string' | 'double' | null = (params[2] ?? params[4] ?? null) as
+            | 'int'
+            | 'string'
+            | 'double'
+            | null
+        const def = params[3] ?? null
+        ret[`${name}`] = {
+            type: t,
+            default: def,
+        }
+        currentMatch = currentMatch.replace(params[0], '')
+        params = paramRegex.exec(currentMatch)
+    }
+
+    const paramInRegex = /{%?.*?if.*?'([A-Za-z_0-9]+)' (?:not )?in params.*?%?}/
+    params = paramInRegex.exec(macro.gcode)
+    currentMatch = macro.gcode
+
+    while (params) {
+        if (ret === null) {
+            ret = {}
+        }
+        const name = params[1]
+        if (!(`${name}` in ret)) {
+            ret[`${name}`] = {
+                type: null,
+                default: null,
+            }
+        }
+        currentMatch = currentMatch.replace(params[0], '')
+        params = paramInRegex.exec(currentMatch)
+    }
+
+    return ret
+}
+
+export function windowBeforeUnloadFunction(e: BeforeUnloadEvent) {
+    e.preventDefault()
+    e.returnValue = ''
+}
+
+export function copyToClipboard(text: string) {
+    if (navigator.clipboard) {
+        navigator.clipboard.writeText(text)
+        return
+    }
+
+    const textArea = document.createElement('textarea')
+    let element = document.getElementById('devices-dialog')
+    if (!element) element = document.body
+
+    textArea.value = text
+    textArea.style.position = 'absolute'
+    textArea.style.top = '0'
+    textArea.style.left = '0'
+    textArea.style.zIndex = '100000'
+    textArea.style.opacity = '0'
+    element.appendChild(textArea)
+    textArea.focus()
+    textArea.select()
+    try {
+        document.execCommand('copy')
+    } catch (err) {
+        console.error('Unable to copy to clipboard', err)
+    }
+    textArea.remove()
+}
+
+export function sortResolutions(a: string, b: string) {
+    const aSplit = parseInt(a.split('x')[0])
+    const bSplit = parseInt(b.split('x')[0])
+
+    return aSplit - bSplit
+}
+
+export function escapePath(path: string): string {
+    return path
+        .split('/')
+        .map((part) => encodeURIComponent(part))
+        .join('/')
+}
+
+export const unitToSymbol = (unit: string): string => {
+    return (
+        {
+            // Energy
+            wh: mdiLightningBoltOutline,
+            kwh: mdiLightningBoltOutline,
+            mwh: mdiLightningBoltOutline,
+            j: mdiLightningBoltOutline,
+            // Power
+            w: mdiFlash,
+            // Electrical
+            v: mdiFlash,
+            a: mdiMeterElectricOutline,
+            // Temperature
+            '°c': mdiThermometer,
+            c: mdiThermometer,
+            '°f': mdiThermometer,
+            f: mdiThermometer,
+            '°': mdiThermometer,
+            // Mass
+            g: mdiScale,
+        }[unit?.toLowerCase()] ?? mdiGauge
+    )
+}
+
+export const convertPrintStatusIconColor = (status: string): string => {
+    switch (status) {
+        case 'in_progress':
+            return 'blue accent-3' //'blue-grey darken-1'
+        case 'completed':
+            return 'green' //'green'
+        case 'cancelled':
+            return 'red'
+
+        default:
+            return 'orange'
+    }
+}
+
+export const convertPrintStatusIcon = (status: string) => {
+    switch (status) {
+        case 'in_progress':
+            return mdiProgressClock
+        case 'completed':
+            return mdiCheckboxMarkedCircleOutline
+        case 'cancelled':
+            return mdiCloseCircleOutline
+
+        default:
+            return mdiAlertOutline
+    }
+}
+
+export function filamentTextColor(hexColor: string): string {
+    const splits = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})(?:[a-f\d]{2})?$/i.exec(hexColor)
+
+    if (splits === null || splits?.length < 3) return '#ffffff'
+
+    const r = parseInt(splits[1], 16) * 0.2126
+    const g = parseInt(splits[2], 16) * 0.7152
+    const b = parseInt(splits[3], 16) * 0.0722
+    const perceivedLightness = (r + g + b) / 255
+
+    return perceivedLightness > 0.6 ? '#222' : '#fff'
+}
+
+export function toBoolean(val: unknown): boolean {
+    if (typeof val === 'boolean') return val
+    if (typeof val === 'number') return val !== 0
+    if (typeof val === 'string') {
+        const s = val.trim().toLowerCase()
+        if (s === 'true' || s === '1' || s === 'yes' || s === 'y') return true
+        if (s === 'false' || s === '0' || s === 'no' || s === 'n') return false
+    }
+    return Boolean(val)
+}
+
+export function filamentWeightFormat(weight: number): string {
+    if (weight > 1000) return `${Math.round(weight / 10) / 100} kg`
+    else if (weight > 100) return `${Math.round(weight)} g`
+
+    return `${Math.round(weight * 10) / 10} g`
+}
+
+// This function is based on the Fluidd implementation
+// https://github.com/fluidd-core/fluidd/blob/2425607e4eb507d4da84c18bfa77fecbc42f8a32/src/util/string-formatters.ts#L47
+export function convertStringToArray(str: string, separator = ';'): string[] {
+    if (!str) return []
+    if (str.startsWith('["') && str.endsWith('"]')) {
+        try {
+            const arr = JSON.parse(str)
+            if (Array.isArray(arr) && arr.every((item) => typeof item === 'string')) {
+                return arr.map((s) => s.trim())
+            }
+        } catch {
+            // Fallback to separator split
+        }
+    }
+
+    return str.split(separator).map((s) => s.replace(/^"|"$/g, '').trim())
+}
+
+/**
+ * Converts a hex color string to an RGB object.
+ *
+ * Supports multiple hex formats:
+ * - 6-digit: `#FF5500` or `FF5500`
+ * - 3-digit shorthand: `#F50` or `F50` (expanded to `FF5500`)
+ * - 8-digit with alpha: `#FF5500AA` (alpha channel is ignored)
+ *
+ * @param hex - Hex color string with or without leading `#`
+ * @returns Object with `r`, `g`, `b` properties (0-255 each), or `null` if the input is invalid
+ *
+ * @example
+ * // Standard 6-digit hex
+ * convertHexToRgb('#FF5500') // { r: 255, g: 85, b: 0 }
+ * // Without hash prefix
+ * convertHexToRgb('FF5500') // { r: 255, g: 85, b: 0 }
+ *
+ * @example
+ * // 3-digit shorthand (expanded: F→FF, 5→55, 0→00)
+ * convertHexToRgb('#F50') // { r: 255, g: 85, b: 0 }
+ *
+ * @example
+ * // 8-digit with alpha (alpha is stripped)
+ * convertHexToRgb('#FF5500AA') // { r: 255, g: 85, b: 0 }
+ *
+ * @example
+ * // Invalid input returns null
+ * convertHexToRgb('invalid') // null
+ * convertHexToRgb('#GG0000') // null
+ */
+export function convertHexToRgb(hex: string): { r: number; g: number; b: number } | null {
+    let cleaned = hex.replace(/^#/, '').toLowerCase()
+
+    if (cleaned.length === 8) cleaned = cleaned.slice(0, 6)
+    else if (cleaned.length === 3) {
+        cleaned = cleaned
+            .split('')
+            .map((c) => c + c)
+            .join('')
+    }
+
+    if (cleaned.length !== 6 || !/^[0-9a-f]{6}$/.test(cleaned)) {
+        return null
+    }
+
+    return {
+        r: parseInt(cleaned.slice(0, 2), 16),
+        g: parseInt(cleaned.slice(2, 4), 16),
+        b: parseInt(cleaned.slice(4, 6), 16),
+    }
+}
+
+/**
+ * Compares two hex colors and returns true if they match within the given tolerance.
+ *
+ * The comparison is performed on each RGB channel independently. Two colors are considered
+ * matching if the absolute difference for each channel (R, G, B) is within the tolerance.
+ *
+ * @param color1 - First hex color string (e.g., '#FF5500', 'FF5500', '#F50', or 'F50')
+ * @param color2 - Second hex color string (e.g., '#FF5500', 'FF5500', '#F50', or 'F50')
+ * @param tolerance - Maximum allowed difference per RGB channel (0-255). Defaults to 0 (exact match)
+ * @returns `true` if colors match within tolerance, `false` if they don't match or if either color is invalid
+ *
+ * @example
+ * // Exact match
+ * colorsMatch('#FF0000', '#FF0000') // true
+ *
+ * @example
+ * // Match with tolerance
+ * colorsMatch('#FF0000', '#FE0000', 1) // true (red differs by 1)
+ * colorsMatch('#FF0000', '#FD0000', 1) // false (red differs by 2)
+ *
+ * @example
+ * // Shorthand hex support
+ * colorsMatch('#F00', '#FF0000') // true
+ *
+ * @example
+ * // Invalid color returns false
+ * colorsMatch('#FF0000', 'invalid') // false
+ */
+export function colorsMatch(color1: string, color2: string, tolerance = 0): boolean {
+    const rgb1 = convertHexToRgb(color1)
+    const rgb2 = convertHexToRgb(color2)
+
+    if (rgb1 === null || rgb2 === null) return false
+
+    return (
+        Math.abs(rgb1.r - rgb2.r) <= tolerance &&
+        Math.abs(rgb1.g - rgb2.g) <= tolerance &&
+        Math.abs(rgb1.b - rgb2.b) <= tolerance
+    )
+}
+
+/**
+ * Deletes a nested property from an object using a dot-separated path.
+ *
+ * The object is mutated in place. If any part of the path does not exist,
+ * the function returns without making changes.
+ *
+ * @param obj - The object to modify.
+ * @param path - Dot-separated path to the property to delete (e.g. "a.b.c").
+ */
+export const deletePath = (obj: Record<string, unknown>, path: string): void => {
+    const parts = path.split('.')
+    const last = parts.pop()
+    if (!last) return
+
+    let current: unknown = obj
+    for (const part of parts) {
+        if (!isRecord(current) || !(part in current)) return
+        current = current[part]
+    }
+
+    if (isRecord(current)) delete current[last]
+}
+
+export type ColorPickerValue = string | VColorPickerColor
+
+/**
+ * Extracts a plain 7-character hex color string (`#RRGGBB`) from a Vuetify
+ * color-picker value, which may be either a string or an object with a `hex`
+ * property.  Any alpha portion (8-digit hex) is stripped.
+ *
+ * @param color - Value emitted by Vuetify's `v-color-picker` `update:color` event.
+ * @returns 7-character hex color string (e.g. `#FF5500`).
+ *
+ * @example
+ * clearColorObject('#FF5500FF') // '#FF5500'
+ * clearColorObject({ hex: '#FF5500FF' }) // '#FF5500'
+ * clearColorObject('#F00') // '#F00'
+ */
+export function clearColorObject(color: ColorPickerValue): string {
+    const colorValue = typeof color === 'object' && 'hex' in color ? color.hex : color
+    if (colorValue.length > 7) return colorValue.slice(0, 7)
+
+    return colorValue
+}
+
+/**
+ * Generates a timestamp string in the format `YYYYMMDD-HHMMSS`.
+ *
+ * @param date - Optional date object. Defaults to current date/time.
+ * @returns Formatted timestamp string (e.g., `20260130-070253`)
+ *
+ * @example
+ * generateTimestamp() // '20260130-070253' (current time)
+ * generateTimestamp(new Date('2025-12-25T10:30:00')) // '20251225-103000'
+ */
+export function generateTimestamp(date: Date = new Date()): string {
+    const pad = (n: number) => n.toString().padStart(2, '0')
+    const dateString = `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}`
+    const timeString = `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`
+
+    return `${dateString}-${timeString}`
+}
