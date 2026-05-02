@@ -135,12 +135,6 @@ class Toolchanger:
         self.status = STATUS_UNINITALIZED
         self.active_tool = None
         self.gcode_transform.next_transform = self.gcode_move.set_move_transform(self.gcode_transform, force=True)
-        # Use tool_probe_endstop for detection if no detection_pins configured
-        if not self.has_detection:
-            tpe = self.printer.lookup_object('tool_probe_endstop', None)
-            if tpe and hasattr(tpe, '_detect_active_tool'):
-                self.has_detection = True
-                self._tpe_detection = tpe
 
     def _handle_command_error(self):
         self.status = STATUS_UNINITALIZED
@@ -181,6 +175,12 @@ class Toolchanger:
         all_detection = all([t.detect_state != DETECT_UNAVAILABLE for t in self.tools.values()])
         if self.has_detection and not all_detection:
             raise self.config.error("Some tools missing detection pin")
+        # Fallback: use tool_probe_endstop for detection if no detection_pins
+        if not self.has_detection:
+            tpe = self.printer.lookup_object('tool_probe_endstop', None)
+            if tpe and hasattr(tpe, '_query_open_tools'):
+                self.has_detection = True
+                self._tpe_detection = tpe
 
     cmd_INITIALIZE_TOOLCHANGER_help = "Initialize the toolchanger"
 
