@@ -135,6 +135,12 @@ class Toolchanger:
         self.status = STATUS_UNINITALIZED
         self.active_tool = None
         self.gcode_transform.next_transform = self.gcode_move.set_move_transform(self.gcode_transform, force=True)
+        # Use tool_probe_endstop for detection if no detection_pins configured
+        if not self.has_detection:
+            tpe = self.printer.lookup_object('tool_probe_endstop', None)
+            if tpe and hasattr(tpe, '_detect_active_tool'):
+                self.has_detection = True
+                self._tpe_detection = tpe
 
     def _handle_command_error(self):
         self.status = STATUS_UNINITALIZED
@@ -454,6 +460,16 @@ class Toolchanger:
             if tool.detect_state == DETECT_PRESENT:
                 detected = tool
                 detected_names.append(tool.name)
+        # Fallback: use tool_probe_endstop detection if no detection_pins
+        if not detected_names and hasattr(self, '_tpe_detection'):
+            tpe = self._tpe_detection
+            active_probes = tpe._query_open_tools()
+            if len(active_probes) == 1:
+                probe = active_probes[0]
+                tool_nr = probe.tool_number
+                if tool_nr in self.tools:
+                    detected = self.tools[tool_nr]
+                    detected_names.append(detected.name)
         if len(detected_names) > 1:
             self.gcode.respond_info("Multiple tools detected: %s" % (detected_names,))
             detected = None
@@ -468,6 +484,17 @@ class Toolchanger:
             if tool.detect_state == DETECT_PRESENT:
                 detected = tool
                 detected_names.append(tool.name)
+        # Fallback: use tool_probe_endstop detection if no detection_pins
+        if not detected_names and hasattr(self, '_tpe_detection'):
+            tpe = self._tpe_detection
+            active_probes = tpe._query_open_tools()
+            if len(active_probes) == 1:
+                probe = active_probes[0]
+                tool_nr = probe.tool_number
+                if tool_nr in self.tools:
+                    detected = self.tools[tool_nr]
+                    detected_names.append(detected.name)
+                    tpe.set_active_probe(probe)
         if len(detected_names) > 1:
             respond_info("Multiple tools detected: %s" % (detected_names,))
         if detected is None:
