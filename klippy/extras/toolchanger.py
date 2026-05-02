@@ -302,6 +302,10 @@ class Toolchanger:
             self.run_gcode('initialize_gcode', self.initialize_gcode, extra_context)
 
         if select_tool or self.has_detection:
+            # Auto-detect tool via tool_probe_endstop if no tool specified
+            if select_tool is None and hasattr(self, '_tpe_detection'):
+                select_tool = self.require_detected_tool(
+                    self.gcode.respond_info)
             self._configure_toolhead_for_tool(select_tool)
             if select_tool:
                 self.run_gcode('after_change_gcode', select_tool.after_change_gcode, extra_context)
