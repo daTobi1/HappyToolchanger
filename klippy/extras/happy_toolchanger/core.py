@@ -220,6 +220,11 @@ class HappyToolchanger:
         self.active_tool = tool
         self._save_state()
 
+        # Tell Moonraker which spool is now active for filament tracking
+        gate = self.ttg_map[tool]
+        spool_id = self.gate_spool_ids[gate] if gate < len(self.gate_spool_ids) else -1
+        self._set_moonraker_spool(spool_id)
+
         self.log("Tool change complete: T%d" % tool)
 
     # --- Endless Spool Integration ---
@@ -313,13 +318,18 @@ class HappyToolchanger:
         temp = gcmd.get_int('TEMP', self.gate_temperatures[gate])
         name = gcmd.get('NAME', self.gate_filament_names[gate])
         status = gcmd.get_int('STATUS', self.gate_status[gate])
+        spool_id = gcmd.get_int('SPOOL_ID', self.gate_spool_ids[gate])
         self.gate_colors[gate] = color
         self.gate_materials[gate] = material
         self.gate_temperatures[gate] = temp
         self.gate_filament_names[gate] = name
         self.gate_status[gate] = status
+        self.gate_spool_ids[gate] = spool_id
         self._save_state()
-        gcmd.respond_info("HTC: Gate %d updated" % gate)
+        # If this gate is the active tool's gate, update Moonraker's active spool
+        if self.active_tool >= 0 and self.ttg_map[self.active_tool] == gate:
+            self._set_moonraker_spool(spool_id)
+        gcmd.respond_info("HTC: Gate %d updated (spool_id=%d)" % (gate, spool_id))
 
     def cmd_HTC_ENDLESS_SPOOL(self, gcmd):
         enable = gcmd.get_int('ENABLE', int(self.endless_spool.enabled))
@@ -369,6 +379,25 @@ class HappyToolchanger:
                 t_macro.variables = dict(t_macro.variables)
                 t_macro.variables['color'] = self.gate_colors[gate] if gate < len(self.gate_colors) else ''
                 t_macro.variables['spool_id'] = self.gate_spool_ids[gate] if gate < len(self.gate_spool_ids) else -1
+
+    # --- Spoolman Integration ---
+
+    def _set_moonraker_spool(self, spool_id):
+        """Notify Moonraker of the active spool for filament tracking."""
+        if self.spoolman_support == 'off':
+            return
+        webhooks = self.printer.lookup_object('webhooks', None)
+        if webhooks is None:
+            return
+        try:
+            # Moonraker listens for this and updates the active spool
+            sid = spool_id if spool_id > 0 else None
+            webhooks.call_remote_method('spoolman_set_active_spool',
+                                        spool_id=sid)
+            self.log("Spoolman: active spool set to %s" %
+                     (str(spool_id) if sid else "None"), level=2)
+        except Exception as e:
+            self.log("Spoolman: failed to set active spool: %s" % str(e))
 
     # --- Webhook Status ---
 
