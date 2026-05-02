@@ -79,12 +79,8 @@ from ldc1612_ng import *  # noqa: F401,F403
 PYEOF
 echo "  Created loader: ldc1612_ng.py"
 
-# Symlink probe_eddy_ng package directory
-if [ -L "${KLIPPER_EXTRAS}/probe_eddy_ng" ] || [ -d "${KLIPPER_EXTRAS}/probe_eddy_ng" ]; then
-  rm -rf "${KLIPPER_EXTRAS}/probe_eddy_ng"
-fi
-ln -sf "${EDDY_DIR}/probe_eddy_ng" "${KLIPPER_EXTRAS}/probe_eddy_ng"
-echo "  Linked: probe_eddy_ng/"
+# Note: No package symlink needed. The loader files above handle
+# sys.path insertion so Python finds probe_eddy_ng/ inside eddy-ng/.
 
 # Apply klipper patch if needed
 if [ -f "${EDDY_DIR}/klipper.patch" ]; then
