@@ -470,7 +470,7 @@ class Toolchanger:
             active_probes = tpe._query_open_tools()
             if len(active_probes) == 1:
                 probe = active_probes[0]
-                tool_nr = probe.tool_number
+                tool_nr = probe.tool
                 if tool_nr in self.tools:
                     detected = self.tools[tool_nr]
                     detected_names.append(detected.name)
@@ -494,7 +494,7 @@ class Toolchanger:
             active_probes = tpe._query_open_tools()
             if len(active_probes) == 1:
                 probe = active_probes[0]
-                tool_nr = probe.tool_number
+                tool_nr = probe.tool
                 if tool_nr in self.tools:
                     detected = self.tools[tool_nr]
                     detected_names.append(detected.name)
