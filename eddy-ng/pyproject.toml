@@ -1,0 +1,42 @@
+[project]
+name = "eddy-ng"
+description = "Enhanced Eddy current probe support for Klipper and Kalico"
+requires-python = ">=3.8"
+license = { file = "LICENSE" }
+dependencies = ["numpy>=1.16"]
+dynamic = ["version"]
+keywords = ["klipper", "3D printing", "eddy", "probe"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+]
+
+[project.optional-dependencies]
+scipy = ["scipy>=1.9"]
+plotly = ["plotly>=5.0"]
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+raw-options.local_scheme = "no-local-version"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/eddy_ng/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/eddy_ng"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"ldc1612_ng.py" = "eddy_ng/ldc1612_ng.py"
+"probe_eddy_ng" = "eddy_ng/probe_eddy_ng"
+
+[tool.hatch.build.targets.sdist]
+exclude = ["/.github", "/firmware", "/eddy-ng"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["probe_eddy_ng", "__pycache__", ".git"]

@@ -1,0 +1,48 @@
+diff --git a/src/Makefile b/src/Makefile
+index cfedc56f7..422e0179e 100644
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -20,6 +20,6 @@ src-$(CONFIG_WANT_LIS2DW) += sensor_lis2dw.c
+ src-$(CONFIG_WANT_MPU9250) += sensor_mpu9250.c
+ src-$(CONFIG_WANT_HX71X) += sensor_hx71x.c
+ src-$(CONFIG_WANT_ADS1220) += sensor_ads1220.c
+-src-$(CONFIG_WANT_LDC1612) += sensor_ldc1612.c
++src-$(CONFIG_WANT_LDC1612) += sensor_ldc1612.c sensor_ldc1612_ng.c
+ src-$(CONFIG_WANT_SENSOR_ANGLE) += sensor_angle.c
+ src-$(CONFIG_NEED_SENSOR_BULK) += sensor_bulk.c
+diff --git a/src/stm32/Kconfig b/src/stm32/Kconfig
+--- a/src/stm32/Kconfig
++++ b/src/stm32/Kconfig
+@@ -454,6 +454,10 @@
+         bool "CAN bus (on PA9/PA10)" if LOW_LEVEL_OPTIONS
+         depends on MACH_STM32F042
+         select CANSERIAL
++    config STM32_CANBUS_PB8_PA12_REMAP
++        bool "CAN bus (on PB8/PA10)" if LOW_LEVEL_OPTIONS
++        depends on MACH_STM32F042 && HAVE_STM32_CANBUS
++        select CANSERIAL
+     config STM32_CANBUS_PA11_PB9
+         bool "CAN bus (on PA11/PB9)"
+         depends on HAVE_STM32_CANBUS || HAVE_STM32_FDCANBUS
+diff --git a/src/stm32/can.c b/src/stm32/can.c
+--- a/src/stm32/can.c
++++ b/src/stm32/can.c
+@@ -23,6 +23,11 @@
+  #define GPIO_Rx GPIO('A', 12)
+ #endif
++#if CONFIG_STM32_CANBUS_PB8_PA12_REMAP
++ DECL_CONSTANT_STR("RESERVE_PINS_CAN", "PB8,PA12");
++ #define GPIO_Rx GPIO('B', 8)
++ #define GPIO_Tx GPIO('A', 12)
++#endif
+ #if CONFIG_STM32_CANBUS_PB8_PB9
+  DECL_CONSTANT_STR("RESERVE_PINS_CAN", "PB8,PB9");
+  #define GPIO_Rx GPIO('B', 8)
+diff --git a/src/stm32/stm32f0.c b/src/stm32/stm32f0.c
+--- a/src/stm32/stm32f0.c
++++ b/src/stm32/stm32f0.c
+@@ -190,5 +190,5 @@
+     // Support pin remapping USB/CAN pins on low pinout stm32f042
+-    if (CONFIG_STM32_USB_PA11_PA12_REMAP || CONFIG_STM32_CANBUS_PA11_PA12_REMAP)
++    if (CONFIG_STM32_USB_PA11_PA12_REMAP || CONFIG_STM32_CANBUS_PA11_PA12_REMAP || CONFIG_STM32_CANBUS_PB8_PA12_REMAP)
+         SYSCFG->CFGR1 |= 1<<4; // SYSCFG_CFGR1_PA11_PA12_RMP
