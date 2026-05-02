@@ -41,6 +41,12 @@
                             Edit ES Groups
                         </v-btn>
                     </v-list-item>
+                    <v-list-item v-if="spoolmanUrl">
+                        <v-btn small class="w-100" :href="spoolmanUrl" target="_blank">
+                            <v-icon left>{{ mdiOpenInNew }}</v-icon>
+                            Spoolman
+                        </v-btn>
+                    </v-list-item>
                 </v-list>
             </v-menu>
         </template>
@@ -75,7 +81,7 @@ import HtcEditGateDialog from '@/components/panels/Htc/HtcEditGateDialog.vue'
 import HtcEditTtgDialog from '@/components/panels/Htc/HtcEditTtgDialog.vue'
 import HtcEditGroupsDialog from '@/components/panels/Htc/HtcEditGroupsDialog.vue'
 import HtcSpoolDialog from '@/components/panels/Htc/HtcSpoolDialog.vue'
-import { mdiTools, mdiDotsVertical, mdiRefresh } from '@mdi/js'
+import { mdiTools, mdiDotsVertical, mdiRefresh, mdiOpenInNew } from '@mdi/js'
 
 const PENDING_KEY = 'htc_pending_spools'
 
@@ -98,6 +104,7 @@ export default class HtcPanel extends Mixins(HtcMixin) {
     mdiTools = mdiTools
     mdiDotsVertical = mdiDotsVertical
     mdiRefresh = mdiRefresh
+    mdiOpenInNew = mdiOpenInNew
 
     showEditGateDialog = false
     showEditTtgDialog = false
@@ -110,6 +117,12 @@ export default class HtcPanel extends Mixins(HtcMixin) {
     get showPanel(): boolean {
         if (!this.klipperReadyForGui) return false
         return 'happy_toolchanger' in this.$store.state.printer
+    }
+
+    get spoolmanUrl(): string | null {
+        const spoolman = this.$store.state.server?.config?.config?.spoolman
+        if (spoolman?.server) return spoolman.server
+        return null
     }
 
     mounted() {
