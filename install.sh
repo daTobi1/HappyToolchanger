@@ -52,6 +52,17 @@ for py_file in "${INSTALL_DIR}/klippy/extras/"*.py; do
   echo "  Linked: ${fname}"
 done
 
+# Symlink happy_toolchanger package directory
+HTC_PKG="${INSTALL_DIR}/klippy/extras/happy_toolchanger"
+HTC_TARGET="${KLIPPER_EXTRAS}/happy_toolchanger"
+if [ -d "$HTC_PKG" ]; then
+  if [ -L "$HTC_TARGET" ] || [ -d "$HTC_TARGET" ]; then
+    rm -rf "$HTC_TARGET"
+  fi
+  ln -sf "$HTC_PKG" "$HTC_TARGET"
+  echo "  Linked: happy_toolchanger/"
+fi
+
 # --- 2. Eddy-NG ---
 echo "--- Installing Eddy-NG ---"
 EDDY_DIR="${INSTALL_DIR}/eddy-ng"

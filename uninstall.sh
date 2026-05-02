@@ -22,11 +22,15 @@ for py_file in "${INSTALL_DIR}/klippy/extras/"*.py; do
   fi
 done
 
-# Eddy-NG loaders and symlink
+# Eddy-NG loaders
 rm -f "${KLIPPER_EXTRAS}/probe_eddy_ng.py"
 rm -f "${KLIPPER_EXTRAS}/ldc1612_ng.py"
 rm -rf "${KLIPPER_EXTRAS}/probe_eddy_ng"
 echo "  Removed Eddy-NG loaders"
+
+# HappyToolchanger package
+rm -rf "${KLIPPER_EXTRAS}/happy_toolchanger"
+echo "  Removed happy_toolchanger package"
 
 # --- Mainsail ---
 if [ -f "${MAINSAIL_DIR}/.happytoolchanger" ]; then
