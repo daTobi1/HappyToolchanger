@@ -1,4 +1,12 @@
 import logging
+import json
+import threading
+
+try:
+    from urllib.request import urlopen, Request
+    from urllib.error import URLError, HTTPError
+except ImportError:
+    from urllib2 import urlopen, Request, URLError, HTTPError
 
 from .endless_spool import EndlessSpool, GATE_AVAILABLE, GATE_EMPTY
 from .statistics import Statistics
@@ -29,6 +37,11 @@ class HappyToolchanger:
         self.tool_change_command = config.get('tool_change_command', 'SELECT_TOOL T={tool}')
         self.log_level = config.getint('log_level', 1, minval=0, maxval=2)
         self.spoolman_support = config.get('spoolman_support', 'off')
+
+        # Spoolman location tracking
+        self.printer_name = config.get('printer_name', '')
+        self.spoolman_server = config.get('spoolman_server', '')
+        self.default_location = config.get('default_location', '')
 
         # Endless Spool config
         es_enabled = config.getboolean('endless_spool_enabled', False)
@@ -139,6 +152,8 @@ class HappyToolchanger:
         self.log("Ready. Active tool: T%d" % self.active_tool
                  if self.active_tool >= 0 else "Ready. No tool active.")
         self._update_t_macros()
+        self._resolve_spoolman_server()
+        self._sync_spoolman_locations()
 
     def _handle_disconnect(self):
         pass
@@ -319,6 +334,7 @@ class HappyToolchanger:
         name = gcmd.get('NAME', self.gate_filament_names[gate])
         status = gcmd.get_int('STATUS', self.gate_status[gate])
         spool_id = gcmd.get_int('SPOOL_ID', self.gate_spool_ids[gate])
+        old_spool_id = self.gate_spool_ids[gate]
         self.gate_colors[gate] = color
         self.gate_materials[gate] = material
         self.gate_temperatures[gate] = temp
@@ -329,6 +345,13 @@ class HappyToolchanger:
         # If this gate is the active tool's gate, update Moonraker's active spool
         if self.active_tool >= 0 and self.ttg_map[self.active_tool] == gate:
             self._set_moonraker_spool(spool_id)
+        # Update Spoolman location tracking
+        if spool_id != old_spool_id:
+            if old_spool_id > 0:
+                self._set_spoolman_location(old_spool_id, self.default_location)
+            if spool_id > 0:
+                self._set_spoolman_location(
+                    spool_id, self._make_location_string(gate))
         gcmd.respond_info("HTC: Gate %d updated (spool_id=%d)" % (gate, spool_id))
 
     def cmd_HTC_ENDLESS_SPOOL(self, gcmd):
@@ -398,6 +421,81 @@ class HappyToolchanger:
                      (str(spool_id) if sid else "None"), level=2)
         except Exception as e:
             self.log("Spoolman: failed to set active spool: %s" % str(e))
+
+    # --- Spoolman Location Tracking ---
+
+    def _resolve_spoolman_server(self):
+        """Resolve the Spoolman server URL from Moonraker or config."""
+        if self.spoolman_support == 'off':
+            self._spoolman_url = None
+            return
+        # Try to get URL from Moonraker's spoolman config
+        if not self.spoolman_server:
+            try:
+                webhooks = self.printer.lookup_object('webhooks', None)
+                if webhooks:
+                    webhooks.call_remote_method(
+                        'spoolman_get_server_url',
+                        callback=self._on_spoolman_url)
+            except Exception:
+                pass
+        self._spoolman_url = self.spoolman_server or None
+        if self._spoolman_url:
+            # Strip trailing slash
+            self._spoolman_url = self._spoolman_url.rstrip('/')
+            self.log("Spoolman location tracking: %s" % self._spoolman_url,
+                     level=2)
+
+    def _on_spoolman_url(self, url):
+        """Callback if Moonraker provides the Spoolman URL."""
+        if url and not self._spoolman_url:
+            self._spoolman_url = url.rstrip('/')
+
+    def _make_location_string(self, gate):
+        """Build location string for a gate, e.g. 'Voron 350 - T0'."""
+        if self.printer_name:
+            return "%s - T%d" % (self.printer_name, gate)
+        return "T%d" % gate
+
+    def _sync_spoolman_locations(self):
+        """On startup, set location for all loaded spools."""
+        if not self._spoolman_url or not self.printer_name:
+            return
+        for gate in range(self.num_tools):
+            spool_id = self.gate_spool_ids[gate]
+            if spool_id > 0:
+                self._set_spoolman_location(
+                    spool_id, self._make_location_string(gate))
+
+    def _set_spoolman_location(self, spool_id, location):
+        """Update a spool's location in Spoolman (non-blocking)."""
+        if not self._spoolman_url:
+            return
+        url = "%s/api/v1/spool/%d" % (self._spoolman_url, spool_id)
+        data = json.dumps({"location": location}).encode('utf-8')
+
+        def do_request():
+            try:
+                req = Request(url, data=data, method='PATCH')
+                req.add_header('Content-Type', 'application/json')
+                resp = urlopen(req, timeout=5)
+                resp.read()
+                resp.close()
+                self.log("Spoolman: spool %d location -> '%s'" %
+                         (spool_id, location), level=2)
+            except HTTPError as e:
+                if e.code == 404:
+                    self.log("Spoolman: spool %d not found (404)" % spool_id)
+                else:
+                    self.log("Spoolman: HTTP %d updating spool %d" %
+                             (e.code, spool_id))
+            except Exception as e:
+                self.log("Spoolman: failed to update spool %d: %s" %
+                         (spool_id, str(e)))
+
+        # Run in background thread to avoid blocking the reactor
+        thread = threading.Thread(target=do_request, daemon=True)
+        thread.start()
 
     # --- Webhook Status ---
 
