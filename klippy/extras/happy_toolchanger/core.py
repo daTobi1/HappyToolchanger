@@ -211,6 +211,13 @@ class HappyToolchanger:
 
     # --- Tool Change ---
 
+    def _is_paused(self):
+        """Check if the printer is in a paused state."""
+        pause_resume = self.printer.lookup_object('pause_resume', None)
+        if pause_resume is None:
+            return False
+        return pause_resume.is_paused
+
     def change_tool(self, tool):
         if tool < 0 or tool >= self.num_tools:
             raise self.gcode.error("HTC: Invalid tool T%d (num_tools=%d)" % (tool, self.num_tools))
@@ -226,6 +233,14 @@ class HappyToolchanger:
 
         cmd = self.tool_change_command.replace('{tool}', str(gate))
         self.gcode.run_script_from_command(cmd)
+
+        # Check if tool change failed (triggered PAUSE via error_gcode)
+        if self._is_paused():
+            self.log("Tool change to T%d failed (printer paused)" % tool,
+                     level=0)
+            self.statistics.record_error()
+            self._save_state()
+            return
 
         import time
         now = time.monotonic()
