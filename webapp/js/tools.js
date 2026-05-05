@@ -73,6 +73,53 @@ window.OffsetDebug = {
 OffsetDebug.init();
 
 // --------------------------
+// Config file update via Moonraker File API
+// --------------------------
+// Updates gcode offsets directly in tool config files (avoids SAVE_CONFIG conflicts with included files)
+// Uploads sequentially to avoid Moonraker 500 errors from concurrent writes.
+function updateToolConfigOffsets(toolOffsets) {
+  // toolOffsets: { "0": {x: "0.000", y: "0.000", z: "0.000"}, "1": {x: "0.53", z: "0.640"}, ... }
+  // Only keys present in each tool's object are updated.
+  var tools = Object.keys(toolOffsets);
+  var baseUrl = printerUrl(printerIp, "");
+
+  function processNext(idx) {
+    if (idx >= tools.length) return Promise.resolve();
+    var t = tools[idx];
+    var offsets = toolOffsets[t];
+    var filePath = "toolchanger/tools/T" + t + ".cfg";
+    return fetch(baseUrl + "/server/files/config/" + filePath)
+      .then(function(r) { return r.text(); })
+      .then(function(content) {
+        var modified = false;
+        if ('x' in offsets) {
+          var rxX = /^(gcode_x_offset\s*[:=]\s*).*$/m;
+          if (rxX.test(content)) { content = content.replace(rxX, "$1" + offsets.x); modified = true; }
+        }
+        if ('y' in offsets) {
+          var rxY = /^(gcode_y_offset\s*[:=]\s*).*$/m;
+          if (rxY.test(content)) { content = content.replace(rxY, "$1" + offsets.y); modified = true; }
+        }
+        if ('z' in offsets) {
+          var rxZ = /^(gcode_z_offset\s*[:=]\s*).*$/m;
+          if (rxZ.test(content)) { content = content.replace(rxZ, "$1" + offsets.z); modified = true; }
+        }
+        if (!modified) {
+          OffsetDebug.log("No offset lines found in " + filePath);
+          return processNext(idx + 1);
+        }
+        var formData = new FormData();
+        var blob = new Blob([content], {type: 'text/plain'});
+        formData.append('file', blob, filePath);
+        formData.append('root', 'config');
+        return fetch(baseUrl + "/server/files/upload", { method: 'POST', body: formData })
+          .then(function() { return processNext(idx + 1); });
+      });
+  }
+  return processNext(0);
+}
+
+// --------------------------
 // Probe Discovery
 // --------------------------
 function fetchAvailableProbes() {
@@ -874,6 +921,7 @@ $(document).on("click", "#apply-xy-btn", function() {
   $btn.prop("disabled", true).text("Applying...");
   var master = getSelectedReferenceTool(0);
   var lines = [];
+  var toolOffsets = {};
   $('button.toolchange-btn').each(function(){
     var tool = $(this).data("tool");
     if (parseInt(tool, 10) === parseInt(master, 10)) return;
@@ -881,6 +929,7 @@ $(document).on("click", "#apply-xy-btn", function() {
     var rawY = $("#T" + tool + "-y-new").attr("data-raw");
     if (rawX && rawY) {
       lines.push("SET_TOOL_GCODE_OFFSET T=" + tool + " X=" + rawX + " Y=" + rawY);
+      toolOffsets[tool] = { x: rawX, y: rawY };
     }
   });
   if (!lines.length) {
@@ -888,17 +937,21 @@ $(document).on("click", "#apply-xy-btn", function() {
     $btn.prop("disabled", false).html('<i class="bi bi-check-circle"></i> APPLY XY OFFSETS TO KLIPPER');
     return;
   }
+  // Set runtime offsets immediately
   var script = lines.join('\n');
-  $.get(printerUrl(printerIp, "/printer/gcode/script?script=" + encodeURIComponent(script)))
-    .done(function() {
-      if (typeof showToast === 'function') showToast("XY offsets applied — SAVE_CONFIG to persist", "success");
+  var runtimeDone = $.get(printerUrl(printerIp, "/printer/gcode/script?script=" + encodeURIComponent(script)));
+  // Also persist to config files directly (avoids SAVE_CONFIG conflict with included files)
+  var configDone = updateToolConfigOffsets(toolOffsets);
+  Promise.all([runtimeDone, configDone])
+    .then(function() {
+      if (typeof showToast === 'function') showToast("XY offsets applied and saved to config", "success");
     })
-    .fail(function(err) {
+    .catch(function(err) {
       var msg = "Apply XY offsets failed";
-      try { msg += ": " + err.responseJSON.error.message; } catch(_){}
+      try { msg += ": " + (err.responseJSON || err).message; } catch(_){}
       if (typeof showToast === 'function') showToast(msg, "danger");
     })
-    .always(function() {
+    .finally(function() {
       $btn.prop("disabled", false).html('<i class="bi bi-check-circle"></i> APPLY XY OFFSETS TO KLIPPER');
     });
 });
@@ -908,10 +961,12 @@ $(document).on("click", "#apply-z-btn", function() {
   var $btn = $(this);
   $btn.prop("disabled", true).text("Applying...");
   var lines = [];
+  var toolOffsets = {};
   for (var k in _zSwitchResults) {
     var zOff = _zSwitchResults[k].z_offset;
     if (typeof zOff === 'number') {
       lines.push("SET_TOOL_GCODE_OFFSET T=" + k + " Z=" + zOff.toFixed(6));
+      toolOffsets[k] = { z: zOff.toFixed(6) };
     }
   }
   if (!lines.length) {
@@ -919,17 +974,21 @@ $(document).on("click", "#apply-z-btn", function() {
     $btn.prop("disabled", false).html('<i class="bi bi-check-circle"></i> APPLY Z OFFSETS TO KLIPPER');
     return;
   }
+  // Set runtime offsets immediately
   var script = lines.join('\n');
-  $.get(printerUrl(printerIp, "/printer/gcode/script?script=" + encodeURIComponent(script)))
-    .done(function() {
-      if (typeof showToast === 'function') showToast("Z offsets applied — SAVE_CONFIG to persist", "success");
+  var runtimeDone = $.get(printerUrl(printerIp, "/printer/gcode/script?script=" + encodeURIComponent(script)));
+  // Also persist to config files directly (avoids SAVE_CONFIG conflict with included files)
+  var configDone = updateToolConfigOffsets(toolOffsets);
+  Promise.all([runtimeDone, configDone])
+    .then(function() {
+      if (typeof showToast === 'function') showToast("Z offsets applied and saved to config", "success");
     })
-    .fail(function(err) {
+    .catch(function(err) {
       var msg = "Apply Z offsets failed";
-      try { msg += ": " + err.responseJSON.error.message; } catch(_){}
+      try { msg += ": " + (err.responseJSON || err).message; } catch(_){}
       if (typeof showToast === 'function') showToast(msg, "danger");
     })
-    .always(function() {
+    .finally(function() {
       $btn.prop("disabled", false).html('<i class="bi bi-check-circle"></i> APPLY Z OFFSETS TO KLIPPER');
     });
 });
