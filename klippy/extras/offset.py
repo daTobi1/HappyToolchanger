@@ -400,14 +400,37 @@ class Offset:
     # ─── Probe offset calibration helpers ───────────────────────────────
 
     def _do_tap_probe(self, probe_obj, samples):
-        """Run a single probe cycle via the standard probe interface."""
+        """Run a single probe cycle via the standard probe interface.
+        Includes recovery against 'Probe triggered prior to movement'."""
         from . import probe as probe_mod
+        toolhead = self.printer.lookup_object('toolhead')
         dummy_gcmd = self.gcode.create_gcode_command("", "", {
             "SAMPLES": str(samples),
             "SAMPLES_RESULT": "median",
         })
-        result = probe_mod.run_single_probe(probe_obj, dummy_gcmd)
-        return result.bed_z
+        last_err = None
+        for _ in range(self.recover_max_attempts):
+            try:
+                result = probe_mod.run_single_probe(probe_obj, dummy_gcmd)
+                return result.bed_z
+            except Exception as e:
+                last_err = e
+                if "triggered prior to movement" not in str(e).lower():
+                    raise
+                self.gcode.respond_info(
+                    "Probe triggered prior to movement — lifting and retrying")
+                toolhead.wait_moves()
+                cur = toolhead.get_position()
+                toolhead.manual_move(
+                    [None, None, cur[2] + self.recover_lift_mm],
+                    self.z_move_speed)
+                toolhead.wait_moves()
+                if self.recover_pause_ms:
+                    self.gcode.run_script_from_command(
+                        "G4 P%d" % self.recover_pause_ms)
+        raise self.gcode.error(
+            "Probe still triggered after %d recovery attempts: %s"
+            % (self.recover_max_attempts, last_err))
 
     def _is_eddy_probe(self, probe_name):
         """Check if a probe name refers to an Eddy-NG probe."""
