@@ -382,16 +382,26 @@ class EndstopRouter:
     def _get_effective_mcu(self):
         return self.z_mcu if self.z_mcu else self.active_mcu
 
+    def _noop(self, *args, **kwargs):
+        pass
+
     def _update_effective(self):
         effective = self._get_effective_mcu()
+        fallback = self.active_mcu
         if effective:
             self.get_mcu = effective.get_mcu
             self.home_start = effective.home_start
             self.home_wait = effective.home_wait
-            self.multi_probe_begin = effective.multi_probe_begin
-            self.multi_probe_end = effective.multi_probe_end
-            self.probe_prepare = effective.probe_prepare
-            self.probe_finish = effective.probe_finish
+            # Eddy-NG uses event handlers instead of these methods,
+            # so noop when not available on the effective MCU
+            self.multi_probe_begin = getattr(
+                effective, 'multi_probe_begin', self._noop)
+            self.multi_probe_end = getattr(
+                effective, 'multi_probe_end', self._noop)
+            self.probe_prepare = getattr(
+                effective, 'probe_prepare', self._noop)
+            self.probe_finish = getattr(
+                effective, 'probe_finish', self._noop)
         else:
             self.get_mcu = self.on_error
             self.home_start = self.on_error
