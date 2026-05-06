@@ -89,6 +89,16 @@ class ToolProbeEndstop:
 
     def _handle_connect(self):
         self.toolhead = self.printer.lookup_object('toolhead')
+        # Ensure Z steppers are registered with tool probes.
+        # When stepper_z uses a different endstop (e.g. Eddy via
+        # probe_eddy:z_virtual_endstop), the EndstopRouter doesn't
+        # receive steppers from config.  Add them here so that Tap
+        # probing (QGL coarse pass, etc.) still works.
+        kin = self.toolhead.get_kinematics()
+        for stepper in kin.get_steppers():
+            if stepper.is_active_axis('z'):
+                if stepper not in self.mcu_probe.get_steppers():
+                    self.mcu_probe.add_stepper(stepper)
         self._detect_active_tool()
 
     # --- Probe interface (used by BED_MESH, QGL, PROBE, etc.) ---
