@@ -181,8 +181,11 @@ class ToolProbeEndstop:
         """
         self.z_probe_obj = z_probe_obj
         z_mcu = None
-        if z_probe_obj and hasattr(z_probe_obj, 'mcu_probe'):
-            z_mcu = z_probe_obj.mcu_probe
+        if z_probe_obj:
+            # Support both standard probes (mcu_probe) and
+            # Eddy-NG (_endstop_wrapper)
+            z_mcu = getattr(z_probe_obj, 'mcu_probe',
+                     getattr(z_probe_obj, '_endstop_wrapper', None))
         self.mcu_probe.set_z_mcu(z_mcu)
         if z_probe_obj:
             name = getattr(z_probe_obj, 'name', str(z_probe_obj))
