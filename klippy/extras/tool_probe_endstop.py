@@ -180,13 +180,6 @@ class ToolProbeEndstop:
         Pass None to clear and fall back to tool_probe.
         """
         self.z_probe_obj = z_probe_obj
-        z_mcu = None
-        if z_probe_obj:
-            # Support both standard probes (mcu_probe) and
-            # Eddy-NG (_endstop_wrapper)
-            z_mcu = getattr(z_probe_obj, 'mcu_probe',
-                     getattr(z_probe_obj, '_endstop_wrapper', None))
-        self.mcu_probe.set_z_mcu(z_mcu)
         if z_probe_obj:
             name = getattr(z_probe_obj, 'name', str(z_probe_obj))
             logging.info("tool_probe_endstop: Z probe set to %s", name)
@@ -347,11 +340,11 @@ class ToolProbeEndstop:
 
 
 # Routes MCU endstop commands to the selected tool probe endstop.
-# Supports an optional z_mcu override for external Z probes (Eddy etc).
+# Always uses the active tool probe (Tap) for homing (G28 Z).
+# External Z probes (Eddy) are routed at the probe session level only.
 class EndstopRouter:
     def __init__(self, printer):
         self.active_mcu = None
-        self.z_mcu = None
         self._mcus = []
         self._steppers = []
         self.printer = printer
@@ -366,42 +359,16 @@ class EndstopRouter:
         self.active_mcu = mcu_probe
         self._update_effective()
 
-    def set_z_mcu(self, z_mcu):
-        """Set an external Z probe MCU that takes priority over the active
-        tool probe MCU for homing and probing operations."""
-        self.z_mcu = z_mcu
-        if z_mcu:
-            existing = set()
-            if hasattr(z_mcu, 'get_steppers'):
-                existing = set(z_mcu.get_steppers())
-            for s in self._steppers:
-                if s not in existing:
-                    z_mcu.add_stepper(s)
-        self._update_effective()
-
-    def _get_effective_mcu(self):
-        return self.z_mcu if self.z_mcu else self.active_mcu
-
-    def _noop(self, *args, **kwargs):
-        pass
-
     def _update_effective(self):
-        effective = self._get_effective_mcu()
-        fallback = self.active_mcu
+        effective = self.active_mcu
         if effective:
             self.get_mcu = effective.get_mcu
             self.home_start = effective.home_start
             self.home_wait = effective.home_wait
-            # Eddy-NG uses event handlers instead of these methods,
-            # so noop when not available on the effective MCU
-            self.multi_probe_begin = getattr(
-                effective, 'multi_probe_begin', self._noop)
-            self.multi_probe_end = getattr(
-                effective, 'multi_probe_end', self._noop)
-            self.probe_prepare = getattr(
-                effective, 'probe_prepare', self._noop)
-            self.probe_finish = getattr(
-                effective, 'probe_finish', self._noop)
+            self.multi_probe_begin = effective.multi_probe_begin
+            self.multi_probe_end = effective.multi_probe_end
+            self.probe_prepare = effective.probe_prepare
+            self.probe_finish = effective.probe_finish
         else:
             self.get_mcu = self.on_error
             self.home_start = self.on_error
@@ -415,12 +382,6 @@ class EndstopRouter:
         self._steppers.append(stepper)
         for m in self._mcus:
             m.add_stepper(stepper)
-        if self.z_mcu:
-            existing = set()
-            if hasattr(self.z_mcu, 'get_steppers'):
-                existing = set(self.z_mcu.get_steppers())
-            if stepper not in existing:
-                self.z_mcu.add_stepper(stepper)
 
     def get_steppers(self):
         return list(self._steppers)
@@ -430,17 +391,15 @@ class EndstopRouter:
             "Cannot interact with probe - no active tool probe.")
 
     def query_endstop(self, print_time):
-        effective = self._get_effective_mcu()
-        if not effective:
+        if not self.active_mcu:
             raise self.printer.command_error(
                 "Cannot query endstop - no active tool probe.")
-        return effective.query_endstop(print_time)
+        return self.active_mcu.query_endstop(print_time)
 
     def get_position_endstop(self):
-        effective = self._get_effective_mcu()
-        if not effective:
+        if not self.active_mcu:
             return 0.0
-        return effective.get_position_endstop()
+        return self.active_mcu.get_position_endstop()
 
 
 def load_config(config):
