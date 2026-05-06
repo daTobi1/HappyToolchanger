@@ -185,17 +185,24 @@ class ToolProbeEndstop:
 
     def set_active_z_probe(self, z_probe_obj):
         """Set an external Z probe that overrides the tool probe for probing
-        operations (PROBE, BED_MESH_CALIBRATE, QUAD_GANTRY_LEVEL, etc.).
+        operations (PROBE, BED_MESH_CALIBRATE, QUAD_GANTRY_LEVEL, etc.)
+        AND for Z homing (G28 Z) via the EndstopRouter's z_mcu.
         Tool detection and crash detection remain on the tool_probe (Tap).
         Pass None to clear and fall back to tool_probe.
         """
         self.z_probe_obj = z_probe_obj
+        # Also route the endstop for Z homing
+        z_endstop = None
         if z_probe_obj:
+            # Find the endstop wrapper on the Z probe object
+            z_endstop = getattr(z_probe_obj, '_endstop_wrapper',
+                        getattr(z_probe_obj, 'mcu_probe', None))
             name = getattr(z_probe_obj, 'name', str(z_probe_obj))
             logging.info("tool_probe_endstop: Z probe set to %s", name)
         else:
             logging.info(
                 "tool_probe_endstop: Z probe cleared, using tool probe")
+        self.mcu_probe.set_z_mcu(z_endstop)
 
     # --- Tool detection (always uses Tap, never z_probe) ---
 
@@ -350,11 +357,13 @@ class ToolProbeEndstop:
 
 
 # Routes MCU endstop commands to the selected tool probe endstop.
-# Always uses the active tool probe (Tap) for homing (G28 Z).
-# External Z probes (Eddy) are routed at the probe session level only.
+# Supports an optional z_mcu (e.g. Eddy) that takes priority over the
+# active_mcu (Tap) for homing.  Probes that lack multi_probe_begin etc.
+# get automatic no-op fallbacks so they work transparently.
 class EndstopRouter:
     def __init__(self, printer):
         self.active_mcu = None
+        self.z_mcu = None  # External Z probe endstop (Eddy)
         self._mcus = []
         self._steppers = []
         self.printer = printer
@@ -369,16 +378,36 @@ class EndstopRouter:
         self.active_mcu = mcu_probe
         self._update_effective()
 
+    def set_z_mcu(self, z_mcu):
+        """Set an external endstop (e.g. Eddy) for Z homing."""
+        self.z_mcu = z_mcu
+        if z_mcu:
+            # Ensure Z steppers are registered with the external endstop
+            for s in self._steppers:
+                if s not in z_mcu.get_steppers():
+                    z_mcu.add_stepper(s)
+        self._update_effective()
+
+    @staticmethod
+    def _noop(*args, **kwargs):
+        pass
+
     def _update_effective(self):
-        effective = self.active_mcu
+        # z_mcu (Eddy) takes priority for homing; fall back to active_mcu (Tap)
+        effective = self.z_mcu or self.active_mcu
         if effective:
             self.get_mcu = effective.get_mcu
             self.home_start = effective.home_start
             self.home_wait = effective.home_wait
-            self.multi_probe_begin = effective.multi_probe_begin
-            self.multi_probe_end = effective.multi_probe_end
-            self.probe_prepare = effective.probe_prepare
-            self.probe_finish = effective.probe_finish
+            # Probes like Eddy may lack these methods — use no-ops
+            self.multi_probe_begin = getattr(
+                effective, 'multi_probe_begin', self._noop)
+            self.multi_probe_end = getattr(
+                effective, 'multi_probe_end', self._noop)
+            self.probe_prepare = getattr(
+                effective, 'probe_prepare', self._noop)
+            self.probe_finish = getattr(
+                effective, 'probe_finish', self._noop)
         else:
             self.get_mcu = self.on_error
             self.home_start = self.on_error
@@ -407,9 +436,10 @@ class EndstopRouter:
         return self.active_mcu.query_endstop(print_time)
 
     def get_position_endstop(self):
-        if not self.active_mcu:
+        effective = self.z_mcu or self.active_mcu
+        if not effective:
             return 0.0
-        return self.active_mcu.get_position_endstop()
+        return effective.get_position_endstop()
 
 
 def load_config(config):

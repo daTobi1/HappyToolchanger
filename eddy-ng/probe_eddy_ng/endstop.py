@@ -68,15 +68,25 @@ class ProbeEddyEndstopWrapper:
             if stepper.is_active_axis("z"):
                 self.add_stepper(stepper)
 
+    def _is_in_endstops(self, endstops):
+        """Check if this endstop is active, either directly or via a router."""
+        if self in endstops:
+            return True
+        # Check if an EndstopRouter is delegating to us
+        for es in endstops:
+            if getattr(es, 'z_mcu', None) is self:
+                return True
+        return False
+
     def _handle_home_rails_begin(self, homing_state, rails):
         endstops = [es for rail in rails for es, name in rail.get_endstops()]
-        if self not in endstops:
+        if not self._is_in_endstops(endstops):
             return
         # Nothing to do
         pass
 
     def _handle_homing_move_begin(self, hmove):
-        if self not in hmove.get_mcu_endstops():
+        if not self._is_in_endstops(hmove.get_mcu_endstops()):
             return
         self._sampler = self.eddy.start_sampler()
         self._homing_in_progress = True
@@ -86,14 +96,14 @@ class ProbeEddyEndstopWrapper:
             self.eddy._probe_to_start_position_unhomed(move_home=True)
 
     def _handle_homing_move_end(self, hmove):
-        if self not in hmove.get_mcu_endstops():
+        if not self._is_in_endstops(hmove.get_mcu_endstops()):
             return
         self._sampler.finish()
         self._homing_in_progress = False
 
     def _handle_home_rails_end(self, homing_state, rails):
         endstops = [es for rail in rails for es, name in rail.get_endstops()]
-        if self not in endstops:
+        if not self._is_in_endstops(endstops):
             return
         # Nothing to do
         pass
