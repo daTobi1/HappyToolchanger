@@ -163,7 +163,8 @@ class ProbeSessionHelper:
                 reason += probe.HINT_TIMEOUT
             raise self.printer.command_error(reason)
         # Create ProbeResult, wrap in list for axis_twist_compensation
-        result = self.probe_offsets.create_probe_result(epos)
+        offsets = self.probe_offsets.get_offsets()
+        result = manual_probe.create_probe_result(epos, offsets)
         results = [result]
         self.printer.send_event("probe:update_results", results)
         result = results[0]
