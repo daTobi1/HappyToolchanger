@@ -8,6 +8,8 @@ import logging
 from . import probe
 from . import manual_probe
 
+_UNSET = object()
+
 class ToolProbe:
     def __init__(self, config):
         self.tool = config.getint('tool')
@@ -28,35 +30,66 @@ class ToolProbe:
         self.endstop = self.printer.load_object(config, "tool_probe_endstop")
         self.endstop.add_probe(config, self)
 
-        # Optional external Z probe (e.g. Eddy, Cartographer) that overrides
-        # this tool_probe for probing operations (BED_MESH, QGL, PROBE).
-        # This tool_probe (Tap) remains active for crash/tool detection.
+        # External Z probe (e.g. Eddy, Cartographer) that overrides this
+        # tool_probe for probing/homing.  Tap remains for crash/tool detection.
+        # z_probe: default for all operations
+        # z_probe_home/qgl/mesh: per-operation overrides (fall back to z_probe)
+        # Use "none" to explicitly disable for an operation.
         self.z_probe_name = config.get('z_probe', None)
-        self.z_probe = None  # Resolved at connect time
-        if self.z_probe_name:
+        self.z_probe = None
+        self._z_probe_home_name = config.get('z_probe_home', None)
+        self._z_probe_qgl_name = config.get('z_probe_qgl', None)
+        self._z_probe_mesh_name = config.get('z_probe_mesh', None)
+        self._z_probe_home = _UNSET
+        self._z_probe_qgl = _UNSET
+        self._z_probe_mesh = _UNSET
+        if any(n is not None for n in [
+                self.z_probe_name, self._z_probe_home_name,
+                self._z_probe_qgl_name, self._z_probe_mesh_name]):
             self.printer.register_event_handler(
-                "klippy:connect", self._resolve_z_probe)
+                "klippy:connect", self._resolve_z_probes)
 
-    def _resolve_z_probe(self):
-        if not self.z_probe_name:
-            return
-        self.z_probe = self.printer.lookup_object(
-            self.z_probe_name, None)
-        if self.z_probe is None:
+    def _resolve_z_probes(self):
+        self.z_probe = self._resolve_one('z_probe', self.z_probe_name)
+        if self._z_probe_home_name is not None:
+            self._z_probe_home = self._resolve_one(
+                'z_probe_home', self._z_probe_home_name)
+        if self._z_probe_qgl_name is not None:
+            self._z_probe_qgl = self._resolve_one(
+                'z_probe_qgl', self._z_probe_qgl_name)
+        if self._z_probe_mesh_name is not None:
+            self._z_probe_mesh = self._resolve_one(
+                'z_probe_mesh', self._z_probe_mesh_name)
+
+    def _resolve_one(self, label, name):
+        if not name or name.lower() == 'none':
+            return None
+        obj = self.printer.lookup_object(name, None)
+        if obj is None:
             logging.error(
-                "%s: z_probe '%s' not found", self.name, self.z_probe_name)
-            return
-        # Validate probe interface
+                "%s: %s '%s' not found", self.name, label, name)
+            return None
         for method in ('get_probe_params', 'get_offsets',
                        'start_probe_session'):
-            if not hasattr(self.z_probe, method):
+            if not hasattr(obj, method):
                 logging.error(
-                    "%s: z_probe '%s' missing method %s()",
-                    self.name, self.z_probe_name, method)
-                self.z_probe = None
-                return
-        logging.info("%s: z_probe set to '%s'",
-                     self.name, self.z_probe_name)
+                    "%s: %s '%s' missing method %s()",
+                    self.name, label, name, method)
+                return None
+        logging.info("%s: %s set to '%s'", self.name, label, name)
+        return obj
+
+    def get_z_probe_for(self, operation='default'):
+        """Get the z_probe for a specific operation.
+        Falls back to z_probe if no per-operation override is set.
+        Returns probe object or None (None = use tool probe/Tap)."""
+        if operation == 'home' and self._z_probe_home is not _UNSET:
+            return self._z_probe_home
+        if operation == 'qgl' and self._z_probe_qgl is not _UNSET:
+            return self._z_probe_qgl
+        if operation == 'mesh' and self._z_probe_mesh is not _UNSET:
+            return self._z_probe_mesh
+        return self.z_probe
 
     def _button_handler(self, eventtime, is_triggered):
         self.endstop.note_probe_triggered(self, eventtime, is_triggered)

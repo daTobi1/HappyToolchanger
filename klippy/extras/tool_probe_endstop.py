@@ -40,6 +40,7 @@ class ToolProbeEndstop:
         self.active_probe = None
         self.active_tool_number = -1
         self.z_probe_obj = None  # External Z probe (e.g. Eddy, Cartographer)
+        self._op_z_probes = {}  # Per-operation z_probe map
         self.gcode_macro = self.printer.load_object(config, 'gcode_macro')
         self.crash_detection_active = False
         self.crash_lasttime = 0.
@@ -86,6 +87,10 @@ class ToolProbeEndstop:
             'SET_ACTIVE_Z_PROBE',
             self.cmd_SET_ACTIVE_Z_PROBE,
             desc=self.cmd_SET_ACTIVE_Z_PROBE_help)
+        self.gcode.register_command(
+            'APPLY_TOOL_PROBE_FOR',
+            self.cmd_APPLY_TOOL_PROBE_FOR,
+            desc=self.cmd_APPLY_TOOL_PROBE_FOR_help)
 
     def _handle_connect(self):
         self.toolhead = self.printer.lookup_object('toolhead')
@@ -125,21 +130,26 @@ class ToolProbeEndstop:
             return self.active_probe.start_probe_session(gcmd)
         raise self.printer.command_error("No active tool probe")
 
+    @staticmethod
+    def _probe_name(obj):
+        if obj is None:
+            return None
+        return getattr(obj, 'name',
+               getattr(obj, '_name',
+               getattr(obj, '_full_name', str(obj))))
+
     def get_status(self, eventtime):
         status = self.cmd_helper.get_status(eventtime)
         status['last_tools_query'] = self.last_query
         status['active_tool_number'] = self.active_tool_number
-        z_name = None
-        if self.z_probe_obj:
-            z_name = getattr(self.z_probe_obj, 'name',
-                     getattr(self.z_probe_obj, '_name',
-                     getattr(self.z_probe_obj, '_full_name',
-                             str(self.z_probe_obj))))
-        status['active_z_probe'] = z_name
+        # Current z_probe for probe sessions
+        status['active_z_probe'] = self._probe_name(self.z_probe_obj)
+        # Per-operation z_probe names
+        for op in ('home', 'qgl', 'mesh'):
+            status['z_probe_%s' % op] = self._probe_name(
+                self._op_z_probes.get(op))
+        # Tool probe (Tap) info
         if self.active_probe:
-            # Always report the TOOL PROBE (Tap) offsets here – these are
-            # used by _ADJUST_Z_HOME_FOR_TOOL_OFFSET.  The z_probe (Eddy)
-            # offsets are only used internally for probe operations.
             tap_offsets = self.active_probe.get_offsets()
             status['active_tool_probe'] = self.active_probe.name
             status['active_tool_probe_x_offset'] = tap_offsets[0]
@@ -171,38 +181,65 @@ class ToolProbeEndstop:
         else:
             self.mcu_probe.set_active_mcu(None)
             self.active_tool_number = -1
-        # Auto-activate z_probe if configured on this tool_probe
-        z_probe = None
+        # Set per-operation z_probes from tool config
+        if tool_probe and hasattr(tool_probe, 'get_z_probe_for'):
+            # Lazy resolution if needed
+            if (tool_probe.z_probe is None
+                    and getattr(tool_probe, 'z_probe_name', None)):
+                tool_probe._resolve_z_probes()
+            z_home = tool_probe.get_z_probe_for('home')
+            z_default = tool_probe.get_z_probe_for('default')
+            z_qgl = tool_probe.get_z_probe_for('qgl')
+            z_mesh = tool_probe.get_z_probe_for('mesh')
+        else:
+            # Legacy fallback
+            z_probe = None
+            if tool_probe:
+                z_probe = getattr(tool_probe, 'z_probe', None)
+                if z_probe is None and getattr(
+                        tool_probe, 'z_probe_name', None):
+                    z_probe = self.printer.lookup_object(
+                        tool_probe.z_probe_name, None)
+                    if z_probe:
+                        tool_probe.z_probe = z_probe
+            z_home = z_default = z_qgl = z_mesh = z_probe
+        self._set_z_home_endstop(z_home)
+        self._set_z_probe_obj(z_default)
+        self._op_z_probes = {
+            'home': z_home, 'qgl': z_qgl,
+            'mesh': z_mesh, 'default': z_default,
+        }
         if tool_probe:
-            z_probe = getattr(tool_probe, 'z_probe', None)
-            # Lazy resolution: if z_probe_name is set but object not resolved
-            if z_probe is None and getattr(tool_probe, 'z_probe_name', None):
-                z_probe = self.printer.lookup_object(
-                    tool_probe.z_probe_name, None)
-                if z_probe:
-                    tool_probe.z_probe = z_probe
-        self.set_active_z_probe(z_probe)
+            names = {op: self._probe_name(p) or 'tap'
+                     for op, p in self._op_z_probes.items()}
+            logging.info("tool_probe_endstop: T%d z_probes: %s",
+                         tool_probe.tool, names)
 
-    def set_active_z_probe(self, z_probe_obj):
-        """Set an external Z probe that overrides the tool probe for probing
-        operations (PROBE, BED_MESH_CALIBRATE, QUAD_GANTRY_LEVEL, etc.)
-        AND for Z homing (G28 Z) via the EndstopRouter's z_mcu.
-        Tool detection and crash detection remain on the tool_probe (Tap).
-        Pass None to clear and fall back to tool_probe.
-        """
+    def _set_z_probe_obj(self, z_probe_obj):
+        """Set the external Z probe for probe sessions."""
         self.z_probe_obj = z_probe_obj
-        # Also route the endstop for Z homing
+
+    def _set_z_home_endstop(self, z_probe_obj):
+        """Set the Z homing endstop from a probe object."""
         z_endstop = None
         if z_probe_obj:
-            # Find the endstop wrapper on the Z probe object
             z_endstop = getattr(z_probe_obj, '_endstop_wrapper',
                         getattr(z_probe_obj, 'mcu_probe', None))
+        self.mcu_probe.set_z_mcu(z_endstop)
+
+    def set_active_z_probe(self, z_probe_obj):
+        """Set an external Z probe for probe sessions (QGL, MESH, PROBE).
+        Used by SET_ACTIVE_Z_PROBE gcode command.
+        Does NOT change the Z homing endstop (z_mcu).
+        Pass None to clear and fall back to tool_probe.
+        """
+        self._set_z_probe_obj(z_probe_obj)
+        if z_probe_obj:
             name = getattr(z_probe_obj, 'name', str(z_probe_obj))
             logging.info("tool_probe_endstop: Z probe set to %s", name)
         else:
             logging.info(
                 "tool_probe_endstop: Z probe cleared, using tool probe")
-        self.mcu_probe.set_z_mcu(z_endstop)
 
     # --- Tool detection (always uses Tap, never z_probe) ---
 
@@ -307,6 +344,25 @@ class ToolProbeEndstop:
                     % (probe_name, method))
         self.set_active_z_probe(z_probe)
         gcmd.respond_info("Z probe set to '%s'" % probe_name)
+
+    cmd_APPLY_TOOL_PROBE_FOR_help = (
+        "Apply the active tool's configured Z probe for a specific operation. "
+        "OP=home|qgl|mesh|default")
+    def cmd_APPLY_TOOL_PROBE_FOR(self, gcmd):
+        op = gcmd.get("OP", "default").lower()
+        if op not in ('home', 'qgl', 'mesh', 'default'):
+            raise gcmd.error(
+                "APPLY_TOOL_PROBE_FOR: OP must be home, qgl, mesh, or default")
+        if not self._op_z_probes:
+            raise gcmd.error(
+                "APPLY_TOOL_PROBE_FOR: no active tool probe")
+        z_probe = self._op_z_probes.get(op)
+        name = self._probe_name(z_probe) or 'tap'
+        if op == 'home':
+            self._set_z_home_endstop(z_probe)
+        else:
+            self._set_z_probe_obj(z_probe)
+        gcmd.respond_info("Z probe for %s: %s" % (op, name))
 
     # --- Crash detection (always uses tool_probe/Tap) ---
 
