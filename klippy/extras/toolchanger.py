@@ -457,6 +457,29 @@ class Toolchanger:
     def get_selected_tool(self):
         return self.active_tool
 
+    def _get_saved_active_tool(self):
+        """Get the last known active tool from save_variables (htc_active_tool)."""
+        save_vars = self.printer.lookup_object('save_variables', None)
+        if save_vars:
+            return save_vars.allVariables.get('htc_active_tool', -1)
+        return -1
+
+    def _resolve_ambiguous_probes(self, active_probes, respond_info):
+        """When multiple probes are open, use saved active tool as hint."""
+        saved_tool = self._get_saved_active_tool()
+        if saved_tool < 0:
+            return None
+        tpe = self._tpe_detection
+        for probe in active_probes:
+            if probe.tool == saved_tool and saved_tool in self.tools:
+                detected = self.tools[saved_tool]
+                tpe.set_active_probe(probe)
+                respond_info(
+                    "Multiple probes open (%s), using saved tool T%d"
+                    % ([p.tool for p in active_probes], saved_tool))
+                return detected
+        return None
+
     def note_detect_change(self, tool):
         detected = None
         detected_names = []
@@ -473,6 +496,11 @@ class Toolchanger:
                 tool_nr = probe.tool
                 if tool_nr in self.tools:
                     detected = self.tools[tool_nr]
+                    detected_names.append(detected.name)
+            elif len(active_probes) > 1:
+                detected = self._resolve_ambiguous_probes(
+                    active_probes, self.gcode.respond_info)
+                if detected:
                     detected_names.append(detected.name)
         if len(detected_names) > 1:
             self.gcode.respond_info("Multiple tools detected: %s" % (detected_names,))
@@ -499,6 +527,11 @@ class Toolchanger:
                     detected = self.tools[tool_nr]
                     detected_names.append(detected.name)
                     tpe.set_active_probe(probe)
+            elif len(active_probes) > 1:
+                detected = self._resolve_ambiguous_probes(
+                    active_probes, respond_info)
+                if detected:
+                    detected_names.append(detected.name)
         if len(detected_names) > 1:
             respond_info("Multiple tools detected: %s" % (detected_names,))
         if detected is None:

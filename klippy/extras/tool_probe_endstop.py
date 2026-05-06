@@ -226,6 +226,22 @@ class ToolProbeEndstop:
         active_tools = self._query_open_tools()
         if len(active_tools) == 1:
             self.set_active_probe(active_tools[0])
+        elif len(active_tools) > 1:
+            # Multiple probes open - try saved state as hint
+            save_vars = self.printer.lookup_object('save_variables', None)
+            if save_vars:
+                saved_tool = save_vars.allVariables.get(
+                    'htc_active_tool', -1)
+                if saved_tool >= 0:
+                    for tp in active_tools:
+                        if tp.tool == saved_tool:
+                            self.set_active_probe(tp)
+                            logging.info(
+                                "tool_probe_endstop: multiple probes"
+                                " open (%s), using saved T%d",
+                                [p.tool for p in active_tools],
+                                saved_tool)
+                            break
 
     # --- GCode commands ---
 
