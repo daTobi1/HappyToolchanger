@@ -35,16 +35,10 @@
                 :tool-name="entry.tool"
                 @change-spool="showChangeSpoolDialog = true" />
         </template>
-        <v-card-text v-else-if="active_spool !== null">
-            <spoolman-panel-active-spool @change-spool="showChangeSpoolDialog = true" />
-        </v-card-text>
         <v-card-text v-else>
             <v-row>
                 <v-col class="text-center">
                     <p class="text--disabled">{{ $t('Panels.SpoolmanPanel.NoActiveSpool') }}</p>
-                    <v-btn small color="primary" @click="showChangeSpoolDialog = true">
-                        {{ $t('Panels.SpoolmanPanel.SelectSpool') }}
-                    </v-btn>
                 </v-col>
             </v-row>
         </v-card-text>

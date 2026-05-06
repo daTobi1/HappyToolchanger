@@ -6,15 +6,8 @@
             </v-btn>
         </template>
         <v-list dense>
-            <v-list-item>
-                <v-btn small @click="showChangeSpoolDialog = true">
-                    <v-icon left>{{ mdiSwapVertical }}</v-icon>
-                    {{ $t('Panels.SpoolmanPanel.ActiveSpool') }}
-                </v-btn>
-            </v-list-item>
             <spoolman-tools-dropdown-item v-for="tool in tools" :key="tool" :object-name="tool" />
         </v-list>
-        <spoolman-change-spool-dialog v-model="showChangeSpoolDialog" />
     </v-menu>
 </template>
 
@@ -29,8 +22,6 @@ import SpoolmanToolsDropdownItem from '@/components/panels/Spoolman/SpoolmanTool
 })
 export default class SpoolmanToolsDropdown extends Mixins(BaseMixin) {
     mdiSwapVertical = mdiSwapVertical
-
-    showChangeSpoolDialog = false
 
     @Prop({ required: false, default: false }) readonly tools!: string[]
 }
