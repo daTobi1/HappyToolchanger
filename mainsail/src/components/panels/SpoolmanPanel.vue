@@ -27,7 +27,18 @@
                 </v-list>
             </v-menu>
         </template>
-        <v-card-text v-if="active_spool === null">
+        <template v-if="loadedToolSpools.length > 0">
+            <spoolman-panel-active-spool
+                v-for="entry in loadedToolSpools"
+                :key="entry.tool"
+                :spool="entry.spool"
+                :tool-name="entry.tool"
+                @change-spool="showChangeSpoolDialog = true" />
+        </template>
+        <v-card-text v-else-if="active_spool !== null">
+            <spoolman-panel-active-spool @change-spool="showChangeSpoolDialog = true" />
+        </v-card-text>
+        <v-card-text v-else>
             <v-row>
                 <v-col class="text-center">
                     <p class="text--disabled">{{ $t('Panels.SpoolmanPanel.NoActiveSpool') }}</p>
@@ -37,7 +48,6 @@
                 </v-col>
             </v-row>
         </v-card-text>
-        <spoolman-panel-active-spool v-else @change-spool="showChangeSpoolDialog = true" />
         <spoolman-change-spool-dialog v-model="showChangeSpoolDialog" />
         <confirmation-dialog
             v-model="showEjectSpoolDialog"
@@ -103,6 +113,25 @@ export default class SpoolmanPanel extends Mixins(BaseMixin) {
 
                 return Object.keys(object).some((key) => key.toLowerCase() === 'spool_id')
             })
+    }
+
+    get loadedToolSpools(): { tool: string; spool: ServerSpoolmanStateSpool }[] {
+        const spools: ServerSpoolmanStateSpool[] = this.$store.state.server.spoolman.spools ?? []
+        const result: { tool: string; spool: ServerSpoolmanStateSpool }[] = []
+
+        for (const macroName of this.toolsWithSpoolId) {
+            const obj = this.$store.state.printer[macroName] ?? {}
+            const spoolId = obj.spool_id ?? null
+            if (spoolId === null || spoolId === 0) continue
+
+            const spool = spools.find((s) => s.id === spoolId)
+            if (!spool) continue
+
+            const toolName = (macroName.split(' ')[1] ?? 'Unknown').toUpperCase()
+            result.push({ tool: toolName, spool })
+        }
+
+        return result.sort((a, b) => a.tool.localeCompare(b.tool))
     }
 
     openSpoolManager() {

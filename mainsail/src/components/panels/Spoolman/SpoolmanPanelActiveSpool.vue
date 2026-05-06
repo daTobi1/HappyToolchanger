@@ -1,7 +1,10 @@
 <template>
     <v-list-item three-line>
         <v-list-item-content :class="listItemContentClass">
-            <div :class="overlineClass">#{{ id }} | {{ vendor }}</div>
+            <div :class="overlineClass">
+                <span v-if="toolName" class="font-weight-bold">{{ toolName }} &mdash; </span>
+                #{{ id }} | {{ vendor }}
+            </div>
             <v-list-item-title :class="listItemTitleClass">
                 <span class="cursor-pointer" @click="clickSpool">{{ name }}</span>
             </v-list-item-title>
@@ -26,6 +29,8 @@ import { ServerSpoolmanStateSpool } from '@/store/server/spoolman/types'
 })
 export default class SpoolmanPanelActiveSpool extends Mixins(BaseMixin) {
     @Prop({ required: false, default: false }) readonly small!: boolean
+    @Prop({ required: false, default: null }) readonly spool!: ServerSpoolmanStateSpool | null
+    @Prop({ required: false, default: null }) readonly toolName!: string | null
 
     get listItemContentClass() {
         if (this.small) return 'my-0'
@@ -52,39 +57,40 @@ export default class SpoolmanPanelActiveSpool extends Mixins(BaseMixin) {
         return 80
     }
 
-    get active_spool(): ServerSpoolmanStateSpool | null {
+    get effectiveSpool(): ServerSpoolmanStateSpool | null {
+        if (this.spool !== null) return this.spool
         return this.$store.state.server.spoolman.active_spool ?? null
     }
 
     get color() {
-        const color = this.active_spool?.filament.color_hex ?? null
+        const color = this.effectiveSpool?.filament.color_hex ?? null
         if (color === null) return '#000'
 
         return `#${color}`
     }
 
     get id() {
-        return this.active_spool?.id ?? 'XX'
+        return this.effectiveSpool?.id ?? 'XX'
     }
 
     get vendor() {
-        return this.active_spool?.filament?.vendor?.name ?? 'Unknown'
+        return this.effectiveSpool?.filament?.vendor?.name ?? 'Unknown'
     }
 
     get name() {
-        return this.active_spool?.filament.name ?? 'Unknown'
+        return this.effectiveSpool?.filament.name ?? 'Unknown'
     }
 
     get materialOutput() {
-        const material = this.active_spool?.filament.material ?? null
+        const material = this.effectiveSpool?.filament.material ?? null
         if (material === null) return null
 
         return material
     }
 
     get weightOutput() {
-        let remaining = this.active_spool?.remaining_weight ?? null
-        const total = this.active_spool?.filament.weight ?? null
+        let remaining = this.effectiveSpool?.remaining_weight ?? null
+        const total = this.effectiveSpool?.filament.weight ?? null
 
         if (remaining === null || total === null) return null
         remaining = Math.round(remaining)
@@ -102,7 +108,7 @@ export default class SpoolmanPanelActiveSpool extends Mixins(BaseMixin) {
     }
 
     get lengthOutput() {
-        let remaining = this.active_spool?.remaining_length ?? null
+        let remaining = this.effectiveSpool?.remaining_length ?? null
 
         if (remaining === null) return null
         remaining = Math.round(remaining / 1000)
