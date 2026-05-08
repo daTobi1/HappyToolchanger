@@ -443,6 +443,28 @@ class EndstopRouter:
                 if s not in z_mcu.get_steppers():
                     z_mcu.add_stepper(s)
         self._update_effective()
+        self._update_rail_position_endstop()
+
+    def _update_rail_position_endstop(self):
+        """Update the Z rail's position_endstop to match the current z_mcu.
+        position_endstop is read once at config time, but z_mcu is set later
+        at runtime (when a tool is detected). Without this update, the rail
+        keeps position_endstop=0.0, causing Z=0 to be off by the probe's
+        home_trigger_height after G28 Z."""
+        pos_endstop = self.get_position_endstop()
+        try:
+            toolhead = self.printer.lookup_object('toolhead')
+            kin = toolhead.get_kinematics()
+            for rail in kin.rails:
+                for es, name in rail.get_endstops():
+                    if es is self:
+                        rail.position_endstop = pos_endstop
+                        logging.info(
+                            "tool_probe_endstop: updated Z rail "
+                            "position_endstop to %.3f", pos_endstop)
+                        return
+        except Exception:
+            pass  # Toolhead may not be ready yet during early init
 
     @staticmethod
     def _noop(*args, **kwargs):
