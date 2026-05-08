@@ -309,6 +309,18 @@ class ProbeEddyFrequencyMap:
         low_samples = heights <= ProbeEddyFrequencyMap.low_z_threshold
         high_samples = heights >= ProbeEddyFrequencyMap.low_z_threshold - 0.5
 
+        n_low = np.count_nonzero(low_samples)
+        if n_low < 10:
+            if report_errors:
+                self._eddy._log_error(
+                    f"Drive current {drive_current}: not enough low-Z samples ({n_low}) for polynomial fit"
+                )
+            else:
+                self._eddy._log_warning(
+                    f"Drive current {drive_current}: not enough low-Z samples ({n_low}), skipping"
+                )
+            return None, None
+
         ftoh_low_fn = npp.Polynomial.fit(1.0 / freqs[low_samples], heights[low_samples], deg=9)
         htof_low_fn = npp.Polynomial.fit(heights[low_samples], 1.0 / freqs[low_samples], deg=9)
 
