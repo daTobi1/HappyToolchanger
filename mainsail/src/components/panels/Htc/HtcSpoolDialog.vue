@@ -187,8 +187,9 @@ export default class HtcSpoolDialog extends Mixins(HtcMixin) {
     @Prop({ required: true }) readonly gateIndex!: number
 
     search = ''
-    spools: SpoolmanSpool[] = []
-    loading = false
+    get loading(): boolean {
+        return this.$store.state.socket?.loadings?.includes('refreshSpools') ?? false
+    }
     showCreate = false
     creating = false
     pendingSpools: PendingSpool[] = []
@@ -214,6 +215,10 @@ export default class HtcSpoolDialog extends Mixins(HtcMixin) {
     get createColorWithHash(): string {
         const hex = this.createForm.colorHex || '555555'
         return hex.startsWith('#') ? hex : `#${hex}`
+    }
+
+    get spools(): SpoolmanSpool[] {
+        return this.$store.state.server.spoolman.spools ?? []
     }
 
     get filteredSpools(): SpoolmanSpool[] {
@@ -264,17 +269,8 @@ export default class HtcSpoolDialog extends Mixins(HtcMixin) {
         return spool.filament?.material || ''
     }
 
-    async loadSpools() {
-        this.loading = true
-        try {
-            const res = await fetch('/server/spoolman/proxy/v1/spool')
-            if (!res.ok) throw new Error(`HTTP ${res.status}`)
-            const data = await res.json()
-            this.spools = Array.isArray(data) ? data : data.result || []
-        } catch {
-            this.spools = []
-        }
-        this.loading = false
+    loadSpools() {
+        this.$store.dispatch('server/spoolman/refreshSpools')
     }
 
     assignSpool(spool: SpoolmanSpool) {
@@ -333,34 +329,46 @@ export default class HtcSpoolDialog extends Mixins(HtcMixin) {
         const gate = this.gateIndex
 
         try {
-            // Try Spoolman: create filament, then spool
-            const filRes = await fetch('/server/spoolman/proxy/v1/filament', {
+            // Try Spoolman via Moonraker proxy: create filament, then spool
+            const filRes = await fetch('/server/spoolman/proxy', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    name,
-                    material,
-                    color_hex: colorHex || '808080',
-                    settings: { extruder_temp: temp },
+                    request_method: 'POST',
+                    path: '/v1/filament',
+                    body: {
+                        name,
+                        material,
+                        color_hex: colorHex || '808080',
+                        settings: { extruder_temp: temp },
+                    },
                 }),
             })
             if (!filRes.ok) throw new Error(`HTTP ${filRes.status}`)
-            const filament = await filRes.json()
+            const filData = await filRes.json()
+            const filament = filData.result ?? filData
 
-            await fetch('/server/spoolman/proxy/v1/spool', {
+            const spoolRes = await fetch('/server/spoolman/proxy', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    filament_id: filament.id,
-                    remaining_weight: weight,
-                    initial_weight: weight,
+                    request_method: 'POST',
+                    path: '/v1/spool',
+                    body: {
+                        filament_id: filament.id,
+                        remaining_weight: weight,
+                        initial_weight: weight,
+                    },
                 }),
             })
+            if (!spoolRes.ok) throw new Error(`HTTP ${spoolRes.status}`)
+            const spoolData = await spoolRes.json()
+            const spool = spoolData.result ?? spoolData
 
-            // Assign to gate
+            // Assign to gate with new spool ID
             const safeName = name.replace(/ /g, '_')
             this.doSend(
-                `HTC_SET_GATE GATE=${gate} COLOR=${colorHex} MATERIAL=${material} TEMP=${temp} NAME=${safeName} STATUS=1`,
+                `HTC_SET_GATE GATE=${gate} COLOR=${colorHex} MATERIAL=${material} TEMP=${temp} NAME=${safeName} SPOOL_ID=${spool.id} STATUS=1`,
                 'htc_create_spool'
             )
             this.showCreate = false
