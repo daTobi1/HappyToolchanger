@@ -217,7 +217,24 @@ export default class SpoolmanChangeSpoolDialog extends Mixins(BaseMixin) {
     }
 
     setMacroVariable(spool: ServerSpoolmanStateSpool) {
-        // Set spool_id for tool
+        // If HTC is active, route through HTC_SET_GATE to keep both systems in sync
+        const htc = this.$store.state.printer['happy_toolchanger'] ?? null
+        if (htc) {
+            const toolNum = parseInt(this.tool?.replace(/\D/g, '') ?? '-1')
+            if (toolNum >= 0 && toolNum < htc.num_tools) {
+                const gate = (htc.ttg_map ?? [])[toolNum] ?? toolNum
+                const color = (spool.filament?.color_hex || '').replace('#', '')
+                const material = spool.filament?.material || ''
+                const temp = spool.filament?.settings?.extruder_temp || 0
+                const name = (spool.filament?.name || '').replace(/ /g, '_')
+                this.sendGcode(
+                    `HTC_SET_GATE GATE=${gate} COLOR=${color} MATERIAL=${material} TEMP=${temp} NAME=${name} SPOOL_ID=${spool.id} STATUS=1`
+                )
+                return
+            }
+        }
+
+        // Fallback: standard macro variable assignment (non-HTC printers)
         this.sendGcode(`SET_GCODE_VARIABLE MACRO=${this.tool} VARIABLE=spool_id VALUE=${spool.id}`)
 
         // Close dialog if save_variables is not enabled
