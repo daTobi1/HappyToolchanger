@@ -1559,9 +1559,18 @@ class ProbeEddy:
         # This is where the probe thinks we are
         now_height = self._sampler.get_height_now()
 
-        # If we can't get a value at all for right now, for safety, just abort.
+        # If we can't get a value at all, the sensor is likely too far from the
+        # bed to produce valid readings (e.g. after power-on with gantry high).
+        # Give the homing move maximum travel by setting Z position near the
+        # top of the rail range so it can approach all the way to the bed.
         if now_height is None:
-            raise self._printer.command_error("Couldn't get any valid samples from sensor.")
+            th_pos[2] = rail_range[1] - 10.0
+            self._log_debug(
+                f"probe_to_start_position_unhomed: no valid samples, assuming sensor is far from bed"
+                f" — setting Z to {th_pos[2]:.3f} for maximum homing travel"
+            )
+            self._set_toolhead_position(th_pos, [2])
+            return
 
         self._log_debug(f"probe_to_start_position_unhomed: now: {now_height} (start {start_height})")
         if abs(now_height - start_height) <= start_height_ok_factor:
