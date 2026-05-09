@@ -321,8 +321,19 @@ class ProbeEddyFrequencyMap:
                 )
             return None, None
 
-        ftoh_low_fn = npp.Polynomial.fit(1.0 / freqs[low_samples], heights[low_samples], deg=9)
-        htof_low_fn = npp.Polynomial.fit(heights[low_samples], 1.0 / freqs[low_samples], deg=9)
+        try:
+            ftoh_low_fn = npp.Polynomial.fit(1.0 / freqs[low_samples], heights[low_samples], deg=9)
+            htof_low_fn = npp.Polynomial.fit(heights[low_samples], 1.0 / freqs[low_samples], deg=9)
+        except (ValueError, np.linalg.LinAlgError) as e:
+            if report_errors:
+                self._eddy._log_error(
+                    f"Drive current {drive_current}: polynomial fit failed: {e}"
+                )
+            else:
+                self._eddy._log_warning(
+                    f"Drive current {drive_current}: polynomial fit failed, skipping"
+                )
+            return None, None
 
         if np.count_nonzero(high_samples) > 50:
             ftoh_high_fn = npp.Polynomial.fit(1.0 / freqs[high_samples], heights[high_samples], deg=9)
