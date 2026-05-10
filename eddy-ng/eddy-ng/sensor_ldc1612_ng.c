@@ -693,10 +693,12 @@ check_error(struct ldc1612_ng* ld, uint32_t data, uint32_t time)
 
     uint8_t is_tap = lh->mode > 0;
 
-    // Ignore amplitude too high errors for homing,
-    // because this is generally the probe being very
-    // far from the build plate.
-    if (!is_tap && (ld->last_status & STATUS_ERR_AHE) != 0) {
+    // During non-tap homing, ignore all sensor errors.
+    // The sensor will produce various errors (amplitude high, under-range,
+    // etc.) when the probe is far from the bed at the start of a homing
+    // approach.  These are expected and will clear once the sensor gets
+    // close enough to the bed surface.
+    if (!is_tap) {
         lh->error_count = 0;
         return false;
     }
@@ -706,7 +708,8 @@ check_error(struct ldc1612_ng* ld, uint32_t data, uint32_t time)
     dprint("ZZZ err=%u t=%u s=%u cnt=%u", data, time, ld->last_status,
         lh->error_count);
 
-    if (lh->error_count <= lh->error_threshold)
+    // error_threshold == 0 means unlimited errors allowed
+    if (lh->error_threshold == 0 || lh->error_count <= lh->error_threshold)
         return false;
 
     lh->error = data;
