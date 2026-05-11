@@ -17,9 +17,11 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 FIRMWARE_DIR="$REPO_DIR/firmware"
 
 # ── BTT Eddy Duo default CAN GPIO pins ─────────────────────────────
+# Eddy Duo uses GPIO4 (RX) / GPIO5 (TX) per BTT documentation.
+# Standard (non-Duo) Eddy uses GPIO0 (RX) / GPIO1 (TX).
 # Override with environment variables if your hardware differs.
-CAN_TX_GPIO="${EDDY_CAN_TX_GPIO:-1}"
-CAN_RX_GPIO="${EDDY_CAN_RX_GPIO:-0}"
+CAN_TX_GPIO="${EDDY_CAN_TX_GPIO:-5}"
+CAN_RX_GPIO="${EDDY_CAN_RX_GPIO:-4}"
 
 # Colors
 RED='\033[0;31m'
@@ -50,8 +52,8 @@ while [[ $# -gt 0 ]]; do
             echo "  -h        Show this help"
             echo ""
             echo "Environment variables:"
-            echo "  EDDY_CAN_TX_GPIO   CAN TX GPIO pin (default: 1)"
-            echo "  EDDY_CAN_RX_GPIO   CAN RX GPIO pin (default: 0)"
+            echo "  EDDY_CAN_TX_GPIO   CAN TX GPIO pin (default: 5 for Duo)"
+            echo "  EDDY_CAN_RX_GPIO   CAN RX GPIO pin (default: 4 for Duo)"
             exit 0
             ;;
         -*) error "Unknown option: $1"; exit 1 ;;
@@ -228,13 +230,13 @@ EOF
                 echo ""
                 echo -e "${BOLD}CAN GPIO pins:${NC}"
                 echo ""
-                echo "  1) BTT Eddy Duo default (TX=GPIO1, RX=GPIO0)"
+                echo "  1) BTT Eddy Duo default (TX=GPIO5, RX=GPIO4)"
                 echo "  2) Custom"
                 echo ""
                 read -p "Choose [1-2]: " pin_choice
 
                 case "$pin_choice" in
-                    1) CAN_TX_GPIO=1; CAN_RX_GPIO=0 ;;
+                    1) CAN_TX_GPIO=5; CAN_RX_GPIO=4 ;;
                     2)
                         read -p "CAN TX GPIO pin: " CAN_TX_GPIO
                         read -p "CAN RX GPIO pin: " CAN_RX_GPIO
@@ -424,13 +426,13 @@ select_prebuilt() {
         echo ""
         echo -e "${BOLD}CAN GPIO pins:${NC}"
         echo ""
-        echo "  1) BTT Eddy Duo default (TX=GPIO1, RX=GPIO0)"
+        echo "  1) BTT Eddy Duo default (TX=GPIO5, RX=GPIO4)"
         echo "  2) Custom"
         echo ""
         read -p "Choose [1-2]: " pin_choice
 
         case "$pin_choice" in
-            1) CAN_TX_GPIO=1; CAN_RX_GPIO=0 ;;
+            1) CAN_TX_GPIO=5; CAN_RX_GPIO=4 ;;
             2)
                 read -p "CAN TX GPIO pin: " CAN_TX_GPIO
                 read -p "CAN RX GPIO pin: " CAN_RX_GPIO

@@ -9,10 +9,10 @@ module, so **no Klipper source patching is required**.
 | File | Connection | Bootloader | CAN Pins |
 |------|-----------|------------|----------|
 | `eddy-duo-usb.uf2` | USB | none | -- |
-| `eddy-duo-canbus-500k.uf2` | CAN bus 500k | none | TX=GPIO1, RX=GPIO0 |
-| `eddy-duo-canbus-1m.uf2` | CAN bus 1M | none | TX=GPIO1, RX=GPIO0 |
-| `eddy-duo-katapult-canbus-500k.bin` | CAN bus 500k | Katapult | TX=GPIO1, RX=GPIO0 |
-| `eddy-duo-katapult-canbus-1m.bin` | CAN bus 1M | Katapult | TX=GPIO1, RX=GPIO0 |
+| `eddy-duo-canbus-500k.uf2` | CAN bus 500k | none | TX=GPIO5, RX=GPIO4 |
+| `eddy-duo-canbus-1m.uf2` | CAN bus 1M | none | TX=GPIO5, RX=GPIO4 |
+| `eddy-duo-katapult-canbus-500k.bin` | CAN bus 500k | Katapult | TX=GPIO5, RX=GPIO4 |
+| `eddy-duo-katapult-canbus-1m.bin` | CAN bus 1M | Katapult | TX=GPIO5, RX=GPIO4 |
 
 ### Flash address offsets
 
@@ -25,8 +25,10 @@ module, so **no Klipper source patching is required**.
 
 The pre-built CAN firmware uses the **BTT Eddy Duo default** CAN pin assignment:
 
-- **CAN TX:** GPIO1
-- **CAN RX:** GPIO0
+- **CAN TX:** GPIO5
+- **CAN RX:** GPIO4
+
+> **Note:** The standard (non-Duo) Eddy uses different pins: TX=GPIO1, RX=GPIO0.
 
 If your hardware uses different CAN pins, build from source instead:
 
@@ -37,7 +39,7 @@ If your hardware uses different CAN pins, build from source instead:
 Or override via environment variables:
 
 ```bash
-EDDY_CAN_TX_GPIO=5 EDDY_CAN_RX_GPIO=4 ./scripts/flash-duo.sh --build
+EDDY_CAN_TX_GPIO=1 EDDY_CAN_RX_GPIO=0 ./scripts/flash-duo.sh --build  # for standard (non-Duo) Eddy
 ```
 
 ## How to Flash
@@ -111,7 +113,7 @@ want to match your exact Klipper version:
 
 The script will:
 1. Ask for your connection type (USB / CAN 500k / CAN 1M)
-2. Ask for CAN TX/RX GPIO pins (if CAN selected, defaults to GPIO1/GPIO0)
+2. Ask for CAN TX/RX GPIO pins (if CAN selected, defaults to GPIO5/GPIO4 for Duo)
 3. Ask for bootloader flash offset (with common values listed)
 4. Build the firmware
 5. For CAN: scan for CAN UUID

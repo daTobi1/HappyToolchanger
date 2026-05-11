@@ -197,12 +197,12 @@ Pre-built firmware variants are available:
 | File | Connection | Bootloader | CAN Pins |
 |---|---|---|---|
 | `eddy-duo-usb.uf2` | USB | none | -- |
-| `eddy-duo-canbus-500k.uf2` | CAN 500k | none | TX=GPIO1, RX=GPIO0 |
-| `eddy-duo-canbus-1m.uf2` | CAN 1M | none | TX=GPIO1, RX=GPIO0 |
-| `eddy-duo-katapult-canbus-500k.bin` | CAN 500k | Katapult | TX=GPIO1, RX=GPIO0 |
-| `eddy-duo-katapult-canbus-1m.bin` | CAN 1M | Katapult | TX=GPIO1, RX=GPIO0 |
+| `eddy-duo-canbus-500k.uf2` | CAN 500k | none | TX=GPIO5, RX=GPIO4 |
+| `eddy-duo-canbus-1m.uf2` | CAN 1M | none | TX=GPIO5, RX=GPIO4 |
+| `eddy-duo-katapult-canbus-500k.bin` | CAN 500k | Katapult | TX=GPIO5, RX=GPIO4 |
+| `eddy-duo-katapult-canbus-1m.bin` | CAN 1M | Katapult | TX=GPIO5, RX=GPIO4 |
 
-> **CAN GPIO pins:** Pre-built CAN firmware uses the BTT Eddy Duo defaults (TX=GPIO1, RX=GPIO0). If your board has different CAN pins, use `./scripts/flash-duo.sh --build` to configure them manually.
+> **CAN GPIO pins:** Pre-built CAN firmware uses the BTT Eddy Duo defaults (TX=GPIO5, RX=GPIO4). The standard (non-Duo) Eddy uses TX=GPIO1, RX=GPIO0. If your board has different CAN pins, use `./scripts/flash-duo.sh --build` to configure them manually.
 
 > **Katapult bootloader:** Variants with "katapult" in the name use flash offset `0x10004000` (16KB reserved for the Katapult bootloader). The Katapult bootloader must be flashed on the RP2040 **before** using these images.
 
