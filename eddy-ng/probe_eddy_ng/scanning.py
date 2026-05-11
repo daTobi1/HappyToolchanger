@@ -54,6 +54,15 @@ class ProbeEddyScanningProbe:
         self.eddy.probe_to_start_position()
         self._sampler = self.eddy.start_sampler()
 
+        # Wait for the first sample to arrive from the MCU before returning.
+        # Without this, QGL may call run_probe() immediately and record a
+        # print_time for which no sensor data exists yet, causing
+        # "No samples received" errors.
+        th = self._printer.lookup_object("toolhead")
+        th.dwell(0.100)
+        self._sampler.wait_for_sample_at_time(
+            th.get_last_move_time(), max_wait_time=2.0)
+
     def end_probe_session(self):
         self._sampler.finish()
         self._sampler = None
