@@ -535,9 +535,18 @@ gcode:
 
 # -- Homing Routine --
 [gcode_macro HOMING_ROUTINE]
-description: Vollstaendiges Homing: XY -> QGL -> Z Tap -> Mesh
+description: Vollstaendiges Homing: XY -> QGL -> Clean -> Z Tap -> Mesh
 gcode:
+  INITIALIZE_TOOLCHANGER
   ENSURE_TOOL_MOUNTED
+
+  {{% if printer.toolchanger.tool_number|int != 0 %}}
+    M118 WARNUNG: T0 nicht geladen - leite um auf EMERGENCY_HOME
+    EMERGENCY_HOME
+  {{% else %}}
+
+  {{% set clean = params.CLEAN|default(0)|int %}}
+  {{% set clean_temp = params.CLEAN_TEMP|default(260)|float %}}
 
   {{% set cfg = printer.configfile.settings %}}
   {{% if 'probe_eddy_ng my_eddy' in cfg %}}
@@ -564,23 +573,31 @@ gcode:
   SET_GCODE_OFFSET Z=0
   G28
   G90
+  # Activate tool probe for QGL/probing
+  DETECT_ACTIVE_TOOL_PROBE
 
   # 2) QGL (2-stufig)
   QUAD_GANTRY_LEVEL
 
-  # 3) Z fein via Tap an Bettmitte
-  CLEAN_NOZZLE
+  # 3) Nozzle reinigen vor Tap (sauber + 150C vom Cooldown-Wipe)
+  {{% if clean != 0 %}}
+    CLEAN_NOZZLE TEMP={{clean_temp}}
+  {{% endif %}}
+
+  # 4) Z fein via Tap an Bettmitte — sofort nach Clean, kein Ooze
   G1 Z10 F5000
   G1 X{{ '%.3f' % cx }} Y{{ '%.3f' % cy }} F5000
   PROBE_EDDY_NG_TAP
   G0 Z3 F5000
 
-  # 4) Bed Mesh
+  # 5) Bed Mesh (rapid scan)
   BED_MESH_CLEAR
-  BED_MESH_CALIBRATE
+  BED_MESH_CALIBRATE METHOD=rapid_scan
 
-  # 5) Zurueck zur Mitte
+  # 6) Zurueck zur Mitte
   G1 X{{ '%.3f' % cx }} Y{{ '%.3f' % cy }} F2000
+
+  {{% endif %}}
 
 # -- Utility --
 [gcode_macro ENSURE_TOOL_MOUNTED]
