@@ -51,17 +51,41 @@ class ProbeEddyScanningProbe:
         if not self.eddy._z_homed():
             raise self._printer.command_error("Z axis must be homed before probing")
 
+        th = self._printer.lookup_object("toolhead")
+        th_pos = th.get_position()
+        logging.info(
+            f"ProbeEddyScanningProbe: _start_session at Z={th_pos[2]:.3f}, "
+            f"scan_z={self._scan_z:.3f}, is_rapid={self._is_rapid}"
+        )
+
         self.eddy.probe_to_start_position()
+
+        th_pos_after = th.get_position()
+        logging.info(
+            f"ProbeEddyScanningProbe: after probe_to_start_position Z={th_pos_after[2]:.3f}"
+        )
+
         self._sampler = self.eddy.start_sampler()
 
         # Wait for the first sample to arrive from the MCU before returning.
         # Without this, QGL may call run_probe() immediately and record a
         # print_time for which no sensor data exists yet, causing
         # "No samples received" errors.
-        th = self._printer.lookup_object("toolhead")
         th.dwell(0.100)
-        self._sampler.wait_for_sample_at_time(
-            th.get_last_move_time(), max_wait_time=2.0)
+        target_time = th.get_last_move_time()
+        now_time = self.eddy._print_time_now()
+        logging.info(
+            f"ProbeEddyScanningProbe: waiting for first sample, "
+            f"target_time={target_time:.3f}, now={now_time:.3f}, "
+            f"sampler.raw_count={self._sampler.raw_count}"
+        )
+        self._sampler.wait_for_sample_at_time(target_time, max_wait_time=2.0)
+        logging.info(
+            f"ProbeEddyScanningProbe: _start_session OK, "
+            f"sampler.raw_count={self._sampler.raw_count}, "
+            f"sampler.error_count={self._sampler.error_count}, "
+            f"time_range=[{self._sampler.times[0]:.3f}, {self._sampler.times[-1]:.3f}]"
+        )
 
     def end_probe_session(self):
         self._sampler.finish()
@@ -79,6 +103,12 @@ class ProbeEddyScanningProbe:
         th = self._toolhead
         th_pos = th.get_position()
 
+        logging.info(
+            f"ProbeEddyScanningProbe: run_probe #{len(self._notes)} at "
+            f"Z={th_pos[2]:.3f}, sampler.raw_count={self._sampler.raw_count}, "
+            f"errors={self._sampler.error_count}"
+        )
+
         if self._is_rapid:
             # this callback is attached to the last move in the queue, so that
             # we can grab the toolhead position when the toolhead actually hits it
@@ -95,6 +125,19 @@ class ProbeEddyScanningProbe:
         if self._is_rapid:
             # Flush lookahead (so all lookahead callbacks are invoked)
             self._toolhead.get_last_move_time()
+
+        now_time = self.eddy._print_time_now()
+        target_time = self._notes[-1][0] + self._sample_time
+        time_range_str = "EMPTY"
+        if self._sampler.times:
+            time_range_str = f"[{self._sampler.times[0]:.3f}, {self._sampler.times[-1]:.3f}]"
+        logging.info(
+            f"ProbeEddyScanningProbe: pull_probed_results, "
+            f"{len(self._notes)} notes, target_time={target_time:.3f}, "
+            f"now={now_time:.3f}, sampler.raw_count={self._sampler.raw_count}, "
+            f"errors={self._sampler.error_count}, "
+            f"times={time_range_str}"
+        )
 
         # make sure we get the sample for the final move
         self._sampler.wait_for_sample_at_time(self._notes[-1][0] + self._sample_time)
