@@ -3,7 +3,11 @@ set -euo pipefail
 
 # =============================
 # HappyToolchanger Installer
-# Klipper extras, Eddy-NG, Mainsail, Offset webapp
+# Klipper extras, Eddy-NG, Mainsail, configs, CAN bus, systemd, webapp
+#
+# Usage: ./install.sh [--printer 250|350]
+#   Without --printer: installs klipper extras, eddy-ng, mainsail, webapp
+#   With --printer:    additionally deploys all printer configs, CAN bus, systemd
 # =============================
 
 APP_NAME="HappyToolchanger"
@@ -12,7 +16,8 @@ VENV_DIR="${HOME}/happytoolchanger-env"
 KLIPPER_EXTRAS="${HOME}/klipper/klippy/extras"
 MAINSAIL_DIR="${HOME}/mainsail"
 ASVC_FILE="${HOME}/printer_data/moonraker.asvc"
-MOONRAKER_CONF="${HOME}/printer_data/config/moonraker.conf"
+CONFIG_DST="${HOME}/printer_data/config"
+MOONRAKER_CONF="${CONFIG_DST}/moonraker.conf"
 PRINTER=""
 
 # Parse args
@@ -30,6 +35,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Validate --printer value
+if [ -n "$PRINTER" ] && [ "$PRINTER" != "250" ] && [ "$PRINTER" != "350" ]; then
+  echo "ERROR: --printer must be 250 or 350"
+  exit 1
+fi
+
 # Refuse root
 if [ "${EUID}" -eq 0 ]; then
   echo "Please do not run as root/sudo."
@@ -38,10 +49,11 @@ fi
 
 echo "=== Installing ${APP_NAME} ==="
 echo "Install dir: ${INSTALL_DIR}"
+[ -n "$PRINTER" ] && echo "Printer:     ${PRINTER}"
 echo
 
 # --- 1. Klipper extras symlinks ---
-echo "--- Linking Klipper extras ---"
+echo "--- 1. Linking Klipper extras ---"
 for py_file in "${INSTALL_DIR}/klippy/extras/"*.py; do
   fname="$(basename "$py_file")"
   target="${KLIPPER_EXTRAS}/${fname}"
@@ -64,7 +76,7 @@ if [ -d "$HTC_PKG" ]; then
 fi
 
 # --- 2. Eddy-NG ---
-echo "--- Installing Eddy-NG ---"
+echo "--- 2. Installing Eddy-NG ---"
 EDDY_DIR="${INSTALL_DIR}/eddy-ng"
 
 # Loader files for probe_eddy_ng and ldc1612_ng
@@ -90,9 +102,6 @@ from ldc1612_ng import *  # noqa: F401,F403
 PYEOF
 echo "  Created loader: ldc1612_ng.py"
 
-# Note: No package symlink needed. The loader files above handle
-# sys.path insertion so Python finds probe_eddy_ng/ inside eddy-ng/.
-
 # Apply klipper patch if needed
 if [ -f "${EDDY_DIR}/klipper.patch" ]; then
   echo "  Checking klipper.patch..."
@@ -107,7 +116,7 @@ if [ -f "${EDDY_DIR}/klipper.patch" ]; then
 fi
 
 # --- 3. Mainsail ---
-echo "--- Deploying Mainsail ---"
+echo "--- 3. Deploying Mainsail ---"
 if [ -d "${INSTALL_DIR}/mainsail/dist" ]; then
   if [ -d "${MAINSAIL_DIR}" ] && [ ! -f "${MAINSAIL_DIR}/.happytoolchanger" ]; then
     echo "  Backing up existing mainsail to ${MAINSAIL_DIR}.bak"
@@ -122,33 +131,134 @@ else
   echo "  WARNING: mainsail/dist/ not found, skipping"
 fi
 
-# --- 4. Printer configs (optional) ---
+# --- 4. Printer configs ---
 if [ -n "$PRINTER" ]; then
-  echo "--- Deploying configs for printer ${PRINTER} ---"
+  echo "--- 4. Deploying configs for printer ${PRINTER} ---"
   CONFIG_SRC="${INSTALL_DIR}/configs/${PRINTER}"
   if [ -d "$CONFIG_SRC" ]; then
-    CONFIG_DST="${HOME}/printer_data/config"
+    mkdir -p "${CONFIG_DST}"
 
-    # Toolchanger configs
+    # 4a. Toolchanger configs (tools, readonly-configs, probe)
     if [ -d "${CONFIG_SRC}/toolchanger" ]; then
       mkdir -p "${CONFIG_DST}/toolchanger"
       cp -r "${CONFIG_SRC}/toolchanger/"* "${CONFIG_DST}/toolchanger/"
       echo "  Copied toolchanger configs"
     fi
 
-    # Macros
+    # 4b. Macros
     if [ -d "${CONFIG_SRC}/macros" ]; then
       mkdir -p "${CONFIG_DST}/macros"
       cp -r "${CONFIG_SRC}/macros/"* "${CONFIG_DST}/macros/"
       echo "  Copied macros"
     fi
+
+    # 4c. Main config files (printer.cfg, HEXA.cfg, happy_toolchanger.cfg)
+    for cfg_file in printer.cfg HEXA.cfg happy_toolchanger.cfg; do
+      if [ -f "${CONFIG_SRC}/${cfg_file}" ]; then
+        cp "${CONFIG_SRC}/${cfg_file}" "${CONFIG_DST}/${cfg_file}"
+        echo "  Copied ${cfg_file}"
+      fi
+    done
+
+    # 4d. Eddy probe config → deploy as eddy-ng.cfg
+    EDDY_PROBE="${CONFIG_SRC}/toolchanger/probe/eddy_probe.cfg"
+    if [ -f "$EDDY_PROBE" ]; then
+      cp "$EDDY_PROBE" "${CONFIG_DST}/eddy-ng.cfg"
+      echo "  Deployed eddy_probe.cfg as eddy-ng.cfg"
+    fi
+
+    # 4e. Symlink calibrate_macros.cfg from eddy-ng
+    CALIB_MACROS="${INSTALL_DIR}/eddy-ng/calibrate_macros.cfg"
+    CALIB_TARGET="${CONFIG_DST}/calibrate_macros.cfg"
+    if [ -f "$CALIB_MACROS" ]; then
+      ln -sf "$CALIB_MACROS" "$CALIB_TARGET"
+      echo "  Linked calibrate_macros.cfg"
+    fi
+
+    # 4f. Crowsnest config
+    if [ -f "${CONFIG_SRC}/crowsnest.conf" ]; then
+      cp "${CONFIG_SRC}/crowsnest.conf" "${CONFIG_DST}/crowsnest.conf"
+      echo "  Copied crowsnest.conf"
+    fi
+
+    # 4g. Moonraker config (base config, update_manager added in section 7)
+    if [ -f "${CONFIG_SRC}/moonraker.conf" ]; then
+      cp "${CONFIG_SRC}/moonraker.conf" "${MOONRAKER_CONF}"
+      echo "  Deployed moonraker.conf"
+    fi
   else
     echo "  WARNING: configs/${PRINTER}/ not found"
   fi
+else
+  echo "--- 4. Skipping printer configs (no --printer specified) ---"
 fi
 
-# --- 5. Offset webapp ---
-echo "--- Installing Offset webapp ---"
+# --- 5. CAN bus setup ---
+if [ -n "$PRINTER" ]; then
+  echo "--- 5. Configuring CAN bus ---"
+
+  # Determine txqueuelen per printer
+  case "$PRINTER" in
+    250) TXQUEUELEN=1024 ;;
+    350) TXQUEUELEN=128 ;;
+  esac
+
+  # Write /etc/network/interfaces.d/can0
+  CAN_CONF="/etc/network/interfaces.d/can0"
+  sudo tee "$CAN_CONF" > /dev/null <<CANEOF
+allow-hotplug can0
+iface can0 can static
+    bitrate 1000000
+    up ip link set \$IFACE txqueuelen ${TXQUEUELEN}
+CANEOF
+
+  # 250er supports restart-ms for auto-recovery from bus-off
+  if [ "$PRINTER" = "250" ]; then
+    sudo sed -i '/^iface can0/a\    pre-up ip link set $IFACE type can restart-ms 100' "$CAN_CONF"
+    echo "  Configured can0 with txqueuelen=${TXQUEUELEN}, restart-ms=100"
+  else
+    echo "  Configured can0 with txqueuelen=${TXQUEUELEN}"
+  fi
+else
+  echo "--- 5. Skipping CAN bus setup (no --printer specified) ---"
+fi
+
+# --- 6. Systemd klipper CAN restart override ---
+if [ -n "$PRINTER" ]; then
+  echo "--- 6. Setting up klipper CAN restart service ---"
+
+  # Create restart helper script
+  sudo tee /usr/local/bin/restart-can0.sh > /dev/null <<'CANSCRIPT'
+#!/bin/bash
+# Restart can0 interface after Klipper restart
+sleep 2
+if ip link show can0 &>/dev/null; then
+    ip link set can0 down
+    sleep 0.5
+    ip link set can0 up
+    logger "restart-can0: can0 interface recycled"
+else
+    logger "restart-can0: can0 not found, skipping"
+fi
+CANSCRIPT
+  sudo chmod +x /usr/local/bin/restart-can0.sh
+
+  # Create systemd drop-in override
+  sudo mkdir -p /etc/systemd/system/klipper.service.d
+  sudo tee /etc/systemd/system/klipper.service.d/restart-can.conf > /dev/null <<'SVCEOF'
+[Service]
+ExecStartPre=+/usr/local/bin/restart-can0.sh
+ExecStopPost=+/usr/local/bin/restart-can0.sh
+SVCEOF
+
+  sudo systemctl daemon-reload
+  echo "  Installed restart-can0.sh and klipper service override"
+else
+  echo "--- 6. Skipping systemd override (no --printer specified) ---"
+fi
+
+# --- 7. Offset webapp ---
+echo "--- 7. Installing Offset webapp ---"
 
 # Check for python3-venv
 if ! dpkg -l | grep -q python3-venv 2>/dev/null; then
@@ -194,8 +304,8 @@ sudo systemctl enable happytoolchanger-webapp.service
 sudo systemctl restart happytoolchanger-webapp.service
 echo "  Webapp service started on port 3000"
 
-# --- 6. Moonraker integration ---
-echo "--- Configuring Moonraker ---"
+# --- 8. Moonraker integration ---
+echo "--- 8. Configuring Moonraker ---"
 
 # Add to moonraker.asvc
 mkdir -p "$(dirname "${ASVC_FILE}")"
@@ -225,13 +335,22 @@ EOL
   fi
 fi
 
-# --- 7. Restart services ---
-echo "--- Restarting services ---"
+# --- 9. Restart services ---
+echo "--- 9. Restarting services ---"
 sudo systemctl restart klipper
 sudo systemctl restart moonraker
+if systemctl is-active --quiet crowsnest 2>/dev/null; then
+  sudo systemctl restart crowsnest
+  echo "  Restarted crowsnest"
+fi
 
 echo
 echo "=== ${APP_NAME} installation complete! ==="
 PRINTER_IP=$(hostname -I | awk '{print $1}')
 echo "Offset Webapp: http://${PRINTER_IP}:3000"
 echo "Mainsail:      http://${PRINTER_IP}/"
+if [ -n "$PRINTER" ]; then
+  echo
+  echo "NOTE: Printer ${PRINTER} configs deployed. Eddy probe calibration"
+  echo "      (EDDY_CAL_STEP1-4) must be run manually after first boot."
+fi
