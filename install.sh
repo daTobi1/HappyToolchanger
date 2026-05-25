@@ -152,20 +152,13 @@ if [ -n "$PRINTER" ]; then
       echo "  Copied macros"
     fi
 
-    # 4c. Main config files (printer.cfg, HEXA.cfg, happy_toolchanger.cfg)
-    for cfg_file in printer.cfg HEXA.cfg happy_toolchanger.cfg; do
+    # 4c. Main config files (printer.cfg, HEXA.cfg, happy_toolchanger.cfg, eddy-ng.cfg)
+    for cfg_file in printer.cfg HEXA.cfg happy_toolchanger.cfg eddy-ng.cfg; do
       if [ -f "${CONFIG_SRC}/${cfg_file}" ]; then
         cp "${CONFIG_SRC}/${cfg_file}" "${CONFIG_DST}/${cfg_file}"
         echo "  Copied ${cfg_file}"
       fi
     done
-
-    # 4d. Eddy probe config → deploy as eddy-ng.cfg
-    EDDY_PROBE="${CONFIG_SRC}/toolchanger/probe/eddy_probe.cfg"
-    if [ -f "$EDDY_PROBE" ]; then
-      cp "$EDDY_PROBE" "${CONFIG_DST}/eddy-ng.cfg"
-      echo "  Deployed eddy_probe.cfg as eddy-ng.cfg"
-    fi
 
     # 4e. Symlink calibrate_macros.cfg from eddy-ng
     CALIB_MACROS="${INSTALL_DIR}/eddy-ng/calibrate_macros.cfg"
