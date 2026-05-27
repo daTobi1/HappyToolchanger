@@ -25,3 +25,14 @@ Thumbs.db
 *~
 .idea/
 .vscode/
+
+# Claude Code
+.claude/
+
+# Playwright MCP
+.playwright-mcp/
+
+# Large binaries
+*.deb
+*.img
+*.img.xz
