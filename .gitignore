@@ -36,3 +36,6 @@ Thumbs.db
 *.deb
 *.img
 *.img.xz
+
+# Superpowers brainstorming
+.superpowers/

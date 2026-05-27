@@ -328,10 +328,105 @@ EOL
   fi
 fi
 
-# --- 9. Restart services ---
-echo "--- 9. Restarting services ---"
+# --- 10. KlipperScreen config ---
+if [ -n "$PRINTER" ]; then
+  echo "--- 10. Configuring KlipperScreen ---"
+  KS_SRC="${CONFIG_SRC}/KlipperScreen.conf"
+  KS_DST="${CONFIG_DST}/KlipperScreen.conf"
+  if [ -f "$KS_SRC" ]; then
+    cp "$KS_SRC" "$KS_DST"
+    echo "  Deployed KlipperScreen.conf"
+  else
+    echo "  WARNING: KlipperScreen.conf not found in configs/${PRINTER}/"
+  fi
+else
+  echo "--- 10. Skipping KlipperScreen config (no --printer specified) ---"
+fi
+
+# --- 11. VNC + noVNC for KlipperScreen browser access ---
+if [ -n "$PRINTER" ]; then
+  echo "--- 11. Setting up VNC + noVNC ---"
+
+  # Install packages
+  PKGS_NEEDED=""
+  dpkg -l tigervnc-standalone-server &>/dev/null || PKGS_NEEDED="tigervnc-standalone-server"
+  dpkg -l novnc &>/dev/null || PKGS_NEEDED="${PKGS_NEEDED} novnc"
+  dpkg -l websockify &>/dev/null || PKGS_NEEDED="${PKGS_NEEDED} websockify"
+  if [ -n "$PKGS_NEEDED" ]; then
+    echo "  Installing:${PKGS_NEEDED}"
+    sudo apt-get update -qq
+    sudo apt-get install -y -qq ${PKGS_NEEDED}
+  fi
+
+  # Deploy VNC launch script
+  VNC_SCRIPT="${HOME}/klipperscreen-vnc.sh"
+  cp "${INSTALL_DIR}/configs/shared/klipperscreen-vnc.sh" "$VNC_SCRIPT"
+  chmod +x "$VNC_SCRIPT"
+  echo "  Deployed klipperscreen-vnc.sh"
+
+  # Create systemd service for KlipperScreen VNC
+  sudo tee /etc/systemd/system/klipperscreen-vnc.service > /dev/null <<VNCEOF
+[Unit]
+Description=KlipperScreen VNC (second instance on :10)
+After=KlipperScreen.service moonraker.service
+Wants=KlipperScreen.service
+
+[Service]
+Type=simple
+User=${USER}
+ExecStart=${VNC_SCRIPT}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+VNCEOF
+
+  # Create systemd service for noVNC
+  NOVNC_PATH="/usr/share/novnc"
+  sudo tee /etc/systemd/system/novnc.service > /dev/null <<NOVNCEOF
+[Unit]
+Description=noVNC WebSocket proxy for KlipperScreen
+After=klipperscreen-vnc.service
+Wants=klipperscreen-vnc.service
+
+[Service]
+Type=simple
+User=${USER}
+ExecStart=/usr/bin/websockify --web=${NOVNC_PATH} 8080 localhost:5900
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+NOVNCEOF
+
+  sudo systemctl daemon-reload
+  sudo systemctl enable klipperscreen-vnc.service
+  sudo systemctl enable novnc.service
+  sudo systemctl restart klipperscreen-vnc.service
+  sudo systemctl restart novnc.service
+  echo "  Started VNC on port 5900, noVNC on port 8080"
+
+  # Register services with Moonraker
+  for svc in klipperscreen-vnc novnc; do
+    if ! grep -q "^${svc}$" "${ASVC_FILE}" 2>/dev/null; then
+      echo "${svc}" >> "${ASVC_FILE}"
+      echo "  Added ${svc} to moonraker.asvc"
+    fi
+  done
+else
+  echo "--- 11. Skipping VNC + noVNC (no --printer specified) ---"
+fi
+
+# --- 12. Restart services ---
+echo "--- 12. Restarting services ---"
 sudo systemctl restart klipper
 sudo systemctl restart moonraker
+if systemctl is-active --quiet KlipperScreen 2>/dev/null; then
+  sudo systemctl restart KlipperScreen
+  echo "  Restarted KlipperScreen"
+fi
 if systemctl is-active --quiet crowsnest 2>/dev/null; then
   sudo systemctl restart crowsnest
   echo "  Restarted crowsnest"
@@ -343,6 +438,7 @@ PRINTER_IP=$(hostname -I | awk '{print $1}')
 echo "Offset Webapp: http://${PRINTER_IP}:3000"
 echo "Mainsail:      http://${PRINTER_IP}/"
 if [ -n "$PRINTER" ]; then
+  echo "KlipperScreen: http://${PRINTER_IP}:8080"
   echo
   echo "NOTE: Printer ${PRINTER} configs deployed. Eddy probe calibration"
   echo "      (EDDY_CAL_STEP1-4) must be run manually after first boot."
