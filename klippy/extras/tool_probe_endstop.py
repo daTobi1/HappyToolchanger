@@ -47,12 +47,8 @@ class ToolProbeEndstop:
         self.mcu_probe = EndstopRouter(self.printer)
         self.probe_offsets = ToolProbeOffsetsHelper(self)
         self.param_helper = probe.ProbeParameterHelper(config)
-        self.homing_helper = probe.HomingViaProbeHelper(
-            config, self.mcu_probe, self.probe_offsets, self.param_helper)
-        self.probe_session = probe.ProbeSessionHelper(
-            config, self.param_helper, self.homing_helper.start_probe_session)
-        self.cmd_helper = probe.ProbeCommandHelper(
-            config, self, self.mcu_probe.query_endstop)
+        probe.HomingViaProbeHelper(config, 0.)
+        self.cmd_helper = probe.ProbeCommandHelper(config, self)
 
         # Emulate the probe object, since others rely on this.
         if self.printer.lookup_object('probe', default=None):
@@ -414,8 +410,7 @@ class ToolProbeEndstop:
 
 # Routes MCU endstop commands to the selected tool probe endstop.
 # Supports an optional z_mcu (e.g. Eddy) that takes priority over the
-# active_mcu (Tap) for homing.  Probes that lack multi_probe_begin etc.
-# get automatic no-op fallbacks so they work transparently.
+# active_mcu (Tap) for homing.
 class EndstopRouter:
     def __init__(self, printer):
         self.active_mcu = None
@@ -425,10 +420,16 @@ class EndstopRouter:
         self.printer = printer
         self._update_effective()
 
+    @staticmethod
+    def _get_endstop(obj):
+        """Get the raw MCU endstop from a probe object."""
+        return getattr(obj, 'mcu_endstop', obj)
+
     def add_mcu(self, mcu_probe):
         self._mcus.append(mcu_probe)
+        endstop = self._get_endstop(mcu_probe)
         for s in self._steppers:
-            mcu_probe.add_stepper(s)
+            endstop.add_stepper(s)
 
     def set_active_mcu(self, mcu_probe):
         self.active_mcu = mcu_probe
@@ -438,10 +439,10 @@ class EndstopRouter:
         """Set an external endstop (e.g. Eddy) for Z homing."""
         self.z_mcu = z_mcu
         if z_mcu:
-            # Ensure Z steppers are registered with the external endstop
+            endstop = self._get_endstop(z_mcu)
             for s in self._steppers:
-                if s not in z_mcu.get_steppers():
-                    z_mcu.add_stepper(s)
+                if s not in endstop.get_steppers():
+                    endstop.add_stepper(s)
         self._update_effective()
         self._update_rail_position_endstop()
 
@@ -474,31 +475,19 @@ class EndstopRouter:
         # z_mcu (Eddy) takes priority for homing; fall back to active_mcu (Tap)
         effective = self.z_mcu or self.active_mcu
         if effective:
-            self.get_mcu = effective.get_mcu
-            self.home_start = effective.home_start
-            self.home_wait = effective.home_wait
-            # Probes like Eddy may lack these methods — use no-ops
-            self.multi_probe_begin = getattr(
-                effective, 'multi_probe_begin', self._noop)
-            self.multi_probe_end = getattr(
-                effective, 'multi_probe_end', self._noop)
-            self.probe_prepare = getattr(
-                effective, 'probe_prepare', self._noop)
-            self.probe_finish = getattr(
-                effective, 'probe_finish', self._noop)
+            endstop = self._get_endstop(effective)
+            self.get_mcu = endstop.get_mcu
+            self.home_start = endstop.home_start
+            self.home_wait = endstop.home_wait
         else:
             self.get_mcu = self.on_error
             self.home_start = self.on_error
             self.home_wait = self.on_error
-            self.multi_probe_begin = self.on_error
-            self.multi_probe_end = self.on_error
-            self.probe_prepare = self.on_error
-            self.probe_finish = self.on_error
 
     def add_stepper(self, stepper):
         self._steppers.append(stepper)
         for m in self._mcus:
-            m.add_stepper(stepper)
+            self._get_endstop(m).add_stepper(stepper)
 
     def get_steppers(self):
         return list(self._steppers)
@@ -511,13 +500,15 @@ class EndstopRouter:
         if not self.active_mcu:
             raise self.printer.command_error(
                 "Cannot query endstop - no active tool probe.")
-        return self.active_mcu.query_endstop(print_time)
+        endstop = self._get_endstop(self.active_mcu)
+        return endstop.query_endstop(print_time)
 
     def get_position_endstop(self):
         effective = self.z_mcu or self.active_mcu
         if not effective:
             return 0.0
-        return effective.get_position_endstop()
+        endstop = self._get_endstop(effective)
+        return endstop.get_position_endstop()
 
 
 def load_config(config):
