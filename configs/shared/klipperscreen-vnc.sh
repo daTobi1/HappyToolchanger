@@ -23,6 +23,9 @@ Xtigervnc -rfbport ${VNC_PORT} \
 VNC_PID=$!
 sleep 2
 
+# Set a visible mouse cursor for non-touch VNC clients
+DISPLAY=${DISPLAY_NUM} xsetroot -cursor_name left_ptr 2>/dev/null || true
+
 # Start second KlipperScreen instance on the virtual display
 DISPLAY=${DISPLAY_NUM} ${KS_ENV} ${KS_SCRIPT} &
 KS_PID=$!
