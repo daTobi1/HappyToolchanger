@@ -319,7 +319,7 @@ path: ${INSTALL_DIR}
 origin: https://github.com/daTobi1/HappyToolchanger.git
 primary_branch: main
 is_system_service: True
-managed_services: happytoolchanger-webapp klipper
+managed_services: klipper
 install_script: install.sh
 EOL
     echo "  Added update_manager config to moonraker.conf"
