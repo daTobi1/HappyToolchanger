@@ -339,6 +339,17 @@ if [ -n "$PRINTER" ]; then
   else
     echo "  WARNING: KlipperScreen.conf not found in configs/${PRINTER}/"
   fi
+  # Link custom HTC panels into KlipperScreen
+  KS_PANELS_DIR="${HOME}/KlipperScreen/panels"
+  HTC_PANELS_DIR="${INSTALL_DIR}/klipperscreen/panels"
+  if [ -d "$KS_PANELS_DIR" ] && [ -d "$HTC_PANELS_DIR" ]; then
+    for panel_file in "${HTC_PANELS_DIR}"/*.py; do
+      [ -f "$panel_file" ] || continue
+      panel_name=$(basename "$panel_file")
+      ln -sf "$panel_file" "${KS_PANELS_DIR}/${panel_name}"
+      echo "  Linked panel: ${panel_name}"
+    done
+  fi
 else
   echo "--- 10. Skipping KlipperScreen config (no --printer specified) ---"
 fi
