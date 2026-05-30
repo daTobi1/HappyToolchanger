@@ -891,18 +891,18 @@ Then run each macro in order. After each `SAVE_CONFIG` restart, Klipper tells yo
 
 | Step | Macro | What it does | Time |
 |------|-------|-------------|------|
-| 1/7 | `EDDY_NG_STEP1_SETUP` | Initial setup (manual Z positioning) | ~2 min |
-| 2/7 | `EDDY_NG_STEP2_OPTIMIZE_DC` | Optimize drive current | ~2 min |
-| 3/7 | `EDDY_NG_STEP3_CALIBRATE_THRESHOLD` | Calibrate tap threshold | ~2 min |
-| 4/7 | `EDDY_NG_STEP4_VERIFY` | Verify homing, tap, accuracy | ~1 min |
+| 1/7 | `EDDYNG_CAL_SETUP` | Initial setup (manual Z positioning) | ~2 min |
+| 2/7 | `EDDYNG_CAL_OPTIMIZE_DC` | Optimize drive current | ~2 min |
+| 3/7 | `EDDYNG_CAL_THRESHOLD` | Calibrate tap threshold | ~2 min |
+| 4/7 | `EDDYNG_CAL_VERIFY` | Verify homing, tap, accuracy | ~1 min |
 
 **Advanced calibration (optional, for best accuracy):**
 
 | Step | Macro | What it does | Time |
 |------|-------|-------------|------|
-| 5/7 | `EDDY_NG_STEP5_TEMP_CALIBRATE` | Temperature compensation (requires scipy) | 30-60 min |
-| 6/7 | `EDDY_NG_STEP6_AXIS_TWIST` | Axis twist compensation via tap | ~6 min |
-| 7/7 | `EDDY_NG_STEP7_BACKLASH` | Z-axis backlash estimation | ~2 min |
+| 5/7 | `EDDYNG_CAL_TEMP` | Temperature compensation (requires scipy) | 30-60 min |
+| 6/7 | `EDDYNG_CAL_TWIST` | Axis twist compensation via tap | ~6 min |
+| 7/7 | `EDDYNG_CAL_BACKLASH` | Z-axis backlash estimation | ~2 min |
 
 > **Note:** Step 1 requires manual interaction (lowering the nozzle with `TESTZ`). All other steps are fully automatic.
 
@@ -927,7 +927,7 @@ variable_twist_bed_temp: 60     # Bed temp (0 = cold)
 variable_twist_hotend_temp: 150 # Hotend temp (0 = cold)
 ```
 
-You can always override individual values per call, e.g. `EDDY_NG_STEP5_TEMP_CALIBRATE BED_TEMP=110 HOTEND_FAN=1`. Run `_EDDY_NG_SETTINGS` to display the current defaults.
+You can always override individual values per call, e.g. `EDDYNG_CAL_TEMP BED_TEMP=110 HOTEND_FAN=1`. Run `_EDDY_NG_SETTINGS` to display the current defaults.
 
 #### Option B: Automatic Script (via SSH)
 
@@ -958,13 +958,13 @@ If using a Cartographer probe with its native firmware (not eddy-ng firmware), u
 
 | Step | Macro | What it does | Time |
 |------|-------|-------------|------|
-| 1/7 | `CARTO_STEP1_SCAN_CALIBRATE` | Scan calibration | ~2 min |
-| 2/7 | `CARTO_STEP2_TOUCH_CALIBRATE` | Touch calibration | ~2 min |
-| 3/7 | `CARTO_STEP3_VERIFY` | Verify touch + scan | ~1 min |
-| 4/7 | `CARTO_STEP4_TEMP_CALIBRATE` | Temperature compensation | 30-60 min |
-| 5/7 | `CARTO_STEP5_AXIS_TWIST` | Axis twist via touch | ~6 min |
-| 6/7 | `CARTO_STEP6_BACKLASH` | Backlash estimation | ~2 min |
-| 7/7 | `CARTO_STEP7_FULL_VERIFY` | Final verification | ~3 min |
+| 1/7 | `CARTO_CAL_SCAN` | Scan calibration | ~2 min |
+| 2/7 | `CARTO_CAL_TOUCH` | Touch calibration | ~2 min |
+| 3/7 | `CARTO_CAL_VERIFY` | Verify touch + scan | ~1 min |
+| 4/7 | `CARTO_CAL_TEMP` | Temperature compensation | 30-60 min |
+| 5/7 | `CARTO_CAL_TWIST` | Axis twist via touch | ~6 min |
+| 6/7 | `CARTO_CAL_BACKLASH` | Backlash estimation | ~2 min |
+| 7/7 | `CARTO_CAL_FULL_VERIFY` | Final verification | ~3 min |
 
 Configure defaults in `_CARTO_SETTINGS` (same concept as `_EDDY_NG_SETTINGS`).
 
@@ -983,9 +983,9 @@ Configure defaults in `_CARTO_SETTINGS` (same concept as `_EDDY_NG_SETTINGS`).
 
 After the base setup (steps 1-4), continue with steps 5-7 for best accuracy. These can also be run individually:
 
-- **Temperature compensation (step 5):** `EDDY_NG_STEP5_TEMP_CALIBRATE BED_TEMP=110 MIN_TEMP=40 MAX_TEMP=70` -- calibrate temperature drift across 3 heights (requires scipy, 30-60 min). Add `HOTEND_FAN=1` to use the hotend fan for faster cooling between phases.
-- **Axis twist (step 6):** `EDDY_NG_STEP6_AXIS_TWIST BED_TEMP=60 HOTEND_TEMP=150` -- fully automatic tap-based twist calibration for X and Y axes (~6 min). Best done at print temperature. Requires `[axis_twist_compensation]` in printer.cfg.
-- **Z backlash (step 7):** `EDDY_NG_STEP7_BACKLASH` -- measure and compensate Z backlash (~2 min)
+- **Temperature compensation (step 5):** `EDDYNG_CAL_TEMP BED_TEMP=110 MIN_TEMP=40 MAX_TEMP=70` -- calibrate temperature drift across 3 heights (requires scipy, 30-60 min). Add `HOTEND_FAN=1` to use the hotend fan for faster cooling between phases.
+- **Axis twist (step 6):** `EDDYNG_CAL_TWIST BED_TEMP=60 HOTEND_TEMP=150` -- fully automatic tap-based twist calibration for X and Y axes (~6 min). Best done at print temperature. Requires `[axis_twist_compensation]` in printer.cfg.
+- **Z backlash (step 7):** `EDDYNG_CAL_BACKLASH` -- measure and compensate Z backlash (~2 min)
 
 ### Before Every Print
 

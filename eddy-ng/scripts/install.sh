@@ -444,7 +444,7 @@ install_duo() {
     echo "  1. Make sure your Eddy Duo firmware is flashed"
     echo "  2. Edit eddy-ng.cfg with your sensor settings (MCU UUID, offsets, etc.)"
     echo "  3. Restart Klipper: sudo systemctl restart klipper"
-    echo "  4. Run calibration: EDDY_NG_STEP1_SETUP"
+    echo "  4. Run calibration: EDDYNG_CAL_SETUP"
     echo "     Or automatic:    $REPO_DIR/scripts/calibrate.sh"
 }
 
@@ -464,7 +464,7 @@ install_cartographer_native() {
     echo "  2. Add [axis_twist_compensation] to printer.cfg (for axis twist)"
     echo "  3. Edit _CARTO_SETTINGS in calibrate_macros_cartographer.cfg"
     echo "  4. Restart Klipper: sudo systemctl restart klipper"
-    echo "  5. Run calibration: CARTO_STEP1_SCAN_CALIBRATE"
+    echo "  5. Run calibration: CARTO_CAL_SCAN"
 }
 
 install_cartographer_eddy() {
@@ -495,7 +495,7 @@ install_cartographer_eddy() {
     echo "  1. Flash Cartographer with Klipper firmware (requires custom build)"
     echo "  2. Edit eddy-ng.cfg: set sensor_type: cartographer, MCU UUID, offsets"
     echo "  3. Restart Klipper: sudo systemctl restart klipper"
-    echo "  4. Run calibration: EDDY_NG_STEP1_SETUP"
+    echo "  4. Run calibration: EDDYNG_CAL_SETUP"
 }
 
 install_other() {
@@ -514,7 +514,7 @@ install_other() {
     echo "  1. Rebuild and flash your MCU firmware: $REPO_DIR/flash.sh"
     echo "  2. Edit eddy-ng.cfg with your sensor settings (offsets, etc.)"
     echo "  3. Restart Klipper: sudo systemctl restart klipper"
-    echo "  4. Run calibration: EDDY_NG_STEP1_SETUP"
+    echo "  4. Run calibration: EDDYNG_CAL_SETUP"
     echo "     Or automatic:    $REPO_DIR/scripts/calibrate.sh"
 }
 
