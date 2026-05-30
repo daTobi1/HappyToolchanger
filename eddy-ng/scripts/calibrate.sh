@@ -456,9 +456,9 @@ main() {
         echo "Optional advanced calibration (steps 5-7):"
         echo "  $0 --full --bed-temp 110"
         echo "  Or run individual macros:"
-        echo "  - EDDY_NG_TEMP_CALIBRATE_5VON7 BED_TEMP=110 MIN_TEMP=40 MAX_TEMP=70"
-        echo "  - EDDY_NG_AXIS_TWIST_6VON7 BED_TEMP=60 HOTEND_TEMP=150"
-        echo "  - EDDY_NG_BACKLASH_7VON7"
+        echo "  - EDDY_NG_STEP5_TEMP_CALIBRATE BED_TEMP=110 MIN_TEMP=40 MAX_TEMP=70"
+        echo "  - EDDY_NG_STEP6_AXIS_TWIST BED_TEMP=60 HOTEND_TEMP=150"
+        echo "  - EDDY_NG_STEP7_BACKLASH"
         echo ""
     fi
 }
