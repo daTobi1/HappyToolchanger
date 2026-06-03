@@ -447,8 +447,22 @@ else
   echo "--- 11. Skipping VNC + noVNC (no --printer specified) ---"
 fi
 
-# --- 12. Restart services ---
-echo "--- 12. Restarting services ---"
+# --- 12. Nginx upstreams ---
+if [ -n "$PRINTER" ]; then
+  echo "--- 12. Fixing nginx upstreams ---"
+  UPSTREAMS_SRC="${INSTALL_DIR}/configs/shared/nginx-upstreams.conf"
+  UPSTREAMS_DST="/etc/nginx/conf.d/upstreams.conf"
+  if [ -f "$UPSTREAMS_SRC" ]; then
+    sudo cp "$UPSTREAMS_SRC" "$UPSTREAMS_DST"
+    sudo nginx -t && sudo systemctl reload nginx
+    echo "  Deployed nginx upstreams.conf"
+  fi
+else
+  echo "--- 12. Skipping nginx upstreams (no --printer specified) ---"
+fi
+
+# --- 13. Restart services ---
+echo "--- 13. Restarting services ---"
 sudo systemctl restart klipper
 sudo systemctl restart moonraker
 if systemctl is-active --quiet KlipperScreen 2>/dev/null; then
