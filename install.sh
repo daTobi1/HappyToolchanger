@@ -159,8 +159,16 @@ if [ -n "$PRINTER" ]; then
       echo "  Copied macros"
     fi
 
-    # 4c. Main config files (printer.cfg, HEXA.cfg, happy_toolchanger.cfg, eddy-ng.cfg)
-    for cfg_file in printer.cfg HEXA.cfg happy_toolchanger.cfg eddy-ng.cfg; do
+    # 4c. Main config files
+    # printer.cfg: only copy if it doesn't exist yet (Klipper writes SAVE_CONFIG to it)
+    if [ -f "${CONFIG_SRC}/printer.cfg" ] && [ ! -f "${CONFIG_DST}/printer.cfg" ]; then
+      cp "${CONFIG_SRC}/printer.cfg" "${CONFIG_DST}/printer.cfg"
+      echo "  Copied printer.cfg (initial)"
+    elif [ -f "${CONFIG_DST}/printer.cfg" ]; then
+      echo "  Skipped printer.cfg (exists, contains SAVE_CONFIG data)"
+    fi
+    # Read-only configs are always overwritten
+    for cfg_file in HEXA.cfg happy_toolchanger.cfg eddy-ng.cfg; do
       if [ -f "${CONFIG_SRC}/${cfg_file}" ]; then
         cp "${CONFIG_SRC}/${cfg_file}" "${CONFIG_DST}/${cfg_file}"
         echo "  Copied ${cfg_file}"
