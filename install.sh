@@ -140,37 +140,23 @@ if [ -n "$PRINTER" ]; then
 
     # 4a. Toolchanger configs (tools, readonly-configs, probe)
     if [ -d "${CONFIG_SRC}/toolchanger" ]; then
-      # Symlink all files recursively, creating subdirs as needed
-      cd "${CONFIG_SRC}/toolchanger"
-      find . -type f | while read -r f; do
-        mkdir -p "${CONFIG_DST}/toolchanger/$(dirname "$f")"
-        ln -sf "${CONFIG_SRC}/toolchanger/${f#./}" "${CONFIG_DST}/toolchanger/${f#./}"
-      done
-      cd "${INSTALL_DIR}"
-      echo "  Linked toolchanger configs"
+      mkdir -p "${CONFIG_DST}/toolchanger"
+      cp -r "${CONFIG_SRC}/toolchanger/"* "${CONFIG_DST}/toolchanger/"
+      echo "  Copied toolchanger configs"
     fi
 
     # 4b. Macros
     if [ -d "${CONFIG_SRC}/macros" ]; then
       mkdir -p "${CONFIG_DST}/macros"
-      for f in "${CONFIG_SRC}/macros/"*; do
-        [ -e "$f" ] || continue
-        ln -sf "$f" "${CONFIG_DST}/macros/$(basename "$f")"
-      done
-      echo "  Linked macros"
+      cp -r "${CONFIG_SRC}/macros/"* "${CONFIG_DST}/macros/"
+      echo "  Copied macros"
     fi
 
-    # 4c. Main config files
-    # printer.cfg is copied (Klipper writes SAVE_CONFIG to it)
-    if [ -f "${CONFIG_SRC}/printer.cfg" ]; then
-      cp "${CONFIG_SRC}/printer.cfg" "${CONFIG_DST}/printer.cfg"
-      echo "  Copied printer.cfg"
-    fi
-    # Read-only configs are symlinked
-    for cfg_file in HEXA.cfg happy_toolchanger.cfg eddy-ng.cfg; do
+    # 4c. Main config files (printer.cfg, HEXA.cfg, happy_toolchanger.cfg, eddy-ng.cfg)
+    for cfg_file in printer.cfg HEXA.cfg happy_toolchanger.cfg eddy-ng.cfg; do
       if [ -f "${CONFIG_SRC}/${cfg_file}" ]; then
-        ln -sf "${CONFIG_SRC}/${cfg_file}" "${CONFIG_DST}/${cfg_file}"
-        echo "  Linked ${cfg_file}"
+        cp "${CONFIG_SRC}/${cfg_file}" "${CONFIG_DST}/${cfg_file}"
+        echo "  Copied ${cfg_file}"
       fi
     done
 
@@ -184,14 +170,14 @@ if [ -n "$PRINTER" ]; then
 
     # 4f. Crowsnest config
     if [ -f "${CONFIG_SRC}/crowsnest.conf" ]; then
-      ln -sf "${CONFIG_SRC}/crowsnest.conf" "${CONFIG_DST}/crowsnest.conf"
-      echo "  Linked crowsnest.conf"
+      cp "${CONFIG_SRC}/crowsnest.conf" "${CONFIG_DST}/crowsnest.conf"
+      echo "  Copied crowsnest.conf"
     fi
 
-    # 4g. Moonraker config (copied — install.sh appends update_manager)
+    # 4g. Moonraker config (base config, update_manager added in section 7)
     if [ -f "${CONFIG_SRC}/moonraker.conf" ]; then
       cp "${CONFIG_SRC}/moonraker.conf" "${MOONRAKER_CONF}"
-      echo "  Copied moonraker.conf"
+      echo "  Deployed moonraker.conf"
     fi
   else
     echo "  WARNING: configs/${PRINTER}/ not found"
@@ -348,8 +334,8 @@ if [ -n "$PRINTER" ]; then
   KS_SRC="${CONFIG_SRC}/KlipperScreen.conf"
   KS_DST="${CONFIG_DST}/KlipperScreen.conf"
   if [ -f "$KS_SRC" ]; then
-    ln -sf "$KS_SRC" "$KS_DST"
-    echo "  Linked KlipperScreen.conf"
+    cp "$KS_SRC" "$KS_DST"
+    echo "  Deployed KlipperScreen.conf"
   else
     echo "  WARNING: KlipperScreen.conf not found in configs/${PRINTER}/"
   fi
@@ -385,8 +371,9 @@ if [ -n "$PRINTER" ]; then
 
   # Deploy VNC launch script
   VNC_SCRIPT="${HOME}/klipperscreen-vnc.sh"
-  ln -sf "${INSTALL_DIR}/configs/shared/klipperscreen-vnc.sh" "$VNC_SCRIPT"
-  echo "  Linked klipperscreen-vnc.sh"
+  cp "${INSTALL_DIR}/configs/shared/klipperscreen-vnc.sh" "$VNC_SCRIPT"
+  chmod +x "$VNC_SCRIPT"
+  echo "  Deployed klipperscreen-vnc.sh"
 
   # Create systemd service for KlipperScreen VNC
   sudo tee /etc/systemd/system/klipperscreen-vnc.service > /dev/null <<VNCEOF
