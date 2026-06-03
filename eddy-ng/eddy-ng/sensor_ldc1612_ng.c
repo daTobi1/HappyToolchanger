@@ -131,7 +131,14 @@ struct ldc1612_ng_homing_sos_tap {
     float state[MAX_SOS_SECTIONS*4];
     float tap_threshold;
 
-    float frequency_offset;
+    // Linear predictor for detrending approach ramp.
+    // Removes the smooth frequency increase during approach so the
+    // bandpass filter only sees the tap vibration impulse.
+    // alpha=0.95 at 250 Hz → cutoff ~2 Hz (well below 5 Hz bandpass lowcut)
+    float last_freq;
+    float avg_delta;
+    uint8_t has_last_freq;
+
     float tap_start_value;
     float last_value;
 };
@@ -878,41 +885,60 @@ check_sos_tap(struct ldc1612_ng* ld, uint32_t data, uint32_t time)
 
     float freq = data * ld->sensor_cvt;
 
-    // We need to offset the frequencies by the first
-    // one we feed to the filter so we don't get a crazy
-    // response at the start.
+    // Linear predictor detrending: remove the smooth frequency ramp
+    // caused by the Eddy approaching the bed.  The residual contains
+    // only the tap vibration impulse + noise, making tap detection
+    // independent of tap_target_z / post-contact travel distance.
+    //
+    // avg_delta tracks the running average of per-sample frequency change.
+    // predicted = last_freq + avg_delta (linear extrapolation).
+    // detrended = freq - predicted (should be ~0 during smooth approach,
+    //             spikes at tap contact).
+    //
+    // alpha=0.95 at 250 Hz gives a ~2 Hz cutoff, well below the 5 Hz
+    // bandpass lowcut, so the tap signal (5-25 Hz) passes through intact.
+    #define DETREND_ALPHA 0.95f
 
-    // if we haven't even hit the safe_start_freq
+    float detrended = 0.0f;
+    if (sos_tap->has_last_freq) {
+        float delta = freq - sos_tap->last_freq;
+        sos_tap->avg_delta = DETREND_ALPHA * sos_tap->avg_delta
+                           + (1.0f - DETREND_ALPHA) * delta;
+        float predicted = sos_tap->last_freq + sos_tap->avg_delta;
+        detrended = freq - predicted;
+    } else {
+        sos_tap->has_last_freq = 1;
+        sos_tap->avg_delta = 0.0f;
+    }
+    sos_tap->last_freq = freq;
+
+    // Phase 1: before first safe_start_freq, just build up predictor
     if (lh->homing_trigger_freq != 0) {
-        sos_tap->frequency_offset = freq;
         if (check_safe_start(ld, data, time))
-            shutdown("bug"); // this should never return true in here
+            shutdown("bug"); // should never return true here
         return;
     }
 
-    float val = sosfilter(freq - sos_tap->frequency_offset, &ld->sos_filter, sos_tap->state);
-    //dprint("%f,%f", freq, val);
+    // Feed detrended signal through the bandpass filter
+    float val = sosfilter(detrended, &ld->sos_filter, sos_tap->state);
 
-    // this is the second threshold; but we want to feed the filter values
-    // before this to avoid the initial impulse response
+    // Phase 2: warm up filter before tap detection starts
     if (!check_safe_start(ld, data, time))
         return;
 
-    // Note: == is explicitly excluded below. We don't want to
-    // overwrite the "start" time (so >= won't work), and
-    // it can't make a difference to the last diff check
+    // Tap detection: peak-to-trough drop exceeding threshold.
+    // == is explicitly excluded: we don't want to overwrite the "start"
+    // time (so >= won't work), and equality can't affect the diff check.
     if (val < sos_tap->last_value) {
         float diff = sos_tap->tap_start_value - val;
         if (diff >= sos_tap->tap_threshold) {
             lh->trigger_time = time;
             notify_trigger(ld, time, ld->success_reason);
-            dprint("ZZZ tap st=%u tt=%u l=%f (f=%f)", lh->tap_start_time, time, sos_tap->tap_start_value - val, freq);
+            dprint("ZZZ tap st=%u tt=%u l=%f (f=%f)", lh->tap_start_time, time, diff, freq);
             return;
         }
     } else if (val > sos_tap->last_value) {
-        // This keeps getting updated even on the rise, so that
-        // the values are correct for the start of the tap (i.e. the peak)
-        // once we realize the value is falling.
+        // Rising: track the peak for when it starts falling
         sos_tap->tap_start_value = val;
         lh->tap_start_time = time;
     }

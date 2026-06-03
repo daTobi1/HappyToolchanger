@@ -195,6 +195,14 @@ build_from_source() {
     local config_file="$KLIPPER_DIR/.config"
 
     # Write base config for RP2040
+    # Note: STAGE2 must NOT be set when using a bootloader (Katapult).
+    # Katapult itself provides STAGE2; Klipper behind Katapult must not
+    # include it or the firmware won't boot.
+    local stage2_line=""
+    if [[ "$flash_offset" == "0x10000100" ]]; then
+        stage2_line="CONFIG_RP2040_HAVE_STAGE2=y"
+    fi
+
     cat > "$config_file" << EOF
 CONFIG_LOW_LEVEL_OPTIONS=y
 CONFIG_MACH_RP2040=y
@@ -205,7 +213,7 @@ CONFIG_FLASH_SIZE=0x200000
 CONFIG_RAM_START=0x20000000
 CONFIG_RAM_SIZE=0x42000
 CONFIG_STACK_SIZE=512
-CONFIG_RP2040_HAVE_STAGE2=y
+${stage2_line}
 CONFIG_WANT_LDC1612=y
 CONFIG_WANT_SENSOR_BULK=y
 CONFIG_WANT_SOFTWARE_I2C=y

@@ -1774,6 +1774,18 @@ class ProbeEddy:
         s_t = np.asarray(sampler.times[first_one:])
         s_f = np.asarray(sampler.freqs[first_one:])
 
+        # Detrend: remove approach ramp using linear prediction.
+        # Matches the MCU-side detrending in check_sos_tap() so that
+        # plots reflect the actual signal the MCU sees.
+        alpha = 0.95
+        detrended = np.zeros_like(s_f)
+        avg_delta = 0.0
+        for i in range(1, len(s_f)):
+            delta = s_f[i] - s_f[i - 1]
+            avg_delta = alpha * avg_delta + (1.0 - alpha) * delta
+            predicted = s_f[i - 1] + avg_delta
+            detrended[i] = s_f[i] - predicted
+
         lowcut = self.params.tap_butter_lowcut
         highcut = self.params.tap_butter_highcut
         order = self.params.tap_butter_order
@@ -1785,7 +1797,7 @@ class ProbeEddy:
             fs=self._sensor._data_rate,
             output="sos",
         )
-        filtered = scipy.signal.sosfilt(sos, s_f - s_f[0])
+        filtered = scipy.signal.sosfilt(sos, detrended)
 
         return s_t, filtered
 
