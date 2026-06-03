@@ -1,6 +1,6 @@
 #!/bin/bash
 # KlipperScreen VNC — runs a second KlipperScreen instance on a virtual display
-# Accessed via noVNC at http://<printer-ip>:8080
+# Accessed via noVNC at http://<printer-ip>:6080/vnc.html?autoconnect=true&resize=scale
 #
 # This script is managed by install.sh — do not edit on the printer directly.
 
