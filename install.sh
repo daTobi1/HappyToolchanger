@@ -140,11 +140,13 @@ if [ -n "$PRINTER" ]; then
 
     # 4a. Toolchanger configs (tools, readonly-configs, probe)
     if [ -d "${CONFIG_SRC}/toolchanger" ]; then
-      mkdir -p "${CONFIG_DST}/toolchanger"
-      for f in "${CONFIG_SRC}/toolchanger/"*; do
-        [ -e "$f" ] || continue
-        ln -sf "$f" "${CONFIG_DST}/toolchanger/$(basename "$f")"
+      # Symlink all files recursively, creating subdirs as needed
+      cd "${CONFIG_SRC}/toolchanger"
+      find . -type f | while read -r f; do
+        mkdir -p "${CONFIG_DST}/toolchanger/$(dirname "$f")"
+        ln -sf "${CONFIG_SRC}/toolchanger/${f#./}" "${CONFIG_DST}/toolchanger/${f#./}"
       done
+      cd "${INSTALL_DIR}"
       echo "  Linked toolchanger configs"
     fi
 
