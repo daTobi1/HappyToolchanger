@@ -138,6 +138,13 @@ if [ -n "$PRINTER" ]; then
   if [ -d "$CONFIG_SRC" ]; then
     mkdir -p "${CONFIG_DST}"
 
+    # Remove stale symlinks left by previous installs (cp fails on symlink-to-self)
+    find "${CONFIG_DST}/toolchanger" -type l -delete 2>/dev/null || true
+    find "${CONFIG_DST}/macros" -type l -delete 2>/dev/null || true
+    for f in printer.cfg HEXA.cfg happy_toolchanger.cfg eddy-ng.cfg crowsnest.conf KlipperScreen.conf; do
+      [ -L "${CONFIG_DST}/${f}" ] && rm -f "${CONFIG_DST}/${f}"
+    done
+
     # 4a. Toolchanger configs (tools, readonly-configs, probe)
     if [ -d "${CONFIG_SRC}/toolchanger" ]; then
       mkdir -p "${CONFIG_DST}/toolchanger"
@@ -334,6 +341,7 @@ if [ -n "$PRINTER" ]; then
   KS_SRC="${CONFIG_SRC}/KlipperScreen.conf"
   KS_DST="${CONFIG_DST}/KlipperScreen.conf"
   if [ -f "$KS_SRC" ]; then
+    [ -L "$KS_DST" ] && rm -f "$KS_DST"
     cp "$KS_SRC" "$KS_DST"
     echo "  Deployed KlipperScreen.conf"
   else
@@ -371,6 +379,7 @@ if [ -n "$PRINTER" ]; then
 
   # Deploy VNC launch script
   VNC_SCRIPT="${HOME}/klipperscreen-vnc.sh"
+  [ -L "$VNC_SCRIPT" ] && rm -f "$VNC_SCRIPT"
   cp "${INSTALL_DIR}/configs/shared/klipperscreen-vnc.sh" "$VNC_SCRIPT"
   chmod +x "$VNC_SCRIPT"
   echo "  Deployed klipperscreen-vnc.sh"
