@@ -2686,7 +2686,7 @@ class ProbeEddy:
                 last_log = time.time()
 
                 while True:
-                    reactor.pause(reactor.monotonic() + 1.0)
+                    reactor.pause(reactor.monotonic() + 0.25)
                     # Read current sensor value
                     freq = sampler.get_last_freq()
                     temp = self._get_coil_temperature()

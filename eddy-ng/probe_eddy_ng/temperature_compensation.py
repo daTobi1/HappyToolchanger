@@ -153,9 +153,9 @@ def fit_temperature_model(
     frequencies_at_vertex = []
 
     for height, samples in sorted(data_per_height.items()):
-        if len(samples) < 50:
+        if len(samples) < 15:
             logger.warning("Skipping height %.1f mm: only %d samples "
-                           "(need >= 50)", height, len(samples))
+                           "(need >= 15)", height, len(samples))
             continue
 
         freqs = np.array([s[0] for s in samples])
