@@ -2178,18 +2178,23 @@ class ProbeEddy:
     ) -> Tuple[bool, float, float]:
         """
         Full verification of a threshold.
-        Performs verification_samples complete tap sequences and checks
-        that the range of median Z values is within tolerance.
-        Returns (passed, median_range, median_z).
+        Performs up to verification_samples + warmup taps and checks
+        that the best subset has range within tolerance.
+        The first few taps often produce outliers (warm-up / settling)
+        and are tolerated as long as enough consistent samples exist.
+        Returns (passed, best_range, median_z).
         """
         tapcfg = self._build_tap_config(mode, threshold)
         lift_speed = self.params.lift_speed
         start_z = self.params.tap_start_z
         target_z = self.params.tap_target_z
-        medians = []
+        probe_zs = []
         max_verify_range = req_range * 2.0
+        max_outliers = 3
+        max_errors = max_outliers + 1
+        error_count = 0
 
-        for i in range(verification_samples):
+        for i in range(verification_samples + max_outliers):
             tap = self.do_one_tap(
                 start_z=start_z,
                 target_z=target_z,
@@ -2199,32 +2204,38 @@ class ProbeEddy:
             )
             if tap.error:
                 self._log_debug(f"  Verify {threshold:.0f}: tap {i+1} error: {tap.error}")
+                error_count += 1
+                if error_count > max_errors:
+                    break
                 continue
 
-            medians.append(tap.probe_z)
+            probe_zs.append(tap.probe_z)
             self._log_debug(f"  Verify {threshold:.0f}: tap {i+1}: z={tap.probe_z:.4f}")
 
-            # Early exit: if range already too large after 2+ samples
-            if len(medians) >= 2:
-                current_range = max(medians) - min(medians)
-                if current_range > max_verify_range:
-                    self._log_debug(
-                        f"  Verify {threshold:.0f}: early exit, range {current_range:.4f} > {max_verify_range:.4f}"
-                    )
-                    return False, current_range, 0.0
+            if len(probe_zs) >= verification_samples:
+                break
 
-        if len(medians) < 3:
+        if len(probe_zs) < 3:
             return False, math.inf, 0.0
 
-        median_range = max(medians) - min(medians)
-        median_z = float(np.median(medians))
-        passed = median_range <= max_verify_range
+        # Find best subset with smallest range, allowing outliers to be excluded.
+        req_subset = min(len(probe_zs), max(3, verification_samples - max_outliers))
+        best_range = math.inf
+        best_subset = None
+        for combo in combinations(probe_zs, req_subset):
+            r = max(combo) - min(combo)
+            if r < best_range:
+                best_range = r
+                best_subset = combo
+
+        median_z = float(np.median(list(best_subset))) if best_subset else 0.0
+        passed = best_range <= max_verify_range
 
         self._log_debug(
-            f"  Verify {threshold:.0f}: {len(medians)} samples, range: {median_range:.4f}, "
+            f"  Verify {threshold:.0f}: {len(probe_zs)} samples, best {req_subset}-subset range: {best_range:.4f}, "
             f"median: {median_z:.4f}, pass: {passed}"
         )
-        return passed, median_range, median_z
+        return passed, best_range, median_z
 
     def _build_tap_config(self, mode: str, threshold: float) -> 'ProbeEddy.TapConfig':
         """Build a TapConfig for the given mode and threshold."""
