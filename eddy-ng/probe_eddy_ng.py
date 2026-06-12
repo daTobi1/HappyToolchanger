@@ -643,6 +643,11 @@ class ProbeEddy:
             self.cmd_TEST_DRIVE_CURRENT,
             "Test a drive current.",
         )
+        gcode.register_command(
+            "PROBE_EDDY_NG_OPTIMIZE_DRIVE_CURRENT",
+            self.cmd_OPTIMIZE_DRIVE_CURRENT,
+            self.cmd_OPTIMIZE_DRIVE_CURRENT_help,
+        )
         gcode.register_command("Z_OFFSET_APPLY_PROBE", None)
         gcode.register_command(
             "Z_OFFSET_APPLY_PROBE",
@@ -1502,6 +1507,275 @@ class ProbeEddy:
         )
         if mapping is None or fth is None or htf is None:
             self._log_error(f"Test failed: drive current {drive_current} is not usable.")
+
+    #
+    # Drive current optimization
+    #
+    cmd_OPTIMIZE_DRIVE_CURRENT_help = (
+        "Test all drive currents in a range and select the optimal one for homing and tap. "
+        "Includes real tap verification for the top candidates. "
+        "Parameters: START_DC (first DC to test, default 1), END_DC (last DC to test, default 31), "
+        "TAP_VERIFY (number of test taps per candidate, default 5), "
+        "TOP_CANDIDATES (how many top DCs to tap-verify, default 3), "
+        "SAVE (1 to auto-save results, default 1)."
+    )
+
+    def cmd_OPTIMIZE_DRIVE_CURRENT(self, gcmd: GCodeCommand):
+        if not self._z_homed():
+            raise self._printer.command_error("Z axis must be homed before drive current optimization")
+
+        default_start = max(1, self._reg_drive_current - 5)
+        default_end = min(31, self._reg_drive_current + 7)
+        start_dc = gcmd.get_int("START_DC", default_start, minval=0, maxval=31)
+        end_dc = gcmd.get_int("END_DC", default_end, minval=start_dc, maxval=31)
+        auto_save = gcmd.get_int("SAVE", 1) == 1
+        debug = gcmd.get_int("DEBUG", 0) == 1
+        tap_verify_count = gcmd.get_int("TAP_VERIFY", 5, minval=0, maxval=20)
+        top_n = gcmd.get_int("TOP_CANDIDATES", 3, minval=1, maxval=10)
+        tap_mode = gcmd.get("MODE", self.params.tap_mode).lower()
+
+        z_start = self.params.calibration_z_max
+        probe_speed = self.params.probe_speed
+        lift_speed = self.params.lift_speed
+
+        homing_req_min = 0.5
+        homing_req_max = 5.0
+        tap_req_min = 0.025
+        tap_req_max = 3.0
+        min_freq_spread = 0.30
+        max_rmse = 0.025
+
+        @dataclass
+        class DCResult:
+            dc: int
+            mapping: ProbeEddyFrequencyMap
+            rmse_fth: float
+            rmse_htf: float
+            freq_spread: float
+            height_min: float
+            height_max: float
+            ok_for_homing: bool = False
+            ok_for_tap: bool = False
+            homing_score: float = 0.0
+            tap_score: float = 0.0
+            tap_verified: bool = False
+            tap_range: float = math.inf
+            tap_stddev: float = math.inf
+            tap_median: float = 0.0
+            tap_success_rate: float = 0.0
+
+        results: List[DCResult] = []
+
+        self._log_msg(
+            f"Optimizing drive current: testing DC {start_dc} to {end_dc}...\n"
+            f"This will take a while -- each DC requires a full Z sweep."
+        )
+
+        # === Phase 1: Calibration sweep for all DCs ===
+        for dc in range(start_dc, end_dc + 1):
+            self._log_info(f"Testing drive current {dc}...")
+
+            mapping, fth_rms, htf_rms = self._create_mapping(
+                z_start,
+                0.0,
+                probe_speed,
+                lift_speed,
+                dc,
+                report_errors=False,
+                write_debug_files=debug,
+            )
+
+            if mapping is None or fth_rms is None:
+                self._log_info(f"  DC {dc}: no valid mapping")
+                continue
+
+            spread = mapping.freq_spread()
+            h_min = mapping.height_range[0]
+            h_max = mapping.height_range[1]
+
+            r = DCResult(
+                dc=dc,
+                mapping=mapping,
+                rmse_fth=fth_rms,
+                rmse_htf=htf_rms,
+                freq_spread=spread,
+                height_min=h_min,
+                height_max=h_max,
+            )
+
+            if h_min <= homing_req_min and h_max >= homing_req_max and spread >= min_freq_spread and fth_rms <= max_rmse:
+                r.ok_for_homing = True
+                r.homing_score = (1.0 / (1.0 + fth_rms * 100.0)) + (spread / 100.0)
+
+            if h_min <= tap_req_min and h_max >= tap_req_max and spread >= min_freq_spread and fth_rms <= max_rmse:
+                r.ok_for_tap = True
+                r.tap_score = (1.0 / (1.0 + fth_rms * 100.0)) + (1.0 / (1.0 + h_min * 100.0)) + (spread / 100.0)
+
+            results.append(r)
+
+            status = ""
+            if r.ok_for_homing:
+                status += " [homing OK]"
+            if r.ok_for_tap:
+                status += " [tap OK]"
+            if not status:
+                status = " [not usable]"
+
+            self._log_info(
+                f"  DC {dc}: RMSE={fth_rms:.4f}, spread={spread:.2f}%, "
+                f"height={h_min:.3f}-{h_max:.3f}{status}"
+            )
+
+        # === Phase 2: Tap verification for top candidates ===
+        tap_candidates = sorted(
+            [r for r in results if r.ok_for_tap],
+            key=lambda r: r.tap_score,
+            reverse=True,
+        )
+
+        if tap_verify_count > 0 and tap_candidates:
+            verify_list = tap_candidates[:top_n]
+            self._log_msg(
+                f"\n=== Phase 2: Tap verification for top {len(verify_list)} candidates "
+                f"({tap_mode} mode, {tap_verify_count} taps each) ==="
+            )
+
+            threshold = self.params.tap_threshold
+            old_dc = self.current_drive_current()
+
+            for r in verify_list:
+                self._log_msg(f"Tap-testing DC {r.dc}...")
+
+                self._dc_to_fmap[r.dc] = r.mapping
+                self._sensor.set_drive_current(r.dc)
+
+                tapcfg = self._build_tap_config(tap_mode, threshold)
+                probe_zs = []
+                errors = 0
+
+                for i in range(tap_verify_count):
+                    try:
+                        tap = self.do_one_tap(
+                            start_z=self.params.tap_start_z,
+                            target_z=self.params.tap_target_z,
+                            tap_speed=self.params.tap_speed,
+                            lift_speed=lift_speed,
+                            tapcfg=tapcfg,
+                        )
+                        if tap.error:
+                            errors += 1
+                            self._log_debug(f"  DC {r.dc} tap {i+1}: error: {tap.error}")
+                        else:
+                            probe_zs.append(tap.probe_z)
+                            self._log_debug(f"  DC {r.dc} tap {i+1}: z={tap.probe_z:.4f}")
+                    except Exception as e:
+                        errors += 1
+                        self._log_debug(f"  DC {r.dc} tap {i+1}: exception: {e}")
+
+                r.tap_success_rate = len(probe_zs) / tap_verify_count if tap_verify_count > 0 else 0.0
+
+                if len(probe_zs) >= 3:
+                    z_arr = np.array(probe_zs)
+                    r.tap_range = float(z_arr.max() - z_arr.min())
+                    r.tap_stddev = float(np.std(z_arr))
+                    r.tap_median = float(np.median(z_arr))
+                    r.tap_verified = True
+
+                    self._log_msg(
+                        f"  DC {r.dc}: {len(probe_zs)}/{tap_verify_count} OK, "
+                        f"range={r.tap_range:.4f}mm, stddev={r.tap_stddev:.4f}mm, "
+                        f"median={r.tap_median:.4f}mm"
+                    )
+
+                    r.tap_score += (1.0 / (1.0 + r.tap_range * 100.0)) + (1.0 / (1.0 + r.tap_stddev * 100.0)) + r.tap_success_rate
+                else:
+                    self._log_msg(
+                        f"  DC {r.dc}: only {len(probe_zs)}/{tap_verify_count} OK "
+                        f"({errors} errors) -- tap verification FAILED"
+                    )
+                    r.tap_score *= 0.1
+
+            self._sensor.set_drive_current(old_dc)
+
+        # === Phase 3: Select best and report ===
+        homing_candidates = [r for r in results if r.ok_for_homing]
+        tap_candidates = sorted(
+            [r for r in results if r.ok_for_tap],
+            key=lambda r: r.tap_score,
+            reverse=True,
+        )
+
+        best_homing = max(homing_candidates, key=lambda r: r.homing_score) if homing_candidates else None
+        best_tap = tap_candidates[0] if tap_candidates else None
+
+        msg_lines = ["\n=== Drive Current Optimization Results ===\n"]
+
+        if results:
+            msg_lines.append("Tested drive currents:")
+            for r in results:
+                flags = []
+                if r.ok_for_homing:
+                    flags.append("homing")
+                if r.ok_for_tap:
+                    flags.append("tap")
+                    if r.tap_verified:
+                        flags.append(f"verified: range={r.tap_range:.4f} stddev={r.tap_stddev:.4f} success={r.tap_success_rate:.0%}")
+                flag_str = f" [{', '.join(flags)}]" if flags else ""
+                marker = ""
+                if best_homing and r.dc == best_homing.dc:
+                    marker += " << BEST HOMING"
+                if best_tap and r.dc == best_tap.dc:
+                    marker += " << BEST TAP"
+                msg_lines.append(
+                    f"  DC {r.dc:2d}: RMSE={r.rmse_fth:.4f}  spread={r.freq_spread:5.2f}%  "
+                    f"height={r.height_min:.3f}-{r.height_max:.3f}{flag_str}{marker}"
+                )
+
+        msg_lines.append("")
+        if best_homing:
+            msg_lines.append(
+                f"Best for HOMING: DC {best_homing.dc} "
+                f"(RMSE={best_homing.rmse_fth:.4f}, spread={best_homing.freq_spread:.2f}%, "
+                f"height={best_homing.height_min:.3f}-{best_homing.height_max:.3f})"
+            )
+        else:
+            msg_lines.append("No suitable drive current found for HOMING.")
+
+        if best_tap:
+            tap_detail = (
+                f"Best for TAP:    DC {best_tap.dc} "
+                f"(RMSE={best_tap.rmse_fth:.4f}, spread={best_tap.freq_spread:.2f}%, "
+                f"height={best_tap.height_min:.3f}-{best_tap.height_max:.3f}"
+            )
+            if best_tap.tap_verified:
+                tap_detail += (
+                    f", tap range={best_tap.tap_range:.4f}mm, "
+                    f"stddev={best_tap.tap_stddev:.4f}mm, "
+                    f"success={best_tap.tap_success_rate:.0%}"
+                )
+            tap_detail += ")"
+            msg_lines.append(tap_detail)
+        else:
+            msg_lines.append("No suitable drive current found for TAP.")
+
+        if best_homing is None and best_tap is None:
+            msg_lines.append("\nNo usable drive currents found. Check sensor mounting height.")
+            self._log_error("\n".join(msg_lines))
+            raise self._printer.command_error("Drive current optimization failed: no usable DC found")
+
+        if best_homing:
+            self._dc_to_fmap[best_homing.dc] = best_homing.mapping
+            self._reg_drive_current = best_homing.dc
+        if best_tap:
+            self._dc_to_fmap[best_tap.dc] = best_tap.mapping
+            self._tap_drive_current = best_tap.dc
+
+        if auto_save and (best_homing or best_tap):
+            self.reset_drive_current()
+            self.save_config()
+            msg_lines.append("\nResults saved. Run SAVE_CONFIG to persist.")
+
+        self._log_msg("\n".join(msg_lines))
 
     #
     # PrinterProbe interface
