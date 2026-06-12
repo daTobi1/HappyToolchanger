@@ -39,7 +39,7 @@ from .params import ProbeEddyParams, ProbeEddyProbeResult
 from .frequency_map import ProbeEddyFrequencyMap
 from .sampler import ProbeEddySampler
 from .endstop import ProbeEddyEndstopWrapper
-from .scanning import ProbeEddyScanningProbe
+from .scanning import ProbeEddyScanningProbe, ProbeEddyHomingSession
 from .bed_mesh_helper import BedMeshScanHelper, bed_mesh_ProbeManager_start_probe_override
 from .alpha_beta_filter import AlphaBetaFilter
 from .temperature_compensation import (
@@ -1443,16 +1443,17 @@ class ProbeEddy:
         }
 
     def start_probe_session(self, gcmd):
+        # G28 Z homing calls start_probe_session via Klipper's
+        # _do_home_z_via_probe.  The scanning probe fails when the gantry
+        # is far from the bed (ERR_AHE), so use the endstop-based session
+        # which handles the full approach from any height.
+        if gcmd.get_command() == "G28":
+            session = ProbeEddyHomingSession(self, gcmd)
+            session._start_session()
+            return session
         session = ProbeEddyScanningProbe(self, gcmd)
         session._start_session()
         return session
-        # method = gcmd.get('METHOD', 'automatic').lower()
-        # if method in ('scan', 'rapid_scan'):
-        #    session = ProbeEddyScanningProbe(self, gcmd)
-        #    session._start_session()
-        #    return session
-        #
-        # return self._probe_session.start_probe_session(gcmd)
 
     def get_status(self, eventtime):
         if self._cmd_helper is not None:

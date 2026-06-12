@@ -258,6 +258,14 @@ class ProbeEddyParams:
     # Probe position relative to toolhead
     x_offset: float = 0.0
     y_offset: float = 0.0
+    # Bed mesh scan path type
+    mesh_path: str = "snake"
+    # Bed mesh scan direction
+    mesh_direction: str = "x"
+    # Number of mesh scan passes
+    mesh_runs: int = 1
+    # Bed mesh scan height
+    mesh_height: float = 2.0
     # remove some safety checks, largely for testing/development
     allow_unsafe: bool = False
     # whether to write the tap plot for the last tap
@@ -349,6 +357,13 @@ class ProbeEddyParams:
 
         self.x_offset = config.getfloat("x_offset", self.x_offset)
         self.y_offset = config.getfloat("y_offset", self.y_offset)
+
+        mesh_path_choices = ["snake", "alternating_snake", "spiral", "random"]
+        mesh_dir_choices = ["x", "y"]
+        self.mesh_path = config.getchoice("mesh_path", mesh_path_choices, self.mesh_path)
+        self.mesh_direction = config.getchoice("mesh_direction", mesh_dir_choices, self.mesh_direction)
+        self.mesh_runs = config.getint("mesh_runs", self.mesh_runs, minval=1)
+        self.mesh_height = config.getfloat("mesh_height", self.mesh_height, above=0.0)
 
         self.validate(config)
 
@@ -519,15 +534,17 @@ class ProbeEddy:
         # This class emulates "PrinterProbe". We use some existing helpers to implement
         # functionality like start_session
         # Skip if tool_probe_endstop already registered as probe
+        self._is_primary_probe = False
         try:
             self._printer.add_object("probe", self)
+            self._is_primary_probe = True
         except:
             pass
 
         self._bed_mesh_helper = BedMeshScanHelper(self, config)
 
-        # TODO: get rid of this
-        if hasattr(probe, "ProbeCommandHelper"):
+        # Only register probe commands if we are the primary probe object
+        if self._is_primary_probe and hasattr(probe, "ProbeCommandHelper"):
             self._cmd_helper = probe.ProbeCommandHelper(config, self, self._endstop_wrapper.query_endstop)
         else:
             self._cmd_helper = None
@@ -1452,16 +1469,17 @@ class ProbeEddy:
         }
 
     def start_probe_session(self, gcmd):
+        # G28 Z homing calls start_probe_session via Klipper's
+        # _do_home_z_via_probe.  The scanning probe fails when the gantry
+        # is far from the bed (ERR_AHE), so use the endstop-based session
+        # which handles the full approach from any height.
+        if gcmd.get_command() == "G28":
+            session = ProbeEddyHomingSession(self, gcmd)
+            session._start_session()
+            return session
         session = ProbeEddyScanningProbe(self, gcmd)
         session._start_session()
         return session
-        # method = gcmd.get('METHOD', 'automatic').lower()
-        # if method in ('scan', 'rapid_scan'):
-        #    session = ProbeEddyScanningProbe(self, gcmd)
-        #    session._start_session()
-        #    return session
-        #
-        # return self._probe_session.start_probe_session(gcmd)
 
     def get_status(self, eventtime):
         if self._cmd_helper is not None:
@@ -2505,6 +2523,77 @@ class ProbeEddy:
         self._sampler.finish()
         self._sampler = None
 
+
+
+@final
+class ProbeEddyHomingSession:
+    """Probe session for G28 Z homing using endstop-based descent.
+
+    The scanning probe requires valid sensor readings to start, but the
+    LDC1612 returns ERR_AHE when the gantry is far from the bed (>~2.5mm).
+    During G28 Z the gantry may be at any height, so this session uses
+    the endstop-based approach which handles ERR_AHE gracefully via
+    _probe_to_start_position_unhomed on the MCU side.
+    """
+
+    def __init__(self, eddy: ProbeEddy, gcmd: GCodeCommand):
+        self.eddy = eddy
+        self._printer = eddy._printer
+        self._toolhead = self._printer.lookup_object("toolhead")
+        self._results = []
+
+    def _start_session(self):
+        pass  # Endstop homing handles positioning in _handle_homing_move_begin
+
+    def get_probe_params(self, gcmd):
+        return {
+            "lift_speed": self.eddy.params.lift_speed,
+            "probe_speed": self.eddy.params.probe_speed,
+        }
+
+    def run_probe(self, gcmd):
+        speed = gcmd.get_float("PROBE_SPEED", self.eddy.params.probe_speed)
+        pos = self._toolhead.get_position()
+        kin = self._toolhead.get_kinematics()
+        z_min = kin.limits[2][0]
+        if z_min >= pos[2]:
+            # limits not set properly — use rail range as fallback
+            z_min = kin.rails[2].get_range()[0]
+        pos[2] = z_min
+
+        logging.info(
+            "ProbeEddyHomingSession: run_probe speed=%.1f target_z=%.1f",
+            speed, pos[2],
+        )
+
+        phoming = self._printer.lookup_object("homing")
+        epos = phoming.probing_move(
+            self.eddy._endstop_wrapper, pos, speed, check_movement=False
+        )
+
+        offsets = self.eddy.get_offsets()
+        if HAS_PROBE_RESULT_TYPE:
+            res = manual_probe.create_probe_result(epos, offsets)
+        else:
+            res = [
+                epos[0] + offsets[0],
+                epos[1] + offsets[1],
+                epos[2] - offsets[2],
+            ]
+        self._results.append(res)
+
+        logging.info(
+            "ProbeEddyHomingSession: trigger at Z=%.3f, bed_z=%.3f",
+            epos[2], res.bed_z if HAS_PROBE_RESULT_TYPE else res[2],
+        )
+
+    def pull_probed_results(self):
+        res = self._results
+        self._results = []
+        return res
+
+    def end_probe_session(self):
+        pass
 
 
 # Probe interface that does only scanning, no up/down movement.

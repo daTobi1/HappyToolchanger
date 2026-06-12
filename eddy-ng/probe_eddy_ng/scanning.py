@@ -192,3 +192,77 @@ class ProbeEddyScanningProbe:
         self._notes = []
 
         return results
+
+
+@final
+class ProbeEddyHomingSession:
+    """Probe session for G28 Z homing using endstop-based descent.
+
+    The scanning probe requires valid sensor readings to start, but the
+    LDC1612 returns ERR_AHE when the gantry is far from the bed (>~2.5mm).
+    During G28 Z the gantry may be at any height, so this session uses
+    the endstop-based approach which handles ERR_AHE gracefully via
+    _probe_to_start_position_unhomed on the MCU side.
+    """
+
+    def __init__(self, eddy: ProbeEddy, gcmd: GCodeCommand):
+        self.eddy = eddy
+        self._printer = eddy._printer
+        self._toolhead = self._printer.lookup_object("toolhead")
+        self._results = []
+
+    def _start_session(self):
+        pass  # Endstop homing handles positioning in _handle_homing_move_begin
+
+    def get_probe_params(self, gcmd):
+        return {
+            "lift_speed": self.eddy.params.lift_speed,
+            "probe_speed": self.eddy.params.probe_speed,
+        }
+
+    def run_probe(self, gcmd):
+        speed = gcmd.get_float("PROBE_SPEED", self.eddy.params.probe_speed)
+        pos = self._toolhead.get_position()
+        # Target well below trigger height so the endstop fires during descent.
+        # The endstop wrapper's _handle_homing_move_begin will adjust the
+        # kinematic position for maximum travel if needed (ERR_AHE case).
+        kin = self._toolhead.get_kinematics()
+        z_min = kin.limits[2][0]
+        if z_min >= pos[2]:
+            # limits not set properly — use rail range as fallback
+            z_min = kin.rails[2].get_range()[0]
+        pos[2] = z_min
+
+        logging.info(
+            "ProbeEddyHomingSession: run_probe speed=%.1f target_z=%.1f",
+            speed, pos[2],
+        )
+
+        phoming = self._printer.lookup_object("homing")
+        epos = phoming.probing_move(
+            self.eddy._endstop_wrapper, pos, speed, check_movement=False
+        )
+
+        offsets = self.eddy.get_offsets()
+        if HAS_PROBE_RESULT_TYPE:
+            res = manual_probe.create_probe_result(epos, offsets)
+        else:
+            res = [
+                epos[0] + offsets[0],
+                epos[1] + offsets[1],
+                epos[2] - offsets[2],
+            ]
+        self._results.append(res)
+
+        logging.info(
+            "ProbeEddyHomingSession: trigger at Z=%.3f, bed_z=%.3f",
+            epos[2], res.bed_z if HAS_PROBE_RESULT_TYPE else res[2],
+        )
+
+    def pull_probed_results(self):
+        res = self._results
+        self._results = []
+        return res
+
+    def end_probe_session(self):
+        pass

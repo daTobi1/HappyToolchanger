@@ -8,7 +8,7 @@ from .params import ProbeEddyParams, ProbeEddyProbeResult
 from .frequency_map import ProbeEddyFrequencyMap
 from .sampler import ProbeEddySampler
 from .endstop import ProbeEddyEndstopWrapper
-from .scanning import ProbeEddyScanningProbe
+from .scanning import ProbeEddyScanningProbe, ProbeEddyHomingSession
 from .bed_mesh_helper import BedMeshScanHelper
 from .alpha_beta_filter import AlphaBetaFilter
 from .temperature_compensation import TemperatureCompensationModel, TempCompCoefficients
@@ -24,6 +24,7 @@ __all__ = [
     "ProbeEddySampler",
     "ProbeEddyEndstopWrapper",
     "ProbeEddyScanningProbe",
+    "ProbeEddyHomingSession",
     "BedMeshScanHelper",
     "AlphaBetaFilter",
     "TemperatureCompensationModel",
