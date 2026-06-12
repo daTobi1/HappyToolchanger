@@ -524,6 +524,7 @@ class ProbeEddy:
         self._sampler: ProbeEddySampler = None
         self._last_sampler: ProbeEddySampler = None
         self.save_samples_path = None
+        self._streamer = DataStreamer()
 
         # The last tap Z value, in absolute axis terms. Used for status.
         self._last_tap_z = 0.0
@@ -553,6 +554,7 @@ class ProbeEddy:
         # scan height and the accurate bed height, based on the last tap.
         self._tap_offset = 0.0
         self._last_probe_result = 0.0
+        self._temp_comp = None
 
         # runtime configurable
         self._tap_adjust_z = self.params.tap_adjust_z
@@ -673,6 +675,32 @@ class ProbeEddy:
         gcode.register_command("EDDYNG_BED_MESH_EXPERIMENTAL", self.cmd_MESH, "")
         gcode.register_command("EDDYNG_START_STREAM_EXPERIMENTAL", self.cmd_START_STREAM, "")
         gcode.register_command("EDDYNG_STOP_STREAM_EXPERIMENTAL", self.cmd_STOP_STREAM, "")
+
+        gcode.register_command(
+            "PROBE_EDDY_NG_TEMPERATURE_CALIBRATE",
+            self.cmd_TEMPERATURE_CALIBRATE,
+            "Calibrate temperature compensation model",
+        )
+        gcode.register_command(
+            "PROBE_EDDY_NG_ESTIMATE_BACKLASH",
+            self.cmd_ESTIMATE_BACKLASH,
+            "Estimate Z-axis backlash using statistical analysis",
+        )
+        gcode.register_command(
+            "PROBE_EDDY_NG_AXIS_TWIST_CALIBRATE",
+            self.cmd_AXIS_TWIST_CALIBRATE,
+            "Calibrate axis twist compensation using tap (fully automatic)",
+        )
+        gcode.register_command(
+            "PROBE_EDDY_NG_STREAM",
+            self.cmd_STREAM,
+            "Manage data streaming (ACTION=START|STOP|CANCEL|STATUS)",
+        )
+        gcode.register_command(
+            "PROBE_EDDY_NG_MODEL",
+            self.cmd_MODEL,
+            "Manage named calibration models (ACTION=SAVE|LOAD|LIST|DELETE)",
+        )
 
     def _get_bed_center(self):
         th = self._printer.lookup_object("toolhead")
@@ -2550,6 +2578,666 @@ class ProbeEddy:
         self._sampler.finish()
         self._sampler = None
 
+    # ─── New Features ────────────────────────────────────────────────────
+
+    def cmd_STREAM(self, gcmd: GCodeCommand):
+        """Manage data streaming sessions with CSV export."""
+        action = gcmd.get("ACTION", "STATUS").lower()
+
+        if action == "start":
+            file_path = gcmd.get("FILE", None)
+            self._streamer.start_session(file_path)
+            self.start_sampler()
+            self._log_msg(self._streamer.get_status())
+        elif action == "stop":
+            output = self._streamer.stop_session()
+            if self._sampler:
+                self._sampler.finish()
+                self._sampler = None
+            if output:
+                self._log_msg(f"Stream saved to {output}")
+            else:
+                self._log_msg("No stream was active")
+        elif action == "cancel":
+            self._streamer.cancel_session()
+            if self._sampler:
+                self._sampler.finish()
+                self._sampler = None
+            self._log_msg("Stream cancelled")
+        elif action == "status":
+            self._log_msg(self._streamer.get_status())
+        else:
+            raise self._printer.command_error(
+                f"Unknown ACTION '{action}'. Use START, STOP, CANCEL, or STATUS"
+            )
+
+    def cmd_ESTIMATE_BACKLASH(self, gcmd: GCodeCommand):
+        """Estimate Z-axis backlash using Welch's t-test."""
+        iterations = gcmd.get_int("ITERATIONS", 10, minval=3)
+        delta = gcmd.get_float("DELTA", 0.5, minval=0.2, maxval=1.0)
+        speed = gcmd.get_float("SPEED", self.params.probe_speed, above=0.0)
+        calibrate = gcmd.get_int("CALIBRATE", 0)
+
+        # Need calibration
+        fmap = self._dc_to_fmap.get(self._reg_drive_current)
+        if fmap is None or not fmap.calibrated():
+            raise self._printer.command_error("Calibration required first")
+
+        self._log_msg(f"Estimating backlash: {iterations} iterations, "
+                      f"delta={delta:.2f} mm, speed={speed:.1f} mm/s")
+
+        toolhead = self._toolhead
+        height = self.params.home_trigger_height
+
+        # Start sampler for height measurements
+        self.start_sampler()
+        sampler = self._sampler
+
+        def measure_height():
+            toolhead.dwell(0.150)
+            toolhead.wait_moves()
+            return sampler.get_height_now()
+
+        def move_z(z, spd):
+            toolhead.manual_move([None, None, z], spd)
+
+        def wait():
+            toolhead.wait_moves()
+
+        try:
+            result = estimate_backlash(
+                measure_height_func=measure_height,
+                move_func=move_z,
+                wait_func=wait,
+                height=height,
+                delta=delta,
+                iterations=iterations,
+                speed=speed,
+            )
+        finally:
+            sampler.finish()
+            self._sampler = None
+
+        self._log_msg(
+            f"Backlash estimation:\n"
+            f"  Mean (approach from below): {result.mean_up:.4f} mm "
+            f"(std: {result.std_up:.4f})\n"
+            f"  Mean (approach from above): {result.mean_down:.4f} mm "
+            f"(std: {result.std_down:.4f})\n"
+            f"  t-statistic: {result.t_stat:.3f} "
+            f"(df: {result.degrees_of_freedom:.1f})\n"
+            f"  Significant: {'YES' if result.significant else 'NO'}\n"
+            f"  Backlash: {result.backlash:.4f} mm"
+        )
+
+        if calibrate and result.significant and result.backlash > 0:
+            self.params.z_backlash = result.backlash
+            configfile = self._printer.lookup_object("configfile")
+            configfile.set(self._full_name, "z_backlash",
+                           f"{result.backlash:.4f}")
+            self._log_msg(
+                f"z_backlash set to {result.backlash:.4f} mm. "
+                "Use SAVE_CONFIG to persist."
+            )
+
+    def cmd_TEMPERATURE_CALIBRATE(self, gcmd: GCodeCommand):
+        """Calibrate temperature compensation model.
+
+        Heats the bed and collects frequency-temperature data at multiple
+        heights to build a drift compensation model.
+        """
+        min_temp = gcmd.get_float("MIN_TEMP", 40.0, minval=30.0, maxval=50.0)
+        max_temp = gcmd.get_float("MAX_TEMP", 60.0, minval=50.0)
+        bed_temp = gcmd.get_float("BED_TEMP", 90.0, minval=80.0)
+        use_hotend_fan = gcmd.get_int("HOTEND_FAN", 0) == 1
+        heights = [1.0, 2.0, 3.0]
+
+        if max_temp < min_temp + 15:
+            raise self._printer.command_error(
+                "MAX_TEMP must be at least MIN_TEMP + 15"
+            )
+        if bed_temp < max_temp + 20:
+            raise self._printer.command_error(
+                "BED_TEMP must be at least MAX_TEMP + 20"
+            )
+
+        fmap = self._dc_to_fmap.get(self._reg_drive_current)
+        if fmap is None or not fmap.calibrated():
+            raise self._printer.command_error("Calibration required first")
+
+        toolhead = self._toolhead
+        gcode = self._gcode
+        reactor = self._reactor
+        data_per_height: dict = {}
+
+        # Move probe to bed center before starting.
+        center_x, center_y = self._get_bed_center()
+        self._log_msg(
+            f"Moving probe to bed center ({center_x:.0f}, {center_y:.0f})"
+        )
+        toolhead.manual_move([center_x, center_y, None], self.params.move_speed)
+        toolhead.wait_moves()
+
+        self._log_msg(
+            f"Temperature calibration: {min_temp:.0f}-{max_temp:.0f}C "
+            f"at bed {bed_temp:.0f}C across {len(heights)} heights"
+        )
+        if use_hotend_fan:
+            self._log_msg("Hotend fan cooling enabled (M104 S80 during cooldown)")
+        self._log_msg("This will take a while. Do not touch the printer.")
+
+        for h_idx, height in enumerate(heights):
+            self._log_msg(f"\n--- Phase {h_idx + 1}/{len(heights)}: "
+                          f"height {height:.0f} mm ---")
+
+            # Cooldown phase — raise probe high for faster cooling
+            cooldown_z = max(height, 15.0)
+            self._log_msg(f"Cooling down (Z={cooldown_z:.0f}mm)...")
+            gcode.run_script_from_command("M140 S0")     # bed off
+            gcode.run_script_from_command("M106 S255")   # part fan on
+            if use_hotend_fan:
+                gcode.run_script_from_command("M104 S80")  # trigger heater_fan
+            toolhead.manual_move([None, None, cooldown_z], self.params.lift_speed)
+            toolhead.wait_moves()
+
+            # Wait for cooldown (tolerance +2C, longer timeout for large beds)
+            self._wait_for_temperature(min_temp + 2, direction="cool", timeout=1200.0)
+
+            # Heatup phase — lower to measurement height
+            self._log_msg(f"Heating bed to {bed_temp:.0f}C...")
+            gcode.run_script_from_command(f"M140 S{bed_temp:.0f}")
+            gcode.run_script_from_command("M106 S0")   # part fan off
+            if use_hotend_fan:
+                gcode.run_script_from_command("M104 S0")  # hotend off -> heater_fan off
+            toolhead.manual_move([None, None, height], self.params.lift_speed)
+            toolhead.wait_moves()
+
+            # Collect samples during heatup
+            samples = []
+            self.start_sampler()
+            sampler = self._sampler
+
+            try:
+                self._wait_for_temperature(min_temp - 1, direction="heat")
+
+                self._log_msg(f"Collecting data {min_temp:.0f}-{max_temp:.0f}C...")
+                last_log = time.time()
+
+                while True:
+                    reactor.pause(reactor.monotonic() + 0.25)
+                    # Read current sensor value
+                    freq = sampler.get_last_freq()
+                    temp = self._get_coil_temperature()
+
+                    if freq is not None and temp is not None:
+                        samples.append((freq, temp))
+
+                    if temp is not None and temp >= max_temp:
+                        break
+
+                    if time.time() - last_log > 30.0:
+                        self._log_msg(f"  Temp: {temp:.1f}C, "
+                                      f"{len(samples)} samples")
+                        last_log = time.time()
+            finally:
+                sampler.finish()
+                self._sampler = None
+
+            self._log_msg(f"  Collected {len(samples)} samples at "
+                          f"height {height:.0f} mm")
+            data_per_height[height] = samples
+
+        # Turn off heaters and fans
+        gcode.run_script_from_command("M140 S0")
+        gcode.run_script_from_command("M104 S0")
+        gcode.run_script_from_command("M106 S0")
+
+        # Fit model
+        self._log_msg("Fitting temperature compensation model...")
+        ref_freq = fmap.get_reference_frequency()
+        ref_temp = self._get_coil_temperature() or 25.0
+
+        coeff = fit_temperature_model(data_per_height, ref_freq, ref_temp)
+        if coeff is None:
+            raise self._printer.command_error(
+                "Temperature model fitting failed. "
+                "Check logs for details."
+            )
+
+        # Save
+        self._temp_comp = TemperatureCompensationModel(coeff)
+        configfile = self._printer.lookup_object("configfile")
+        save_temp_comp_to_config(configfile, self._full_name, coeff)
+        self._log_msg(
+            "Temperature compensation model saved.\n"
+            "Use SAVE_CONFIG to persist."
+        )
+
+    def cmd_AXIS_TWIST_CALIBRATE(self, gcmd: GCodeCommand):
+        """Calibrate axis twist compensation using tap.
+
+        Taps at multiple points along X or Y axis to measure Z variation
+        caused by gantry twist, then saves the compensation values to
+        [axis_twist_compensation].
+
+        AXIS=X (default): probes along X at constant Y
+        AXIS=Y: probes along Y at constant X
+        AXIS=BOTH: runs X first, then Y, saves both
+        """
+        if not self._z_homed():
+            raise self._printer.command_error("Must home all axes first (G28)")
+
+        axis = gcmd.get("AXIS", "X").upper()
+        if axis not in ("X", "Y", "BOTH"):
+            raise self._printer.command_error(
+                f"AXIS must be X, Y, or BOTH (got: {axis})"
+            )
+        sample_count = gcmd.get_int("SAMPLE_COUNT", 7, minval=3, maxval=20)
+        samples_per_point = gcmd.get_int("SAMPLES", self.params.tap_samples, minval=1)
+        bed_temp = gcmd.get_float("BED_TEMP", 0.0, minval=0.0)
+        hotend_temp = gcmd.get_float("HOTEND_TEMP", 0.0, minval=0.0)
+
+        gcode = self._gcode
+
+        # Heat to print temperature if requested
+        if bed_temp > 0 or hotend_temp > 0:
+            self._log_msg("Heating to print temperature for axis twist calibration...")
+            if bed_temp > 0:
+                self._log_msg(f"  Bed: {bed_temp:.0f}C")
+                gcode.run_script_from_command(f"M190 S{bed_temp:.0f}")
+            if hotend_temp > 0:
+                if hotend_temp > 170:
+                    self._log_msg(
+                        f"  WARNING: Hotend {hotend_temp:.0f}C may cause ooze. "
+                        f"Consider using 150C max."
+                    )
+                self._log_msg(f"  Hotend: {hotend_temp:.0f}C")
+                gcode.run_script_from_command(f"M109 S{hotend_temp:.0f}")
+            # Thermal soak — let frame expand consistently
+            self._log_msg("Thermal soak (60s)...")
+            self._reactor.pause(self._reactor.monotonic() + 60.0)
+            self._log_msg("Thermal soak complete, starting calibration.")
+
+        axes_to_run = ["X", "Y"] if axis == "BOTH" else [axis]
+        all_results = {}
+
+        for current_axis in axes_to_run:
+            result = self._run_axis_twist_for_axis(
+                gcmd, current_axis, sample_count, samples_per_point
+            )
+            all_results[current_axis] = result
+
+        # Save to config
+        configfile = self._printer.lookup_object("configfile")
+
+        if "X" in all_results:
+            r = all_results["X"]
+            comp_str = ", ".join(f"{c:.6f}" for c in r["compensations"])
+            configfile.set("axis_twist_compensation", "z_compensations", comp_str)
+            configfile.set("axis_twist_compensation",
+                           "calibrate_start_x", f"{r['start']:.1f}")
+            configfile.set("axis_twist_compensation",
+                           "calibrate_end_x", f"{r['end']:.1f}")
+            configfile.set("axis_twist_compensation",
+                           "calibrate_y", f"{r['fixed_pos']:.1f}")
+            configfile.set("axis_twist_compensation",
+                           "compensation_start_x", f"{r['start']:.1f}")
+            configfile.set("axis_twist_compensation",
+                           "compensation_end_x", f"{r['end']:.1f}")
+
+        if "Y" in all_results:
+            r = all_results["Y"]
+            comp_str = ", ".join(f"{c:.6f}" for c in r["compensations"])
+            configfile.set("axis_twist_compensation",
+                           "zy_compensations", comp_str)
+            configfile.set("axis_twist_compensation",
+                           "calibrate_start_y", f"{r['start']:.1f}")
+            configfile.set("axis_twist_compensation",
+                           "calibrate_end_y", f"{r['end']:.1f}")
+            configfile.set("axis_twist_compensation",
+                           "calibrate_x", f"{r['fixed_pos']:.1f}")
+            configfile.set("axis_twist_compensation",
+                           "compensation_start_y", f"{r['start']:.1f}")
+            configfile.set("axis_twist_compensation",
+                           "compensation_end_y", f"{r['end']:.1f}")
+
+        # Turn off heaters if we heated
+        if bed_temp > 0 or hotend_temp > 0:
+            gcode.run_script_from_command("M140 S0")
+            gcode.run_script_from_command("M104 S0")
+            self._log_msg("Heaters turned off.")
+
+        self._log_msg(
+            "\nAxis twist compensation saved.\n"
+            "Use SAVE_CONFIG to persist."
+        )
+
+    def _run_axis_twist_for_axis(
+        self, gcmd: GCodeCommand, axis: str,
+        sample_count: int, samples_per_point: int
+    ) -> dict:
+        """Run axis twist calibration for a single axis (X or Y)."""
+        center_x, center_y = self._get_bed_center()
+
+        # Determine start/end and fixed position for this axis
+        start = end = fixed_pos = None
+
+        # Try to read from [axis_twist_compensation] config
+        try:
+            atc = self._printer.lookup_object("axis_twist_compensation", None)
+            if atc is not None:
+                if axis == "X":
+                    if hasattr(atc, 'calibrate_start_x'):
+                        start = atc.calibrate_start_x
+                    if hasattr(atc, 'calibrate_end_x'):
+                        end = atc.calibrate_end_x
+                    if hasattr(atc, 'calibrate_y'):
+                        fixed_pos = atc.calibrate_y
+                else:
+                    if hasattr(atc, 'calibrate_start_y'):
+                        start = atc.calibrate_start_y
+                    if hasattr(atc, 'calibrate_end_y'):
+                        end = atc.calibrate_end_y
+                    if hasattr(atc, 'calibrate_x'):
+                        fixed_pos = atc.calibrate_x
+        except Exception:
+            pass
+
+        # Fall back to bed_mesh boundaries
+        if start is None or end is None:
+            try:
+                bm = self._printer.lookup_object("bed_mesh")
+                bmc = bm.bmc
+                if hasattr(bmc, 'mesh_min') and hasattr(bmc, 'mesh_max'):
+                    idx = 0 if axis == "X" else 1
+                    start = start or bmc.mesh_min[idx]
+                    end = end or bmc.mesh_max[idx]
+            except Exception:
+                pass
+
+        # Fixed position defaults to bed center on the other axis
+        if fixed_pos is None:
+            fixed_pos = center_y if axis == "X" else center_x
+
+        # Fall back to kinematics range
+        if start is None or end is None:
+            th = self._printer.lookup_object("toolhead")
+            kin = th.get_kinematics()
+            rail_idx = 0 if axis == "X" else 1
+            rail_range = kin.rails[rail_idx].get_range()
+            start = start or (rail_range[0] + 20.0)
+            end = end or (rail_range[1] - 20.0)
+
+        # Allow GCode parameter overrides
+        if axis == "X":
+            start = gcmd.get_float("START_X", start)
+            end = gcmd.get_float("END_X", end)
+            fixed_pos = gcmd.get_float("Y", fixed_pos)
+        else:
+            start = gcmd.get_float("START_Y", start)
+            end = gcmd.get_float("END_Y", end)
+            fixed_pos = gcmd.get_float("X", fixed_pos)
+
+        if end <= start:
+            raise self._printer.command_error(
+                f"END_{axis} ({end}) must be greater than START_{axis} ({start})"
+            )
+
+        # Generate evenly spaced positions
+        interval = (end - start) / (sample_count - 1)
+        points = [start + i * interval for i in range(sample_count)]
+
+        fixed_label = "Y" if axis == "X" else "X"
+        self._log_msg(
+            f"\n{'='*50}\n"
+            f"Axis twist calibration ({axis}): {sample_count} points from "
+            f"{axis}={start:.0f} to {axis}={end:.0f} at "
+            f"{fixed_label}={fixed_pos:.0f}"
+        )
+
+        toolhead = self._toolhead
+        tap_results = []
+
+        # Build tap config once
+        tapcfg = ProbeEddy.TapConfig(
+            mode=self.params.tap_mode,
+            threshold=self.params.tap_threshold,
+        )
+        if tapcfg.mode == "butter":
+            if self.params.is_default_butter_config() and self._sensor._data_rate == 250:
+                tapcfg.sos = [
+                    [0.046131802093312926, 0.09226360418662585, 0.046131802093312926, 1.0, -1.3297767184682712, 0.5693902189294331],
+                    [1.0, -2.0, 1.0, 1.0, -1.845000600983779, 0.8637525213328747],
+                ]
+            elif self.params.is_default_butter_config() and self._sensor._data_rate == 500:
+                tapcfg.sos = [
+                    [0.013359200027856505, 0.02671840005571301, 0.013359200027856505, 1.0, -1.686278256753083, 0.753714473246724],
+                    [1.0, -2.0, 1.0, 1.0, -1.9250515947328444, 0.9299234737648037],
+                ]
+            elif scipy:
+                tapcfg.sos = scipy.signal.butter(
+                    self.params.tap_butter_order,
+                    [self.params.tap_butter_lowcut, self.params.tap_butter_highcut],
+                    btype="bandpass",
+                    fs=self._sensor._data_rate,
+                    output="sos",
+                ).tolist()
+
+        orig_drive_current = self._sensor.get_drive_current()
+        try:
+            self._sensor.set_drive_current(self._tap_drive_current)
+
+            for i, pos in enumerate(points):
+                nozzle_x = pos if axis == "X" else fixed_pos
+                nozzle_y = fixed_pos if axis == "X" else pos
+
+                self._log_msg(
+                    f"Point {i+1}/{sample_count}: {axis}={pos:.1f} "
+                    f"(nozzle at {nozzle_x:.1f}, {nozzle_y:.1f})"
+                )
+
+                toolhead.manual_move(
+                    [nozzle_x, nozzle_y, self.params.tap_start_z + 2.0],
+                    self.params.move_speed
+                )
+                toolhead.wait_moves()
+
+                point_results = []
+                max_attempts = samples_per_point + 2
+
+                for attempt in range(max_attempts):
+                    tap = self.do_one_tap(
+                        start_z=self.params.tap_start_z,
+                        target_z=self.params.tap_target_z,
+                        tap_speed=self.params.tap_speed,
+                        lift_speed=self.params.lift_speed,
+                        tapcfg=tapcfg,
+                    )
+                    if tap.error:
+                        self._log_msg(
+                            f"  Tap attempt {attempt+1} failed: {tap.error}"
+                        )
+                        continue
+                    point_results.append(tap.probe_z)
+                    if len(point_results) >= samples_per_point:
+                        break
+
+                if len(point_results) < 1:
+                    raise self._printer.command_error(
+                        f"All tap attempts failed at point {i+1} "
+                        f"({axis}={pos:.1f})"
+                    )
+
+                median_z = float(np.median(point_results))
+                stddev = (float(np.std(point_results))
+                          if len(point_results) > 1 else 0.0)
+                self._log_msg(
+                    f"  Result: Z={median_z:.4f} (stddev={stddev:.4f}, "
+                    f"{len(point_results)} samples)"
+                )
+                tap_results.append(median_z)
+
+        finally:
+            self._sensor.set_drive_current(orig_drive_current)
+            self._endstop_wrapper.tap_config = None
+            toolhead.manual_move(
+                [None, None, self.params.tap_start_z + 5.0],
+                self.params.lift_speed
+            )
+
+        # Compute compensations: normalize to average
+        avg_z = float(np.mean(tap_results))
+        compensations = [avg_z - z for z in tap_results]
+
+        self._log_msg(f"\nAxis twist compensation results ({axis}):")
+        for i, (pos, comp) in enumerate(zip(points, compensations)):
+            self._log_msg(f"  {axis}={pos:.0f}: {comp:+.4f} mm")
+
+        total_twist = max(compensations) - min(compensations)
+        self._log_msg(f"Total {axis} twist: {total_twist:.4f} mm")
+
+        return {
+            "axis": axis,
+            "start": start,
+            "end": end,
+            "fixed_pos": fixed_pos,
+            "compensations": compensations,
+            "total_twist": total_twist,
+        }
+
+    def _wait_for_temperature(self, target: float, direction: str = "heat",
+                              timeout: float = 600.0):
+        """Wait for coil temperature to reach target."""
+        reactor = self._reactor
+        start = time.time()
+        none_count = 0
+        while True:
+            reactor.pause(reactor.monotonic() + 2.0)
+            temp = self._get_coil_temperature()
+            if temp is None:
+                none_count += 1
+                if none_count > 30:
+                    raise self._printer.command_error(
+                        "Temperature sensor not available. "
+                        "Check [temperature_sensor] configuration."
+                    )
+                continue
+
+            none_count = 0
+            self._log_debug(
+                f"_wait_for_temperature: {temp:.1f}C "
+                f"(target: {target:.0f}C {direction})"
+            )
+
+            if direction == "heat" and temp >= target:
+                return
+            if direction == "cool" and temp <= target:
+                return
+
+            if time.time() - start > timeout:
+                raise self._printer.command_error(
+                    f"Temperature timeout: wanted {target:.0f}C "
+                    f"({direction}), currently {temp:.1f}C"
+                )
+
+    def _get_coil_temperature(self) -> Optional[float]:
+        """Get current bed temperature for temperature calibration.
+
+        Tries heater_bed first, then falls back to any temperature_sensor
+        objects that might provide bed temperature.
+        """
+        eventtime = self._reactor.monotonic()
+        # Try heater_bed
+        try:
+            heater = self._printer.lookup_object("heater_bed", None)
+            if heater is not None:
+                temp, _ = heater.get_temp(eventtime)
+                if temp is not None and temp > 0:
+                    return float(temp)
+        except Exception as e:
+            logging.debug(f"_get_coil_temperature heater_bed failed: {e}")
+
+        # Try heaters module (covers renamed heaters)
+        try:
+            pheaters = self._printer.lookup_object("heaters", None)
+            if pheaters is not None:
+                for name, heater in pheaters.heaters.items():
+                    if "bed" in name.lower():
+                        temp, _ = heater.get_temp(eventtime)
+                        if temp is not None and temp > 0:
+                            return float(temp)
+        except Exception as e:
+            logging.debug(f"_get_coil_temperature heaters failed: {e}")
+
+        return None
+
+    def cmd_MODEL(self, gcmd: GCodeCommand):
+        """Manage named calibration models.
+
+        ACTION=SAVE NAME=<name>  - Save current calibration as named model
+        ACTION=LOAD NAME=<name>  - Load a named model as active calibration
+        ACTION=LIST              - List all saved model names
+        ACTION=DELETE NAME=<name> - Delete a named model
+        """
+        action = gcmd.get("ACTION", "LIST").upper()
+        name = gcmd.get("NAME", "")
+
+        fmap = self._dc_to_fmap.get(self._reg_drive_current)
+
+        if action == "LIST":
+            if fmap is None:
+                self._log_msg("No calibration loaded, no models available")
+                return
+            models = fmap.get_model_names()
+            if not models:
+                self._log_msg("No saved models")
+            else:
+                self._log_msg(f"Saved models: {', '.join(models)}")
+            return
+
+        if not name:
+            raise self._printer.command_error(
+                "NAME parameter required for SAVE/LOAD/DELETE"
+            )
+
+        if action == "SAVE":
+            if fmap is None or not fmap.calibrated():
+                raise self._printer.command_error(
+                    "No active calibration to save"
+                )
+            fmap.save_calibration(model_name=name)
+            self._log_msg(
+                f"Saved current calibration as model '{name}'. "
+                "Use SAVE_CONFIG to persist."
+            )
+
+        elif action == "LOAD":
+            if fmap is None:
+                fmap = ProbeEddyFrequencyMap(self)
+            if not fmap.load_named_model(name):
+                raise self._printer.command_error(
+                    f"Model '{name}' not found"
+                )
+            self._dc_to_fmap[fmap.drive_current] = fmap
+            self._log_msg(f"Loaded model '{name}'")
+
+        elif action == "DELETE":
+            if fmap is None:
+                raise self._printer.command_error("No calibration loaded")
+            if not fmap.delete_named_model(name):
+                raise self._printer.command_error(
+                    f"Model '{name}' not found"
+                )
+            self._log_msg(
+                f"Deleted model '{name}'. "
+                "Use SAVE_CONFIG to persist."
+            )
+
+        else:
+            raise self._printer.command_error(
+                f"Unknown ACTION '{action}'. "
+                "Use SAVE, LOAD, LIST, or DELETE."
+            )
 
 
 @final
@@ -3125,6 +3813,13 @@ class ProbeEddySampler:
     def error_count(self):
         return self._errors
 
+    def get_last_freq(self) -> Optional[float]:
+        """Get the last sampled frequency, or None if no samples yet."""
+        self._update_samples()
+        if len(self.freqs) == 0:
+            return None
+        return self.freqs[-1]
+
     # get the last sampled height
     def get_last_height(self) -> float:
         if self.heights is None:
@@ -3401,7 +4096,7 @@ class ProbeEddyFrequencyMap:
         self._eddy._log_info(f"Loaded calibration for drive current {drive_current}")
         return True
 
-    def save_calibration(self):
+    def save_calibration(self, model_name: Optional[str] = None):
         if self._ftoh is None or self._htof is None:
             return
 
@@ -3417,6 +4112,77 @@ class ProbeEddyFrequencyMap:
         }
         calibstr = json.dumps(data, separators=(",", ":"))
         configfile.set(self._eddy._full_name, f"calibration_{self.drive_current}", calibstr)
+
+        # Also save as named model if requested
+        if model_name is not None:
+            configfile.set(self._eddy._full_name, f"model_{model_name}", calibstr)
+            # Update saved model list
+            models = self._get_saved_model_names(configfile)
+            if model_name not in models:
+                models.append(model_name)
+                configfile.set(
+                    self._eddy._full_name,
+                    "saved_models",
+                    ",".join(models),
+                )
+
+    def _get_saved_model_names(self, configfile=None) -> List[str]:
+        """Get list of saved named model names from autosave config."""
+        if configfile is None:
+            configfile = self._eddy._printer.lookup_object("configfile")
+        asfc = configfile.autosave.fileconfig
+        models_str = asfc.get(self._eddy._full_name, "saved_models", fallback="")
+        if not models_str:
+            return []
+        return [m.strip() for m in models_str.split(",") if m.strip()]
+
+    def get_model_names(self) -> List[str]:
+        """Return list of all saved model names."""
+        return self._get_saved_model_names()
+
+    def load_named_model(self, model_name: str) -> bool:
+        """Load a named calibration model."""
+        configfile = self._eddy._printer.lookup_object("configfile")
+        asfc = configfile.autosave.fileconfig
+        calibstr = asfc.get(self._eddy._full_name, f"model_{model_name}", fallback=None)
+        if calibstr is None:
+            return False
+        calibstr = calibstr.strip()
+        if not calibstr.startswith("{"):
+            return False
+        try:
+            data = json.loads(calibstr)
+        except (json.JSONDecodeError, ValueError):
+            return False
+        dc = data.get("dc", self.drive_current)
+        return self._load_from_json(calibstr, dc)
+
+    def delete_named_model(self, model_name: str) -> bool:
+        """Delete a named calibration model."""
+        configfile = self._eddy._printer.lookup_object("configfile")
+        models = self._get_saved_model_names(configfile)
+        if model_name not in models:
+            return False
+        models.remove(model_name)
+        configfile.set(
+            self._eddy._full_name,
+            "saved_models",
+            ",".join(models) if models else "",
+        )
+        # Clear the model data by setting to empty
+        configfile.set(self._eddy._full_name, f"model_{model_name}", "")
+        return True
+
+    def get_reference_frequency(self) -> float:
+        """Return the frequency corresponding to height=0 (bed surface).
+
+        Used as reference point for temperature compensation calibration.
+        """
+        if self._htof is None:
+            raise self._eddy._printer.command_error(
+                "Calling get_reference_frequency on uncalibrated map"
+            )
+        return self.height_to_freq(0.0)
 
     def calibrate_from_values(
         self,
@@ -3822,6 +4588,540 @@ def bed_mesh_ProbeManager_start_probe_override(self, gcmd):
         self.rapid_scan_helper.perform_rapid_scan(gcmd)
     else:
         self.probe_helper.start_probe(gcmd)
+
+
+# ─── Backlash estimation ─────────────────────────────────────────────────────
+
+@dataclass
+class BacklashResult:
+    backlash: float
+    mean_up: float
+    mean_down: float
+    std_up: float
+    std_down: float
+    t_stat: float
+    degrees_of_freedom: float
+    significant: bool
+
+
+def welchs_ttest(a: List[float], b: List[float]) -> Tuple[float, float]:
+    """Welch's t-test for two samples with unequal variance.
+
+    Returns (t_statistic, degrees_of_freedom).
+    """
+    n_a = len(a)
+    n_b = len(b)
+    if n_a < 2 or n_b < 2:
+        return 0.0, 0.0
+
+    mean_a = sum(a) / n_a
+    mean_b = sum(b) / n_b
+
+    # Sample variance with Bessel's correction
+    var_a = sum((x - mean_a) ** 2 for x in a) / (n_a - 1)
+    var_b = sum((x - mean_b) ** 2 for x in b) / (n_b - 1)
+
+    se_a = var_a / n_a
+    se_b = var_b / n_b
+    se_sum = se_a + se_b
+
+    if se_sum < 1e-15:
+        return 0.0, float(n_a + n_b - 2)
+
+    t_stat = (mean_a - mean_b) / math.sqrt(se_sum)
+
+    # Welch-Satterthwaite degrees of freedom
+    numerator = se_sum ** 2
+    denominator = (se_a ** 2 / (n_a - 1)) + (se_b ** 2 / (n_b - 1))
+    if denominator < 1e-15:
+        df = float(n_a + n_b - 2)
+    else:
+        df = numerator / denominator
+
+    return t_stat, df
+
+
+def estimate_backlash(
+    measure_height_func,
+    move_func,
+    wait_func,
+    height: float,
+    delta: float = 0.5,
+    iterations: int = 10,
+    speed: float = 5.0,
+) -> BacklashResult:
+    """Estimate Z-axis backlash by measuring from both directions.
+
+    Args:
+        measure_height_func: Callable that returns current measured height.
+        move_func: Callable(z, speed) that moves Z axis.
+        wait_func: Callable that waits for moves to complete.
+        height: Reference height for measurement.
+        delta: Distance to move above/below reference.
+        iterations: Number of measurement cycles.
+        speed: Movement speed.
+
+    Returns:
+        BacklashResult with statistical analysis.
+    """
+    measurements_up: List[float] = []
+    measurements_down: List[float] = []
+
+    # Initial compensating moves to eliminate startup transients
+    move_func(height + delta, speed)
+    wait_func()
+    move_func(height, speed)
+    wait_func()
+    move_func(height - delta, speed)
+    wait_func()
+    move_func(height, speed)
+    wait_func()
+
+    for _ in range(iterations):
+        # Approach from below (moving UP)
+        move_func(height - delta, speed)
+        wait_func()
+        move_func(height, speed)
+        wait_func()
+        h = measure_height_func()
+        measurements_up.append(h)
+
+        # Approach from above (moving DOWN)
+        move_func(height + delta, speed)
+        wait_func()
+        move_func(height, speed)
+        wait_func()
+        h = measure_height_func()
+        measurements_down.append(h)
+
+    # Statistics
+    n = len(measurements_up)
+    mean_up = sum(measurements_up) / n
+    mean_down = sum(measurements_down) / n
+    std_up = math.sqrt(sum((x - mean_up) ** 2 for x in measurements_up) / (n - 1)) if n > 1 else 0.0
+    std_down = math.sqrt(sum((x - mean_down) ** 2 for x in measurements_down) / (n - 1)) if n > 1 else 0.0
+
+    t_stat, df = welchs_ttest(measurements_down, measurements_up)
+
+    # t >= 2.0 is approximately p <= 0.05 for df > 30
+    significant = abs(t_stat) >= 2.0
+
+    if significant:
+        backlash = mean_down - mean_up
+        if backlash < 0:
+            logging.warning("Negative backlash (%.4f mm) is unexpected, "
+                           "setting to 0", backlash)
+            backlash = 0.0
+            significant = False
+    else:
+        backlash = 0.0
+
+    return BacklashResult(
+        backlash=backlash,
+        mean_up=mean_up,
+        mean_down=mean_down,
+        std_up=std_up,
+        std_down=std_down,
+        t_stat=t_stat,
+        degrees_of_freedom=df,
+        significant=significant,
+    )
+
+
+# ─── Data streaming ──────────────────────────────────────────────────────────
+
+@dataclass
+class StreamSample:
+    time: float
+    frequency: float
+    temperature: float = 0.0
+    position_x: float = 0.0
+    position_y: float = 0.0
+    position_z: float = 0.0
+    has_position: bool = False
+
+
+class StreamSession:
+    """A data collection session that accumulates samples."""
+
+    def __init__(self):
+        self.samples: List[StreamSample] = []
+        self.active: bool = True
+        self.start_time: float = time.time()
+
+    def add_sample(self, sample: StreamSample):
+        if self.active:
+            self.samples.append(sample)
+
+    def stop(self):
+        self.active = False
+
+    @property
+    def duration(self) -> float:
+        return time.time() - self.start_time
+
+    @property
+    def count(self) -> int:
+        return len(self.samples)
+
+
+class DataStreamer:
+    """Manages data streaming sessions with CSV export.
+
+    Usage:
+        streamer = DataStreamer()
+        session = streamer.start_session("/tmp/output.csv")
+        # ... collect data via add_sample() ...
+        streamer.stop_session()  # writes CSV
+    """
+
+    def __init__(self):
+        self._session: Optional[StreamSession] = None
+        self._output_file: Optional[str] = None
+
+    @property
+    def is_active(self) -> bool:
+        return self._session is not None and self._session.active
+
+    @property
+    def session(self) -> Optional[StreamSession]:
+        return self._session
+
+    def start_session(self, output_file: Optional[str] = None) -> StreamSession:
+        if self.is_active:
+            raise RuntimeError(
+                "Stream already active. Stop current stream first."
+            )
+
+        self._output_file = output_file or _generate_filepath("eddy_ng_stream")
+        _validate_output_path(self._output_file)
+
+        self._session = StreamSession()
+        logging.info("Started streaming session, will save to: %s",
+                    self._output_file)
+        return self._session
+
+    def add_sample(self, sample: StreamSample):
+        if self._session and self._session.active:
+            self._session.add_sample(sample)
+
+    def stop_session(self) -> Optional[str]:
+        """Stop session and write CSV. Returns output file path."""
+        if self._session is None:
+            return None
+
+        self._session.stop()
+        output = None
+
+        if self._output_file and self._session.samples:
+            _write_csv(self._session.samples, self._output_file)
+            output = self._output_file
+            logging.info("Stopped streaming. %d samples saved to: %s",
+                        len(self._session.samples), self._output_file)
+        elif not self._session.samples:
+            logging.warning("No samples collected during streaming session")
+
+        self._session = None
+        self._output_file = None
+        return output
+
+    def cancel_session(self):
+        """Cancel session without saving."""
+        if self._session:
+            self._session.stop()
+            logging.info("Cancelled streaming session (%d samples discarded)",
+                        len(self._session.samples))
+        self._session = None
+        self._output_file = None
+
+    def get_status(self) -> str:
+        if not self.is_active:
+            return "No active streaming session"
+        s = self._session
+        return (f"Streaming active: {s.count} samples collected "
+                f"over {s.duration:.1f}s → {self._output_file}")
+
+
+def _generate_filepath(label: str) -> str:
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    filename = f"{label}_{timestamp}.csv"
+    return os.path.join("/tmp", filename)
+
+
+def _validate_output_path(path: str):
+    parent = os.path.dirname(path)
+    if parent and not os.path.exists(parent):
+        os.makedirs(parent, exist_ok=True)
+
+
+def _write_csv(samples: List[StreamSample], output_file: str):
+    with open(output_file, "w") as f:
+        f.write("time,frequency,temperature,position_x,position_y,position_z\n")
+        for s in samples:
+            if s.has_position:
+                f.write(f"{s.time:.6f},{s.frequency:.3f},{s.temperature:.2f},"
+                        f"{s.position_x:.4f},{s.position_y:.4f},"
+                        f"{s.position_z:.6f}\n")
+            else:
+                f.write(f"{s.time:.6f},{s.frequency:.3f},{s.temperature:.2f}"
+                        f",,,\n")
+
+
+# ─── Temperature compensation ────────────────────────────────────────────────
+
+@dataclass
+class TempCompCoefficients:
+    """Temperature compensation model coefficients.
+
+    The model uses frequency-dependent quadratic interpolation:
+      a_interp = a_a * (freq - ref_freq) + a_b
+      b_interp = b_a * (freq - ref_freq) + b_b
+
+    Then frequency is modeled as:
+      freq = a_interp * temp^2 + b_interp * temp + c
+    """
+    a_a: float
+    a_b: float
+    b_a: float
+    b_b: float
+    ref_frequency: float  # baseline frequency at calibration
+    ref_temperature: float  # temperature at calibration
+
+
+def _param_linear(freq_offset: float, slope: float, intercept: float) -> float:
+    return slope * freq_offset + intercept
+
+
+class TemperatureCompensationModel:
+    """Compensates frequency readings for temperature drift.
+
+    Uses a quadratic model fitted across multiple heights and temperatures
+    to adjust raw frequency to what it would be at the reference temperature.
+    """
+
+    def __init__(self, coefficients: TempCompCoefficients):
+        self.coeff = coefficients
+
+    def compensate(self, frequency: float, temp_source: float,
+                   temp_target: float) -> float:
+        """Adjust frequency from temp_source to temp_target."""
+        if abs(temp_source - temp_target) < 0.1:
+            return frequency
+
+        c = self.coeff
+        freq_offset = frequency - c.ref_frequency
+
+        # Interpolate quadratic parameters for this frequency
+        param_a = _param_linear(freq_offset, c.a_a, c.a_b)
+        param_b = _param_linear(freq_offset, c.b_a, c.b_b)
+
+        # Try quadratic solution first
+        result = self._compensate_quadratic(
+            frequency, freq_offset, param_a, param_b,
+            temp_source, temp_target
+        )
+        if result is not None:
+            return result
+
+        # Fallback to linear compensation
+        return self._compensate_linear(
+            frequency, param_a, param_b, temp_source, temp_target
+        )
+
+    def _compensate_quadratic(self, frequency: float, freq_offset: float,
+                              param_a: float, param_b: float,
+                              temp_source: float, temp_target: float
+                              ) -> Optional[float]:
+        c = self.coeff
+
+        # Build quadratic equation for freq_offset solution
+        quad_a = (4 * (temp_source * c.a_a) ** 2
+                  + 4 * temp_source * c.a_a * c.b_a
+                  + c.b_a ** 2 + 4 * c.a_a)
+        quad_b = (8 * temp_source ** 2 * c.a_a * c.a_b
+                  + 4 * temp_source * (c.a_a * c.b_b + c.a_b * c.b_a)
+                  + 2 * c.b_a * c.b_b + 4 * c.a_b
+                  - 4 * freq_offset * c.a_a)
+        quad_c = (4 * (temp_source * c.a_b) ** 2
+                  + 4 * temp_source * c.a_b * c.b_b
+                  + c.b_b ** 2 - 4 * freq_offset * c.a_b)
+
+        discriminant = quad_b ** 2 - 4 * quad_a * quad_c
+        if discriminant < 0:
+            return None
+
+        if abs(quad_a) < 1e-15:
+            return None
+
+        ax = (math.sqrt(discriminant) - quad_b) / (2 * quad_a)
+
+        # Get parameters at solution point
+        a_at_ax = _param_linear(ax, c.a_a, c.a_b)
+        b_at_ax = _param_linear(ax, c.b_a, c.b_b)
+
+        if abs(a_at_ax) > 1e-12:
+            temp_offset = b_at_ax / (2 * a_at_ax)
+            return a_at_ax * (temp_target + temp_offset) ** 2 + ax + c.ref_frequency
+        else:
+            return b_at_ax * temp_target + ax + c.ref_frequency
+
+    def _compensate_linear(self, frequency: float,
+                           param_a: float, param_b: float,
+                           temp_source: float, temp_target: float) -> float:
+        # Extract constant c from: freq = a*temp_src^2 + b*temp_src + c
+        param_c = frequency - param_a * temp_source ** 2 - param_b * temp_source
+        # Apply at target temperature
+        return param_a * temp_target ** 2 + param_b * temp_target + param_c
+
+
+def fit_temperature_model(
+    data_per_height: dict,
+    ref_frequency: float,
+    ref_temperature: float,
+) -> Optional[TempCompCoefficients]:
+    """Fit temperature compensation model from calibration data.
+
+    Args:
+        data_per_height: Dict mapping height (mm) to list of
+            (frequency, temperature) tuples.
+        ref_frequency: Baseline frequency from initial calibration.
+        ref_temperature: Temperature at initial calibration.
+
+    Returns:
+        TempCompCoefficients if fitting succeeds, None otherwise.
+    """
+    try:
+        from scipy.optimize import curve_fit
+    except ImportError:
+        logging.error("Temperature calibration requires scipy. "
+                     "Install with: pip install scipy")
+        return None
+
+    if len(data_per_height) < 2:
+        logging.error("Need at least 2 heights for temperature calibration, "
+                     "got %d", len(data_per_height))
+        return None
+
+    coefficients_a = []
+    coefficients_b = []
+    frequencies_at_vertex = []
+
+    for height, samples in sorted(data_per_height.items()):
+        if len(samples) < 15:
+            logging.warning("Skipping height %.1f mm: only %d samples "
+                           "(need >= 15)", height, len(samples))
+            continue
+
+        freqs = np.array([s[0] for s in samples])
+        temps = np.array([s[1] for s in samples])
+
+        # Downsample if too many points (>1000 -> 800)
+        if len(samples) > 1000:
+            freqs, temps = _downsample_by_temp_bins(freqs, temps, 800)
+
+        # Fit: freq = a*temp^2 + b*temp + c
+        try:
+            def quad_func(t, a, b, c):
+                return a * t ** 2 + b * t + c
+
+            popt, _ = curve_fit(
+                quad_func, temps, freqs,
+                bounds=([0, -np.inf, -np.inf], [np.inf, np.inf, np.inf]),
+                maxfev=100000,
+            )
+            a, b, c = popt
+        except Exception as e:
+            logging.warning("Quadratic fit failed for height %.1f: %s",
+                           height, e)
+            continue
+
+        # Check vertex position
+        if abs(a) < 1e-15:
+            vertex_temp = 60.0  # default
+        else:
+            vertex_temp = -b / (2 * a)
+
+        # Constrain vertex to reasonable range
+        if vertex_temp > 120:
+            # Re-fit with vertex at 120
+            try:
+                def line120(t, a_c, c_c):
+                    return a_c * t ** 2 - 240 * a_c * t + c_c
+                popt2, _ = curve_fit(line120, temps, freqs, maxfev=100000)
+                a, b = popt2[0], -240 * popt2[0]
+                freq_at_vertex = quad_func(120, a, b, popt2[1])
+            except Exception:
+                freq_at_vertex = float(np.mean(freqs))
+        elif vertex_temp < 0:
+            # Re-fit with vertex at 0
+            try:
+                def line0(t, a_c, c_c):
+                    return a_c * t ** 2 + c_c
+                popt2, _ = curve_fit(line0, temps, freqs, maxfev=100000)
+                a, b = popt2[0], 0.0
+                freq_at_vertex = quad_func(0, a, b, popt2[1])
+            except Exception:
+                freq_at_vertex = float(np.mean(freqs))
+        else:
+            freq_at_vertex = quad_func(vertex_temp, a, b, c)
+
+        coefficients_a.append(a)
+        coefficients_b.append(b)
+        frequencies_at_vertex.append(freq_at_vertex)
+
+    if len(coefficients_a) < 2:
+        logging.error("Not enough valid heights for temperature model")
+        return None
+
+    # Fit linear relationships: coeff = slope * (freq - ref_freq) + intercept
+    freq_array = np.array(frequencies_at_vertex) - ref_frequency
+
+    def linear(x, slope, intercept):
+        return slope * x + intercept
+
+    try:
+        params_a, _ = curve_fit(linear, freq_array, coefficients_a)
+        params_b, _ = curve_fit(linear, freq_array, coefficients_b)
+    except Exception as e:
+        logging.error("Linear fit failed: %s", e)
+        return None
+
+    return TempCompCoefficients(
+        a_a=float(params_a[0]),
+        a_b=float(params_a[1]),
+        b_a=float(params_b[0]),
+        b_b=float(params_b[1]),
+        ref_frequency=ref_frequency,
+        ref_temperature=ref_temperature,
+    )
+
+
+def _downsample_by_temp_bins(freqs, temps, target_count):
+    """Downsample by evenly distributing across temperature bins."""
+    temp_min, temp_max = temps.min(), temps.max()
+    n_bins = target_count
+    bin_edges = np.linspace(temp_min, temp_max, n_bins + 1)
+
+    indices = []
+    for i in range(n_bins):
+        mask = (temps >= bin_edges[i]) & (temps < bin_edges[i + 1])
+        bin_indices = np.where(mask)[0]
+        if len(bin_indices) > 0:
+            indices.append(bin_indices[len(bin_indices) // 2])
+
+    indices = np.array(indices)
+    return freqs[indices], temps[indices]
+
+
+def save_temp_comp_to_config(configfile, section: str,
+                             coeff: TempCompCoefficients):
+    """Save temperature compensation to printer config."""
+    val = ",".join([
+        f"{coeff.a_a:.10e}", f"{coeff.a_b:.10e}",
+        f"{coeff.b_a:.10e}", f"{coeff.b_b:.10e}",
+        f"{coeff.ref_frequency:.6f}", f"{coeff.ref_temperature:.3f}",
+    ])
+    configfile.set(section, "temperature_compensation", val)
 
 
 def load_config_prefix(config: ConfigWrapper):
