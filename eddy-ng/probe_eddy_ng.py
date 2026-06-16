@@ -4547,6 +4547,16 @@ class ProbeEddyFrequencyMap:
         low_samples = heights <= ProbeEddyFrequencyMap.low_z_threshold
         high_samples = heights >= ProbeEddyFrequencyMap.low_z_threshold - 0.5
 
+        # Need at least deg+1 = 10 samples for a degree-9 polynomial fit
+        if np.count_nonzero(low_samples) < 10:
+            if report_errors:
+                self._eddy._log_error(
+                    f"Drive current {drive_current}: not enough low-height samples "
+                    f"({np.count_nonzero(low_samples)}) for calibration. "
+                    f"Height range: {float(heights.min()):.3f}-{float(heights.max()):.3f}"
+                )
+            return None, None
+
         ftoh_low_fn = npp.Polynomial.fit(1.0 / freqs[low_samples], heights[low_samples], deg=9)
         htof_low_fn = npp.Polynomial.fit(heights[low_samples], 1.0 / freqs[low_samples], deg=9)
 
