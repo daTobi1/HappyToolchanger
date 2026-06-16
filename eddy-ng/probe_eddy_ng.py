@@ -3673,10 +3673,28 @@ class ProbeEddyScanningProbe:
             self._toolhead.register_lookahead_callback(lambda time: self._rapid_lookahead_cb(time, th_pos))
             return
 
+        # For point-by-point probing (e.g. QGL), lower to scan height
+        # so the sensor is within reading range, then return to travel height.
+        travel_z = th_pos[2]
+        if travel_z > self._scan_z + 0.5:
+            pos = list(th_pos)
+            pos[2] = self._scan_z
+            th.manual_move(pos, self.eddy.params.probe_speed)
+
         th.dwell(self._sample_time_delay)
         start_time = th.get_last_move_time()
         self._toolhead.dwell(self._sample_time + self._sample_time_delay)
-        self._notes.append((start_time, start_time + self._sample_time / 2.0, th_pos))
+
+        # Record position at scan height for correct height calculation
+        scan_pos = list(th_pos)
+        scan_pos[2] = self._scan_z
+        self._notes.append((start_time, start_time + self._sample_time / 2.0, scan_pos))
+
+        # Return to travel height
+        if travel_z > self._scan_z + 0.5:
+            pos = list(th_pos)
+            pos[2] = travel_z
+            th.manual_move(pos, self.eddy.params.lift_speed)
 
     def pull_probed_results(self):
         if self._is_rapid:
