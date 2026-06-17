@@ -234,6 +234,15 @@ class HappyToolchanger:
         cmd = self.tool_change_command.replace('{tool}', str(gate))
         self.gcode.run_script_from_command(cmd)
 
+        # Klipper's _process_commands catches internal errors, calls
+        # invoke_shutdown(), and returns normally. Without this check
+        # we'd update active_tool even though the change never completed.
+        if self.printer.is_shutdown():
+            self.log("Tool change to T%d aborted (printer shutdown)" % tool,
+                     level=0)
+            self.statistics.record_error()
+            return
+
         # Check if tool change failed (triggered PAUSE via error_gcode)
         if self._is_paused():
             self.log("Tool change to T%d failed (printer paused)" % tool,

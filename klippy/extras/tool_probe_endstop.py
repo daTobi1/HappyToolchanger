@@ -507,8 +507,9 @@ class EndstopRouter:
         effective = self.z_mcu or self.active_mcu
         if not effective:
             return 0.0
-        endstop = self._get_endstop(effective)
-        return endstop.get_position_endstop()
+        if hasattr(effective, 'get_position_endstop'):
+            return effective.get_position_endstop()
+        return 0.0
 
 
 def load_config(config):
