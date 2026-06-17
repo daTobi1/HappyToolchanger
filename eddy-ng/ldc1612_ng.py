@@ -562,6 +562,7 @@ class LDC1612_ng:
         # logging.info("LDC1612 finished '%s' measurements", self._name)
 
     def _process_batch(self, eventtime):
+        SAMPLE_ERR_AE = 0x1
         samples = self._ffreader.pull_samples()
         count = 0
         err_count = 0
@@ -569,6 +570,12 @@ class LDC1612_ng:
         for ptime, val in samples:
             if val > 0x0FFFFFFF:  # high nibble indicates an error
                 err_kind = (val >> 28)
+                if err_kind == SAMPLE_ERR_AE:
+                    # Amplitude errors are common after close-proximity
+                    # events; the conversion data is still usable.
+                    samples[count] = (ptime, val & 0x0FFFFFFF)
+                    count += 1
+                    continue
                 err_count += 1
                 if last_err_kind != err_kind:
                     if self._verbose:
