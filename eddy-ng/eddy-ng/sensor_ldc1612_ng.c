@@ -72,8 +72,9 @@ enum {
 #define REG_DATA0_LSB 0x01
 #define REG_STATUS    0x18
 
-// Error flags reported in samples: undeer range, over range, watchdog, amplitude 
+// Error flags reported in samples: under range, over range, watchdog, amplitude
 #define SAMPLE_ERR(data) ((data) >> 28)
+#define SAMPLE_DATA(data) ((data) & 0x0FFFFFFF)
 #define SAMPLE_ERR_UR 0x8
 #define SAMPLE_ERR_OR 0x4
 #define SAMPLE_ERR_WD 0x2
@@ -798,8 +799,15 @@ check_wma_tap(struct ldc1612_ng* ld, uint32_t data, uint32_t time)
     struct ldc1612_ng_homing *lh = &ld->homing;
     struct ldc1612_ng_homing_wma_tap *wma_tap = &lh->wma_tap;
 
-    if (!check_error(ld, data, time))
-        return;
+    uint8_t err = SAMPLE_ERR(data);
+    if (err) {
+        if (err == SAMPLE_ERR_AE) {
+            data = SAMPLE_DATA(data);
+        } else {
+            check_error(ld, data, time);
+            return;
+        }
+    }
 
     if (!check_safe_start(ld, data, time))
         return;
@@ -880,8 +888,20 @@ check_sos_tap(struct ldc1612_ng* ld, uint32_t data, uint32_t time)
     struct ldc1612_ng_homing *lh = &ld->homing;
     struct ldc1612_ng_homing_sos_tap *sos_tap = &lh->sos_tap;
 
-    if (!check_error(ld, data, time))
-        return;
+    // Amplitude errors (AE) are expected after close-proximity events
+    // (previous tap touching the bed) and can persist at all heights.
+    // The conversion data is still usable for tap detection, so strip
+    // the AE flag and continue processing.  Non-AE errors (UR/OR/WD)
+    // indicate more severe issues — delegate to check_error.
+    uint8_t err = SAMPLE_ERR(data);
+    if (err) {
+        if (err == SAMPLE_ERR_AE) {
+            data = SAMPLE_DATA(data);
+        } else {
+            check_error(ld, data, time);
+            return;
+        }
+    }
 
     float freq = data * ld->sensor_cvt;
 
