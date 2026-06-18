@@ -481,6 +481,7 @@ class Offset:
                 "No Z-switch data. Run CALIBRATE_ALL_Z_OFFSETS first")
 
         apply_offsets = gcmd.get_int('APPLY', 1)
+        extruder_temp = gcmd.get_int('EXTRUDER_TEMP', 0, minval=0, maxval=350)
         samples = gcmd.get_int('SAMPLES', self.probe_offset_samples, minval=1)
         probe_x = gcmd.get_float('PROBE_X', self.probe_offset_x)
         probe_y = gcmd.get_float('PROBE_Y', self.probe_offset_y)
@@ -529,6 +530,17 @@ class Offset:
 
         toolhead = self.printer.lookup_object('toolhead')
         probe_obj = self.printer.lookup_object('probe')
+
+        # Apply Z-switch offsets to tools so the formula works
+        # regardless of whether the user clicked "APPLY" in the webapp
+        for tool_nr in calibrate_tools:
+            key = str(tool_nr)
+            z_off = self.probe_results[key]['z_offset']
+            self.gcode.run_script_from_command(
+                f'SET_TOOL_PARAMETER T={tool_nr} '
+                f'PARAMETER=gcode_z_offset VALUE="{z_off:.6f}"')
+        self.gcode.respond_info(
+            "Applied Z-switch offsets to %d tools" % len(calibrate_tools))
 
         # Get ref probe from map
         ref_probe_name = self._get_probe_for_tool(ref_tool, ref_tool)
@@ -603,6 +615,10 @@ class Offset:
             self.gcode.run_script_from_command(
                 "SET_ACTIVE_TOOL_PROBE T=%d" % tool_nr)
 
+            if extruder_temp > 0:
+                self.gcode.run_script_from_command(
+                    "M109 S%d" % extruder_temp)
+
             # Activate probe from map
             if tool_is_eddy:
                 self.gcode.run_script_from_command(
@@ -635,6 +651,9 @@ class Offset:
             # run_single_probe: bed_z = trigger_z - current_pz.
             # → true_pz = bed_z + current_pz - gcode_z_off
             probe_z_offset = bed_z + current_pz - gcode_z_off
+
+            if extruder_temp > 0:
+                self.gcode.run_script_from_command("M104 S0")
 
             self.probe_results[key]['probe_z_offset'] = probe_z_offset
             self.probe_results[key]['tap_bed_z'] = bed_z

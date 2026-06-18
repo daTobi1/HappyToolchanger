@@ -711,6 +711,16 @@ function probeCalibrationSection(toolNumbers, enabled) {
       '</div>' +
       toolRows +
     '</div>' +
+    '<div class="border border-secondary-subtle rounded p-2 bg-dark mb-2">' +
+      '<div class="d-flex justify-content-between align-items-center mb-1">' +
+        '<span class="fs-6">Extruder temperature</span>' +
+        '<small class="text-secondary">0 = no heating</small>' +
+      '</div>' +
+      '<div class="input-group input-group-sm w-auto">' +
+        '<input type="number" id="probe-cal-extruder-temp" class="form-control form-control-sm" style="max-width:80px;" min="0" max="350" step="5" value="0" placeholder="0">' +
+        '<span class="input-group-text">&deg;C</span>' +
+      '</div>' +
+    '</div>' +
     '<button class="btn ' + btnClass + ' w-100 mb-2" id="probe-cal-btn" ' + disabledAttr + '>' +
       'CALIBRATE PROBE OFFSETS' +
     '</button>' +
@@ -908,7 +918,9 @@ $(document).on("click", "#probe-cal-btn", function() {
     var probe = config.tool_probes[String(t)] || 'probe';
     lines.push('SET_PROBE_CAL_MAP TOOL=' + t + ' PROBE="' + probe + '"');
   });
-  lines.push('CALIBRATE_PROBE_OFFSETS TOOLS=' + selectedTools.join(',') + ' REF_TOOL=' + config.ref_tool);
+  var probeTemp = parseInt($("#probe-cal-extruder-temp").val(), 10) || 0;
+  var tempPart = (probeTemp > 0) ? ' EXTRUDER_TEMP=' + probeTemp : '';
+  lines.push('CALIBRATE_PROBE_OFFSETS TOOLS=' + selectedTools.join(',') + ' REF_TOOL=' + config.ref_tool + tempPart);
 
   var script = lines.join('\n');
 
