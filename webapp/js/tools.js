@@ -499,6 +499,22 @@ function updateAllProbeResults() {
     $('button.toolchange-btn').each(function(){
       updateProbeResults($(this).data("tool"), probeResults);
     });
+    var changed = false;
+    for (var k in probeResults) {
+      if (probeResults[k] && typeof probeResults[k].probe_z_offset === 'number') {
+        if (!_probeCalResults[k] || _probeCalResults[k].probe_z_offset !== probeResults[k].probe_z_offset) {
+          changed = true;
+        }
+        _probeCalResults[k] = { probe_z_offset: probeResults[k].probe_z_offset };
+      }
+    }
+    if (changed) {
+      var $container = $('#probe-cal-results-container');
+      if ($container.length) {
+        var tools = Object.keys(_toolProbeOffsets).map(Number).sort(function(a,b){ return a-b; });
+        $container.html(probeCalResultsTable(tools));
+      }
+    }
   });
 }
 
@@ -735,7 +751,7 @@ function probeCalibrationSection(toolNumbers, enabled) {
     '<button class="btn ' + btnClass + ' w-100 mb-2" id="probe-cal-btn" ' + disabledAttr + '>' +
       'CALIBRATE PROBE OFFSETS' +
     '</button>' +
-    probeCalResultsTable(sortedTools) +
+    '<div id="probe-cal-results-container">' + probeCalResultsTable(sortedTools) + '</div>' +
   '</div>';
 }
 
