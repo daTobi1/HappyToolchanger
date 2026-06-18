@@ -389,6 +389,9 @@ class Offset:
                 f"SAMPLES_MAX_COUNT={self.samples_max_count}" + z_calc_arg
             )
 
+            if extruder_temp > 0:
+                self.gcode.run_script_from_command("M104 S0")
+
             # Re-reference offsets to REF tool
             key = str(tool)
             if key in self.probe_results:
