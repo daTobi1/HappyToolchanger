@@ -372,6 +372,10 @@ class Offset:
             self.gcode.run_script_from_command(f"T{tool}")
             self.cmd_OFFSET_AFTER_PICKUP_GCODE(gcmd)
 
+            self.gcode.run_script_from_command(
+                f"SET_TOOL_PARAMETER T={tool} PARAMETER=gcode_z_offset "
+                f'VALUE="0.0"')
+
             if extruder_temp > 0:
                 self.gcode.run_script_from_command(
                     f"M109 S{extruder_temp}")
