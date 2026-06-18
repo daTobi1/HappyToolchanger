@@ -1264,11 +1264,11 @@ function updateOffset(tool, axis) {
   const hasPosition = rawPosition !== "" && rawPosition !== undefined && !Number.isNaN(position);
   const capturedText = $(`#captured-${axis}`).find(":first-child").text();
   const captured_pos = parseFloat(capturedText);
-  const old_offset = parseFloat($(`#T${tool}-${axis}-offset`).text());
 
-  if (hasPosition && capturedText !== "" && !Number.isNaN(captured_pos) && !Number.isNaN(old_offset)) {
+  if (hasPosition && capturedText !== "" && !Number.isNaN(captured_pos)) {
 
-    let new_offset = (captured_pos - old_offset) - position;
+    // Offsets are zeroed during calibration tool change, so just compare positions
+    let new_offset = captured_pos - position;
 
     // Preserve your sign-flip behavior
     if (new_offset < 0) new_offset = Math.abs(new_offset);
