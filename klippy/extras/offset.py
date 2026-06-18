@@ -1,6 +1,7 @@
 import os
 import re
 import ast
+import json
 from statistics import median, mean
 
 from . import tools_calibrate
@@ -105,7 +106,38 @@ class Offset:
                                     self.cmd_SET_TOOL_GCODE_OFFSET,
                                     desc="Set gcode_x/y/z_offset on a tool and stage for SAVE_CONFIG")
 
+    def _get_state_file_path(self):
+        config_file = self.printer.get_start_args().get('config_file', '')
+        config_dir = os.path.dirname(os.path.abspath(config_file))
+        return os.path.join(config_dir, '.offset_probe_results.json')
+
+    def _save_probe_results(self):
+        try:
+            path = self._get_state_file_path()
+            data = {}
+            for k, v in self.probe_results.items():
+                entry = dict(v)
+                entry.pop('last_run', None)
+                data[k] = entry
+            with open(path, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            self.gcode.respond_info("Warning: could not save probe results: %s" % e)
+
+    def _load_probe_results(self):
+        try:
+            path = self._get_state_file_path()
+            if os.path.exists(path):
+                with open(path, 'r') as f:
+                    self.probe_results = json.load(f)
+                self.gcode.respond_info(
+                    "Loaded Z-switch data for %d tools from %s"
+                    % (len(self.probe_results), os.path.basename(path)))
+        except Exception as e:
+            self.gcode.respond_info("Warning: could not load probe results: %s" % e)
+
     def handle_connect(self):
+        self._load_probe_results()
         if self.config_file_path:
             self.config_file_path = os.path.expanduser(self.config_file_path)
             if os.path.exists(self.config_file_path):
@@ -408,6 +440,7 @@ class Offset:
                         self.probe_results[key]['z_offset'] = z_trig - ref_trigger
                     self.probe_results[key]['ref_tool'] = ref_tool
 
+        self._save_probe_results()
         self.cmd_OFFSET_FINISH_GCODE(gcmd)
 
     # ─── Probe offset calibration helpers ───────────────────────────────
@@ -711,6 +744,7 @@ class Offset:
         if apply_offsets:
             self.gcode.respond_info(
                 "Offsets applied at runtime. Use SAVE_CONFIG to persist.")
+        self._save_probe_results()
 
     # ─── Gcode macro hooks ───────────────────────────────────────────────
 
