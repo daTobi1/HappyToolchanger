@@ -218,6 +218,13 @@ class HappyToolchanger:
             return False
         return pause_resume.is_paused
 
+    def _get_ktc_tool_number(self):
+        """Get the actual active tool number from KTC (toolchanger module)."""
+        tc = self.printer.lookup_object('toolchanger', None)
+        if tc and tc.active_tool and hasattr(tc.active_tool, 'tool_number'):
+            return tc.active_tool.tool_number
+        return -1
+
     def change_tool(self, tool):
         if tool < 0 or tool >= self.num_tools:
             raise self.gcode.error("HTC: Invalid tool T%d (num_tools=%d)" % (tool, self.num_tools))
@@ -226,8 +233,13 @@ class HappyToolchanger:
         prev_tool = self.active_tool
 
         if prev_tool == tool:
-            self.log("Tool T%d already active" % tool)
-            return
+            ktc_tool = self._get_ktc_tool_number()
+            if ktc_tool >= 0 and ktc_tool != gate:
+                self.log("State mismatch: HTC=T%d but KTC=T%d, forcing change"
+                         % (tool, ktc_tool), level=0)
+            else:
+                self.log("Tool T%d already active" % tool)
+                return
 
         self.log("Changing to T%d (gate %d)" % (tool, gate))
 
@@ -411,6 +423,8 @@ class HappyToolchanger:
 
     def cmd_HTC_SYNC(self, gcmd):
         tool = gcmd.get_int('TOOL', -1)
+        if tool < 0:
+            tool = self._get_ktc_tool_number()
         if tool >= 0:
             self.active_tool = tool
             self._save_state()
