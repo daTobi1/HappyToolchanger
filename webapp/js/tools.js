@@ -576,6 +576,21 @@ function calibrateButton(toolNumbers = [], enabled = false) {
       </div>
     </div>
 
+    <div class="row pb-2">
+      <div class="col-12">
+        <div class="border border-secondary-subtle rounded p-2 bg-dark">
+          <div class="d-flex justify-content-between align-items-center mb-1">
+            <span class="fs-6">Extruder temperature</span>
+            <small class="text-secondary">0 = no heating</small>
+          </div>
+          <div class="input-group input-group-sm w-auto">
+            <input type="number" id="calibrate-extruder-temp" class="form-control form-control-sm" style="max-width:80px;" min="0" max="350" step="5" value="0" placeholder="0">
+            <span class="input-group-text">°C</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="row">
       <div class="col-12">
         <button class="btn ${btnClass} w-100" id="calibrate-all-btn" ${disabledAttr}>
@@ -719,10 +734,12 @@ $(document).on("click", "#calibrate-all-btn", function() {
   if (!selectedTools.includes(refTool)) selectedTools.unshift(refTool);
 
   const method = ($("#z-calc-method").val() || "config").toLowerCase();
+  const extruderTemp = parseInt($("#calibrate-extruder-temp").val(), 10) || 0;
 
   // Only send override if not config
   const zCalcPart = (method !== "config") ? ` Z_CALC=${method}` : "";
-  const script = `CALIBRATE_ALL_Z_OFFSETS TOOLS=${selectedTools.join(",")}${zCalcPart} REF=${refTool}`;
+  const tempPart = (extruderTemp > 0) ? ` EXTRUDER_TEMP=${extruderTemp}` : "";
+  const script = `CALIBRATE_ALL_Z_OFFSETS TOOLS=${selectedTools.join(",")}${zCalcPart}${tempPart} REF=${refTool}`;
 
   const $btn = $("#calibrate-all-btn");
   $btn.prop("disabled", true).text("Calibrating...");

@@ -306,6 +306,8 @@ class Offset:
 
         self.cmd_OFFSET_START_GCODE(gcmd)
 
+        extruder_temp = gcmd.get_int('EXTRUDER_TEMP', 0, minval=0, maxval=350)
+
         z_calc = (gcmd.get('Z_CALC', None) or '').strip().lower()
         if z_calc and z_calc not in ('median', 'average', 'avg', 'mean', 'trimmed', 'trim', 'trimmed_mean'):
             gcmd.respond_error("Invalid Z_CALC. Use median, average or trimmed")
@@ -369,6 +371,10 @@ class Offset:
             self.cmd_OFFSET_BEFORE_PICKUP_GCODE(gcmd)
             self.gcode.run_script_from_command(f"T{tool}")
             self.cmd_OFFSET_AFTER_PICKUP_GCODE(gcmd)
+
+            if extruder_temp > 0:
+                self.gcode.run_script_from_command(
+                    f"M109 S{extruder_temp}")
 
             self.gcode.run_script_from_command("MOVE_TO_ZSWITCH")
 
