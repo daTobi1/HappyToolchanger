@@ -1038,6 +1038,8 @@ function toolChangeURL(tool) {
     let url = printerUrl(printerIp, "/printer/gcode/script?script=OFFSET_BEFORE_PICKUP_GCODE");
     url += "%0AT" + tool;
     url += "%0AOFFSET_AFTER_PICKUP_GCODE";
+    url += '%0ASET_TOOL_PARAMETER T=' + tool + ' PARAMETER=gcode_x_offset VALUE="0.0"';
+    url += '%0ASET_TOOL_PARAMETER T=' + tool + ' PARAMETER=gcode_y_offset VALUE="0.0"';
     return url;
   }
 
@@ -1064,6 +1066,8 @@ function toolChangeURL(tool) {
   let url = printerUrl(printerIp, "/printer/gcode/script?script=OFFSET_BEFORE_PICKUP_GCODE");
   url += "%0AT" + tool;
   url += "%0AOFFSET_AFTER_PICKUP_GCODE";
+  url += '%0ASET_TOOL_PARAMETER T=' + tool + ' PARAMETER=gcode_x_offset VALUE="0.0"';
+  url += '%0ASET_TOOL_PARAMETER T=' + tool + ' PARAMETER=gcode_y_offset VALUE="0.0"';
   url += "%0ASAVE_GCODE_STATE NAME=RESTORE_POS";
   url += "%0AG90";
   url += "%0AG0 Z" + z_pos + " F3000";
