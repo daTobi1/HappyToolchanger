@@ -415,6 +415,12 @@ const nonMasterToolItem = ({tool_number, cx_offset, cy_offset, disabled, tc_disa
               <span class="fs-6 lh-sm"><small>New Z</small></span>
               <span class="fs-5 lh-sm" id="T${tool_number}-z-new" title="Click to copy gcode_z_offset" style="cursor:pointer;"><small>0.000</small></span>
             </div>
+            <div class="z-fields d-none">
+              <div class="row pb-1">
+                <span class="fs-6 lh-sm"><small>Probe Z</small></span>
+                <span class="fs-5 lh-sm" id="T${tool_number}-pz-new" data-raw="" title="Click to copy z_offset (tool_probe)" style="cursor:pointer;"><small>-</small></span>
+              </div>
+            </div>
             <div class="row pt-1">
               <button type="button" class="btn btn-sm btn-outline-secondary" data-copy-all="${tool_number}">Copy all offsets</button>
             </div>
@@ -480,6 +486,11 @@ function updateProbeResults(tool, probeResults) {
     const zTxt = r.z_offset.toFixed(3);
     $(`#T${tool}-z-new`).attr("data-raw", zTxt);
     $(`#T${tool}-z-new small`).text(zTxt);
+  }
+  if (typeof r.probe_z_offset === "number") {
+    const pzTxt = r.probe_z_offset.toFixed(3);
+    $(`#T${tool}-pz-new`).attr("data-raw", pzTxt);
+    $(`#T${tool}-pz-new small`).text(pzTxt);
   }
 }
 
@@ -771,8 +782,23 @@ $(document).on("click", "#calibrate-all-btn", function() {
     });
 });
 
-$(document).on("click", "span[id$='-x-new'], span[id$='-y-new'], span[id$='-z-new']", function() {
+$(document).on("click", "span[id$='-x-new'], span[id$='-y-new'], span[id$='-z-new'], span[id$='-pz-new']", function() {
   const id = $(this).attr("id") || "";
+
+  // Probe Z offset (tool_probe z_offset)
+  if (id.endsWith("-pz-new")) {
+    const rawText = $(this).attr("data-raw") || $(this).find(":first-child").text();
+    const numericValue = parseFloat(rawText);
+    if (Number.isNaN(numericValue)) return;
+    const value = formatClipboardNumber(numericValue);
+    if (value === null) return;
+    const payload = `z_offset: ${value}`;
+    copyTextToClipboard(payload, "copy probe z")
+      .then(function() { console.log(`Copied ${payload}`); })
+      .catch(function(err) { console.error('Clipboard copy failed:', err); });
+    return;
+  }
+
   const match = id.match(/-([xyz])-new$/u);
   if (!match) return;
 
