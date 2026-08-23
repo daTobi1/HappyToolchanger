@@ -158,6 +158,21 @@ function syncTapMinTemp(value) {
     });
 }
 
+// /printer/gcode/script ist synchron: der Request bleibt offen, bis das
+// Skript durchgelaufen ist. Eine Kalibrierung dauert Minuten, und bricht die
+// Verbindung vorher ab, meldet jQuery einen Fehler - obwohl Klipper unbeirrt
+// weiterarbeitet. Nur eine Fehler-Payload von Moonraker heisst, dass das
+// Kommando wirklich gescheitert ist; die kommt dann als 400 in Sekunden.
+function gcodeErrorMessage(err) {
+  try {
+    if (err.responseJSON.error.message) return String(err.responseJSON.error.message);
+  } catch (_) {}
+  try {
+    if ((err.responseJSON || err).message) return String((err.responseJSON || err).message);
+  } catch (_) {}
+  return null;
+}
+
 function escapeHtml(s) {
   return String(s)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -1133,9 +1148,16 @@ $(document).on("click", "#calibrate-all-btn", function() {
       })
       .fail(err => {
         console.error("Calibration failed:", err);
-        var msg = "Calibration failed";
-        try { msg += ": " + err.responseJSON.error.message; } catch(_){}
-        if (typeof showToast === 'function') showToast(msg, "danger");
+        var detail = gcodeErrorMessage(err);
+        if (typeof showToast === 'function') {
+          if (detail) {
+            showToast("Calibration failed: " + detail, "danger");
+          } else {
+            // Verbindung weg, der Drucker rechnet weiter - kein Fehler
+            showToast("Verbindung zum Lauf verloren - er laeuft weiter. "
+                      + "Fortschritt in der Konsole.", "warning");
+          }
+        }
       })
       .always(() => {
         $btn.prop("disabled", false).text("CALIBRATE Z-OFFSETS");
@@ -1381,9 +1403,16 @@ $(document).on("click", "#probe-cal-btn", function() {
       })
       .fail(function(err) {
         console.error("Probe calibration failed:", err);
-        var msg = "Probe calibration failed";
-        try { msg += ": " + err.responseJSON.error.message; } catch(_){}
-        if (typeof showToast === 'function') showToast(msg, "danger");
+        var detail = gcodeErrorMessage(err);
+        if (typeof showToast === 'function') {
+          if (detail) {
+            showToast("Probe calibration failed: " + detail, "danger");
+          } else {
+            // Verbindung weg, der Drucker rechnet weiter - kein Fehler
+            showToast("Verbindung zum Lauf verloren - er laeuft weiter. "
+                      + "Fortschritt in der Konsole.", "warning");
+          }
+        }
       })
       .always(function() {
         $btn.prop("disabled", false).text("CALIBRATE PROBE OFFSETS");
@@ -1652,9 +1681,16 @@ $(document).on("click", "#global-save-config-btn", function() {
         if (typeof showToast === 'function') showToast("Config saved — Klipper restarting", "success");
       })
       .fail(function(err) {
-        var msg = "SAVE_CONFIG failed";
-        try { msg += ": " + err.responseJSON.error.message; } catch(_){}
-        if (typeof showToast === 'function') showToast(msg, "danger");
+        // SAVE_CONFIG startet Klipper neu, die Verbindung bricht dabei
+        // zwangslaeufig ab - das ist kein Fehlschlag.
+        var detail = gcodeErrorMessage(err);
+        if (typeof showToast === 'function') {
+          if (detail) {
+            showToast("SAVE_CONFIG failed: " + detail, "danger");
+          } else {
+            showToast("Config gespeichert - Klipper startet neu", "success");
+          }
+        }
         $btn.prop("disabled", false).html(btnHtml);
       });
   });
