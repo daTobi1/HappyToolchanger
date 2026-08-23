@@ -589,8 +589,9 @@ class Offset:
         "TOOLS=0,1,2,3 to select tools (default: all with z_offset data). "
         "REF_PROBE=\"<name>\" overrides the probe used for the reference "
         "zero (default: the tool's probe_cal_map entry). "
-        "APPLY=1 (default) sets z_offset at runtime and stages config save; "
-        "only tools measured with their mechanical Tap are applied.")
+        "APPLY=1 (default) sets z_offset at runtime only - persist it with "
+        "APPLY PROBE OFFSETS in the webapp, not SAVE_CONFIG. Only tools "
+        "measured with their mechanical Tap are applied.")
 
     def cmd_CALIBRATE_PROBE_OFFSETS(self, gcmd):
         if not self.is_homed():
@@ -925,12 +926,16 @@ class Offset:
                         tp = self.printer.lookup_object(
                             'tool_probe T%d' % tool_nr)
                         tp.probe_offsets.z_offset = probe_z_offset
-                        configfile = self.printer.lookup_object('configfile')
-                        configfile.set('tool_probe T%d' % tool_nr,
-                                       'z_offset', '%.3f' % probe_z_offset)
+                        # Runtime only, deliberately no configfile.set():
+                        # z_offset lives in the included T<n>.cfg, and staging
+                        # it for SAVE_CONFIG makes Klipper refuse with
+                        # "conflicts with included value" - which then blocks
+                        # SAVE_CONFIG for everything else too until restart.
+                        # APPLY PROBE OFFSETS in the webapp writes the file.
                         self.gcode.respond_info(
-                            "T%d: z_offset applied (SAVE_CONFIG to persist)"
-                            % tool_nr)
+                            "T%d: z_offset set at runtime (use APPLY PROBE "
+                            "OFFSETS to write it into T%d.cfg; do NOT use "
+                            "SAVE_CONFIG for this)" % (tool_nr, tool_nr))
                     except Exception as e:
                         self.gcode.respond_info(
                             "T%d: could not apply z_offset: %s"
@@ -974,7 +979,9 @@ class Offset:
                     % (tool_nr, zo, pzo, saved))
         if any_applied:
             self.gcode.respond_info(
-                "Offsets applied at runtime. Use SAVE_CONFIG to persist.")
+                "Offsets applied at runtime. Persist them with APPLY PROBE "
+                "OFFSETS in the webapp - not with SAVE_CONFIG, which cannot "
+                "write options that an included file already defines.")
         self._save_probe_results()
 
     # ─── Gcode macro hooks ───────────────────────────────────────────────
