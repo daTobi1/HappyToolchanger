@@ -23,6 +23,7 @@ let _probeCalConfig = null;   // { ref_tool, ref_probe, tool_probes: { "0": "pro
 let _toolProbeOffsets = {};    // { "0": 0.05, "1": -0.02, ... } current tool_probe z_offsets
 let _probeCalResults = {};     // { "0": { probe_z_offset: 0.05 }, ... } from probe_results
 let _eddyTapDeviations = {};   // { "0": { deviation: 0.01, probe: "..." } } — info only, not applicable
+let _tapMinTemp = null;        // _TAP_PROBE_ACTIVATE variable_min_temp — Untergrenze, auf die der Tap heizt
 let _toolGcodeOffsets = {};    // { "0": {x:0, y:0, z:0}, ... } current tool gcode offsets
 let _zSwitchResults = {};      // { "0": { z_offset: 0.0, z_trigger: 1.23 }, ... }
 
@@ -120,6 +121,41 @@ function confirmDialog(opts) {
 
     modal.show();
   });
+}
+
+// Vorbelegung der Temperaturfelder: die Untergrenze, auf die
+// _TAP_PROBE_ACTIVATE ohnehin heizt. Kalibriert man darunter, misst der
+// Z-Switch kalt und der Tap heiss - die Duesenausdehnung (Groessenordnung
+// 0.1mm) landet dann im probe_z_offset.
+function tapMinTempDefault() {
+  return (typeof _tapMinTemp === 'number' && _tapMinTemp > 0) ? _tapMinTemp : 0;
+}
+
+function tapMinTempHint() {
+  if (tapMinTempDefault() > 0) {
+    return 'Tap heizt auf mind. ' + tapMinTempDefault() + '&deg;C';
+  }
+  return '0 = no heating';
+}
+
+// Haelt die Untergrenze des Taps mit dem gewaehlten Wert im Gleichlauf.
+// Ohne das wuerde ein niedrigerer UI-Wert ins Leere laufen: der Tap heizt
+// trotzdem auf min_temp und misst damit bei einer anderen Temperatur als
+// der Z-Switch.
+function syncTapMinTemp(value) {
+  var v = parseInt(value, 10);
+  if (!(v > 0) || v === _tapMinTemp) return $.Deferred().resolve().promise();
+  var script = 'SET_GCODE_VARIABLE MACRO=_TAP_PROBE_ACTIVATE VARIABLE=min_temp VALUE=' + v;
+  return $.get(printerUrl(printerIp, "/printer/gcode/script?script=" + encodeURIComponent(script)))
+    .done(function () {
+      _tapMinTemp = v;
+      OffsetDebug.log("tap min_temp synced", v);
+    })
+    .fail(function () {
+      if (typeof showToast === 'function') {
+        showToast("Konnte die Tap-Temperatur nicht setzen", "warning");
+      }
+    });
 }
 
 function escapeHtml(s) {
@@ -644,11 +680,18 @@ const nonMasterToolItem = ({tool_number, cx_offset, cy_offset, disabled, tc_disa
 // Offset status fetch (for dropdown label + z fields)
 // --------------------------
 function fetchOffsetStatus() {
-  return $.get(printerUrl(printerIp, "/printer/objects/query?offset"))
+  return $.get(printerUrl(printerIp,
+      "/printer/objects/query?offset&" +
+      encodeURIComponent("gcode_macro _TAP_PROBE_ACTIVATE")))
     .then(function(ax){
       const st = ax?.result?.status?.offset;
       _offsetPresent = !!st;
       _offsetZCalcDefault = (st?.z_calc_method || null);
+      // Der Tap heizt ueber _TAP_PROBE_ACTIVATE ohnehin auf min_temp. Wird
+      // niedriger kalibriert, messen Z-Switch und Tap bei verschiedenen
+      // Temperaturen und die Waermeausdehnung landet im probe_z_offset.
+      var tapMacro = ax?.result?.status?.["gcode_macro _TAP_PROBE_ACTIVATE"];
+      if (typeof tapMacro?.min_temp === 'number') _tapMinTemp = tapMacro.min_temp;
       _toolProbeOffsets = (st?.tool_probe_offsets || {});
       _toolGcodeOffsets = (st?.tool_gcode_offsets || {});
       // Extract results from probe_results per tool
@@ -843,10 +886,10 @@ function calibrateButton(toolNumbers = [], enabled = false) {
         <div class="border border-secondary-subtle rounded p-2 bg-dark">
           <div class="d-flex justify-content-between align-items-center mb-1">
             <span class="fs-6">Extruder temperature</span>
-            <small class="text-secondary">0 = no heating</small>
+            <small class="text-secondary">${tapMinTempHint()}</small>
           </div>
           <div class="input-group input-group-sm w-auto">
-            <input type="number" id="calibrate-extruder-temp" class="form-control form-control-sm" style="max-width:80px;" min="0" max="350" step="5" value="0" placeholder="0">
+            <input type="number" id="calibrate-extruder-temp" class="form-control form-control-sm" style="max-width:80px;" min="0" max="350" step="5" value="${tapMinTempDefault()}" placeholder="0">
             <span class="input-group-text">°C</span>
           </div>
         </div>
@@ -1014,10 +1057,10 @@ function probeCalibrationSection(toolNumbers, enabled) {
     '<div class="border border-secondary-subtle rounded p-2 bg-dark mb-2">' +
       '<div class="d-flex justify-content-between align-items-center mb-1">' +
         '<span class="fs-6">Extruder temperature</span>' +
-        '<small class="text-secondary">0 = no heating</small>' +
+        '<small class="text-secondary">' + tapMinTempHint() + '</small>' +
       '</div>' +
       '<div class="input-group input-group-sm w-auto">' +
-        '<input type="number" id="probe-cal-extruder-temp" class="form-control form-control-sm" style="max-width:80px;" min="0" max="350" step="5" value="0" placeholder="0">' +
+        '<input type="number" id="probe-cal-extruder-temp" class="form-control form-control-sm" style="max-width:80px;" min="0" max="350" step="5" value="' + tapMinTempDefault() + '" placeholder="0">' +
         '<span class="input-group-text">&deg;C</span>' +
       '</div>' +
     '</div>' +
@@ -1045,6 +1088,7 @@ $(document).on("click", "#calibrate-all-btn", function() {
 
   const method = ($("#z-calc-method").val() || "config").toLowerCase();
   const extruderTemp = parseInt($("#calibrate-extruder-temp").val(), 10) || 0;
+  syncTapMinTemp(extruderTemp);
 
   // Only send override if not config
   const zCalcPart = (method !== "config") ? ` Z_CALC=${method}` : "";
@@ -1262,6 +1306,7 @@ $(document).on("click", "#probe-cal-btn", function() {
     lines.push('SET_PROBE_CAL_MAP TOOL=' + t + ' PROBE="' + probe + '"');
   });
   var probeTemp = parseInt($("#probe-cal-extruder-temp").val(), 10) || 0;
+  syncTapMinTemp(probeTemp);
   var tempPart = (probeTemp > 0) ? ' EXTRUDER_TEMP=' + probeTemp : '';
   // REF_PROBE must be sent explicitly — it is not part of probe_cal_map,
   // and without it Klipper falls back to "first Eddy found".
