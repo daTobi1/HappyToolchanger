@@ -1383,9 +1383,15 @@ function pidCalibrationSection(toolNumbers, enabled) {
   var disabledAttr = enabled ? '' : 'disabled';
 
   var defTool = pidDefault('tool', null);
-  var toolOptions = sortedTools.map(function (t) {
-    var sel = (t === defTool) ? ' selected' : '';
-    return '<option value="' + t + '"' + sel + '>T' + t + '</option>';
+  // Vorauswahl: pid_tool falls gesetzt, sonst alle - wie bei der
+  // Z-Switch-Kalibrierung, damit mehrere Tools in einem Lauf durchlaufen.
+  var toolsMarkup = sortedTools.map(function (t) {
+    var checked = (defTool === null || t === defTool) ? ' checked' : '';
+    return '<div class="form-check form-check-inline me-3 mb-1">' +
+      '<input class="form-check-input pid-tool-checkbox" type="checkbox" ' +
+        'id="pid-tool-' + t + '" value="' + t + '"' + checked + '>' +
+      '<label class="form-check-label" for="pid-tool-' + t + '">T' + t + '</label>' +
+    '</div>';
   }).join('');
 
   var num = function (id, value, min, max, step, unit) {
@@ -1399,13 +1405,20 @@ function pidCalibrationSection(toolNumbers, enabled) {
   return '<div class="container p-0">' +
     '<div class="border border-secondary-subtle rounded p-2 bg-dark mb-2">' +
       '<div class="row g-2">' +
-        '<div class="col-6">' +
-          '<label class="form-label small text-secondary mb-1">Tool</label>' +
-          '<select class="form-select form-select-sm" id="pid-tool">' + toolOptions + '</select>' +
+        '<div class="col-12">' +
+          '<div class="d-flex justify-content-between align-items-center mb-1">' +
+            '<span class="small text-secondary">Tools to tune</span>' +
+            '<div class="form-check mb-0">' +
+              '<input class="form-check-input" type="checkbox" id="pid-select-all">' +
+              '<label class="form-check-label" for="pid-select-all">' +
+                '<small class="text-secondary">Select all</small></label>' +
+            '</div>' +
+          '</div>' +
+          '<div>' + toolsMarkup + '</div>' +
         '</div>' +
         '<div class="col-6">' +
           '<label class="form-label small text-secondary mb-1">Temperature</label>' +
-          num('pid-temp', pidDefault('temp', 245), 60, 500, 5, '&deg;C') +
+          num('pid-temp', pidDefault('temp', 200), 60, 500, 5, '&deg;C') +
         '</div>' +
         '<div class="col-6">' +
           '<label class="form-label small text-secondary mb-1">Height over bed</label>' +
@@ -1417,7 +1430,8 @@ function pidCalibrationSection(toolNumbers, enabled) {
         '</div>' +
       '</div>' +
       '<div class="small text-secondary mt-2">' +
-        'Tuning runs over the bed centre. Fan and distance to the bed dominate ' +
+        'Selected tools are tuned one after another, each over the bed centre. ' +
+        'Fan and distance to the bed dominate ' +
         'the thermal response, so tune at the values you actually print with. ' +
         'Defaults come from <code>[offset] pid_temp / pid_height / pid_fan_speed</code>.' +
       '</div>' +
@@ -1812,53 +1826,66 @@ $(document).on("click", "#apply-probe-btn", function() {
 // PID calibration click
 $(document).on("click", "#pid-cal-btn", function () {
   var $btn = $(this);
-  var tool = parseInt($("#pid-tool").val(), 10);
+  var tools = $(".pid-tool-checkbox:checked")
+    .map(function () { return parseInt(this.value, 10); })
+    .get()
+    .filter(function (v) { return !Number.isNaN(v); });
   var temp = parseInt($("#pid-temp").val(), 10);
   var height = parseFloat($("#pid-height").val());
   var fan = parseInt($("#pid-fan").val(), 10);
 
-  if (Number.isNaN(tool) || Number.isNaN(temp)) {
-    if (typeof showToast === 'function') showToast("Tool und Temperatur wählen", "warning");
+  if (!tools.length) {
+    if (typeof showToast === 'function') showToast("Kein Tool ausgewaehlt", "warning");
+    return;
+  }
+  if (Number.isNaN(temp)) {
+    if (typeof showToast === 'function') showToast("Temperatur waehlen", "warning");
     return;
   }
   if (Number.isNaN(height)) height = 10;
   if (Number.isNaN(fan)) fan = 0;
 
-  var script = 'CALIBRATE_TOOL_PID TOOL=' + tool + ' TEMP=' + temp +
+  var script = 'CALIBRATE_TOOL_PID TOOLS=' + tools.join(',') + ' TEMP=' + temp +
                ' HEIGHT=' + height + ' FAN=' + fan;
 
-  var cur = _toolPid[String(tool)];
-  var curRow = cur
-    ? '<tr><td class="px-1 py-0 text-secondary">Current</td>' +
-      '<td class="px-1 py-0">Kp ' + cur.pid_kp.toFixed(3) +
-      ' &nbsp;Ki ' + cur.pid_ki.toFixed(3) +
-      ' &nbsp;Kd ' + cur.pid_kd.toFixed(3) + '</td></tr>'
-    : '';
+  var curRow = tools.map(function (tn) {
+    var cur = _toolPid[String(tn)];
+    return '<tr><td class="px-1 py-0 text-secondary">T' + escapeHtml(tn) + '</td>' +
+      '<td class="px-1 py-0">' + (cur
+        ? 'Kp ' + cur.pid_kp.toFixed(3) + ' &nbsp;Ki ' + cur.pid_ki.toFixed(3) +
+          ' &nbsp;Kd ' + cur.pid_kd.toFixed(3)
+        : '<span class="text-secondary">noch nicht getunt</span>') + '</td></tr>';
+  }).join('');
 
   var body =
     '<div class="border border-secondary-subtle rounded p-2 mb-2 bg-dark">' +
       '<table class="table table-sm table-borderless mb-0" style="font-size:0.85rem;"><tbody>' +
-        '<tr><td class="px-1 py-0 text-secondary">Tool</td>' +
-            '<td class="px-1 py-0 fw-bold">T' + escapeHtml(tool) + '</td></tr>' +
+        '<tr><td class="px-1 py-0 text-secondary">Tools</td>' +
+            '<td class="px-1 py-0 fw-bold">' +
+            tools.map(function (x) { return 'T' + x; }).join(', ') + '</td></tr>' +
         '<tr><td class="px-1 py-0 text-secondary">Temperature</td>' +
             '<td class="px-1 py-0 fw-bold">' + escapeHtml(temp) + ' &deg;C</td></tr>' +
         '<tr><td class="px-1 py-0 text-secondary">Height over bed</td>' +
             '<td class="px-1 py-0">' + escapeHtml(height) + ' mm (bed centre)</td></tr>' +
         '<tr><td class="px-1 py-0 text-secondary">Part fan</td>' +
             '<td class="px-1 py-0">' + escapeHtml(fan) + ' %</td></tr>' +
+      '</tbody></table>' +
+      '<div class="small text-secondary mt-1">Aktuelle Werte</div>' +
+      '<table class="table table-sm table-borderless mb-0" style="font-size:0.85rem;"><tbody>' +
         curRow +
       '</tbody></table>' +
     '</div>' +
     '<div class="small text-secondary mb-2">Command: <code>' + escapeHtml(script) + '</code></div>' +
     '<div class="small text-warning">' +
-      '<i class="bi bi-exclamation-triangle"></i> The tool is picked up and heated ' +
-      'to ' + escapeHtml(temp) + '&deg;C. Tuning takes several minutes.' +
+      '<i class="bi bi-exclamation-triangle"></i> Each tool is picked up and heated ' +
+      'to ' + escapeHtml(temp) + '&deg;C. Tuning takes several minutes per tool - ' +
+      escapeHtml(tools.length) + ' selected.' +
     '</div>' +
     '<div class="small text-secondary mt-1">' +
       'Nothing is written yet — the result appears in the table for review. ' +
       'Persist it with APPLY PID, never with <code>SAVE_CONFIG</code>: ' +
-      '<code>pid_Kp</code> lives in the included <code>T' + escapeHtml(tool) +
-      '.cfg</code>, which SAVE_CONFIG cannot write.' +
+      '<code>pid_Kp</code> lives in the included <code>T&lt;n&gt;.cfg</code>, ' +
+      'which SAVE_CONFIG cannot write.' +
     '</div>';
 
   confirmDialog({
@@ -1899,6 +1926,20 @@ $(document).on("click", "#pid-cal-btn", function () {
         });
       });
   });
+});
+
+function syncPidSelectAllState() {
+  var $all = $(".pid-tool-checkbox");
+  var $checked = $(".pid-tool-checkbox:checked");
+  $("#pid-select-all").prop("checked", $all.length > 0 && $all.length === $checked.length);
+}
+
+$(document).on("change", "#pid-select-all", function () {
+  $(".pid-tool-checkbox").prop("checked", $(this).prop("checked"));
+});
+
+$(document).on("change", ".pid-tool-checkbox", function () {
+  syncPidSelectAllState();
 });
 
 // Apply PID values to the tool config files
@@ -1971,51 +2012,48 @@ $(document).on("click", "#apply-pid-btn", function () {
   });
 });
 
-// Global SAVE_CONFIG
-$(document).on("click", "#global-save-config-btn", function() {
+// Klipper restart
+// Deliberately not SAVE_CONFIG: every value this app calibrates -
+// gcode_x/y/z_offset, tool_probe z_offset, pid_Kp/Ki/Kd - lives in an
+// included T<n>.cfg, and Klipper refuses to autosave options an include
+// already defines ("conflicts with included value"). The APPLY buttons
+// write those files directly; a restart is what makes Klipper read them.
+$(document).on("click", "#restart-klipper-btn", function() {
   var $btn = $(this);
-  var btnHtml = '<i class="bi bi-save"></i> SAVE_CONFIG (persist all changes)';
+  var btnHtml = '<i class="bi bi-arrow-clockwise"></i> RESTART KLIPPER';
 
   var body =
     '<div class="border border-secondary-subtle rounded p-2 mb-2 bg-dark">' +
-      '<div class="fw-bold mb-1">SAVE_CONFIG</div>' +
-      '<div class="small">Writes every value Klipper has staged at runtime into the ' +
-      '<code>#*#</code> auto-save block at the bottom of <code>printer.cfg</code>.</div>' +
+      '<div class="fw-bold mb-1">RESTART</div>' +
+      '<div class="small">Klipper liest die Konfigurationsdateien neu ein. ' +
+      'Damit werden die per APPLY geschriebenen Werte aktiv.</div>' +
     '</div>' +
     '<div class="small text-warning">' +
-      '<i class="bi bi-exclamation-triangle"></i> Klipper restarts afterwards. ' +
-      'Do not run this during a print.' +
+      '<i class="bi bi-exclamation-triangle"></i> Nicht waehrend eines Drucks. ' +
+      'Der Drucker verliert das Homing.' +
     '</div>' +
     '<div class="small text-secondary mt-1">' +
-      'The APPLY buttons above already write directly into the ' +
-      '<code>toolchanger/tools/T&lt;n&gt;.cfg</code> files, so offsets do not need this.' +
+      'Nicht angewendete Kalibrierwerte gehen dabei verloren - sie stehen nur ' +
+      'zur Laufzeit. Vorher die APPLY-Buttons nutzen.' +
     '</div>';
 
   confirmDialog({
-    title: "Run SAVE_CONFIG?",
+    title: "Klipper neu starten?",
     body: body,
-    okLabel: "OK — save & restart",
+    okLabel: "OK — neu starten",
     okClass: "btn-warning"
   }).then(function(ok) {
     if (!ok) return;
 
-    $btn.prop("disabled", true).text("Saving...");
-    $.get(printerUrl(printerIp, "/printer/gcode/script?script=SAVE_CONFIG"))
-      .done(function() {
-        if (typeof showToast === 'function') showToast("Config saved — Klipper restarting", "success");
-      })
-      .fail(function(err) {
-        // SAVE_CONFIG startet Klipper neu, die Verbindung bricht dabei
-        // zwangslaeufig ab - das ist kein Fehlschlag.
-        var detail = gcodeErrorMessage(err);
-        if (typeof showToast === 'function') {
-          if (detail) {
-            showToast("SAVE_CONFIG failed: " + detail, "danger");
-          } else {
-            showToast("Config gespeichert - Klipper startet neu", "success");
-          }
-        }
-        $btn.prop("disabled", false).html(btnHtml);
+    $btn.prop("disabled", true).text("Neustart...");
+    $.get(printerUrl(printerIp, "/printer/gcode/script?script=RESTART"))
+      .always(function() {
+        // Die Verbindung bricht durch den Neustart zwangslaeufig ab
+        if (typeof showToast === 'function') showToast("Klipper startet neu", "success");
+        setTimeout(function() {
+          $btn.prop("disabled", false).html(btnHtml);
+          fetchOffsetStatus().then(getTools);
+        }, 8000);
       });
   });
 });
@@ -2193,11 +2231,11 @@ function getTools() {
               false
             ));
 
-            // Global SAVE_CONFIG button
+            // Klipper-Neustart-Button
             $acc.after(
               '<div class="mt-2" id="global-save-config-wrap">' +
-                '<button class="btn btn-outline-warning w-100" id="global-save-config-btn">' +
-                  '<i class="bi bi-save"></i> SAVE_CONFIG (persist all changes)' +
+                '<button class="btn btn-outline-warning w-100" id="restart-klipper-btn">' +
+                  '<i class="bi bi-arrow-clockwise"></i> RESTART KLIPPER' +
                 '</button>' +
               '</div>'
             );
