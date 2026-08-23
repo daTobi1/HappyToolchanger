@@ -73,6 +73,104 @@ window.OffsetDebug = {
 OffsetDebug.init();
 
 // --------------------------
+// Confirmation dialog
+// --------------------------
+// Shows #confirmModal and resolves true on OK, false on Cancel / dismiss.
+// opts: { title, body (HTML), okLabel, okClass }
+function confirmDialog(opts) {
+  opts = opts || {};
+  var title = opts.title || "Confirm";
+  var okLabel = opts.okLabel || "OK";
+  var okClass = opts.okClass || "btn-primary";
+
+  return new Promise(function(resolve) {
+    var el = document.getElementById("confirmModal");
+    if (!el || typeof bootstrap === "undefined") {
+      // Fallback if the modal markup is missing
+      resolve(window.confirm(title));
+      return;
+    }
+
+    $("#confirmModalLabel").text(title);
+    $("#confirmModalBody").html(opts.body || "");
+
+    var $ok = $("#confirmModalOk");
+    $ok.text(okLabel)
+       .removeClass("btn-primary btn-success btn-warning btn-danger")
+       .addClass(okClass);
+
+    var modal = bootstrap.Modal.getOrCreateInstance(el);
+    var settled = false;
+
+    function settle(result) {
+      if (settled) return;
+      settled = true;
+      $ok.off("click.confirmDialog");
+      $(el).off("hidden.bs.modal.confirmDialog");
+      resolve(result);
+    }
+
+    $ok.off("click.confirmDialog").on("click.confirmDialog", function() {
+      settle(true);
+      modal.hide();
+    });
+    $(el).off("hidden.bs.modal.confirmDialog")
+         .on("hidden.bs.modal.confirmDialog", function() { settle(false); });
+
+    modal.show();
+  });
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+// Renders the "what gets written where" body of a confirmation dialog.
+// entries: [{ tool, file, section, changes: [{key, from, to}] }]
+// from/to are strings (or null/undefined for "unknown"); a numeric diff is
+// shown whenever both sides parse as numbers.
+function offsetChangeListHtml(entries, note) {
+  var html = "";
+
+  entries.forEach(function(e) {
+    var rows = e.changes.map(function(c) {
+      var fromTxt = (c.from === null || c.from === undefined || c.from === "")
+        ? "-" : String(c.from);
+      var toTxt = String(c.to);
+      var diffTxt = "";
+      var fromNum = parseFloat(fromTxt);
+      var toNum = parseFloat(toTxt);
+      if (!Number.isNaN(fromNum) && !Number.isNaN(toNum)) {
+        var d = toNum - fromNum;
+        diffTxt = (d >= 0 ? "+" : "") + d.toFixed(3);
+      }
+      return '<tr>' +
+        '<td class="px-1 py-0 text-nowrap"><code>' + escapeHtml(c.key) + '</code></td>' +
+        '<td class="px-1 py-0 text-end text-secondary">' + escapeHtml(fromTxt) + '</td>' +
+        '<td class="px-1 py-0 text-center text-secondary">&rarr;</td>' +
+        '<td class="px-1 py-0 text-end text-success fw-bold">' + escapeHtml(toTxt) + '</td>' +
+        '<td class="px-1 py-0 text-end text-info">' + escapeHtml(diffTxt) + '</td>' +
+      '</tr>';
+    }).join("");
+
+    html += '<div class="border border-secondary-subtle rounded p-2 mb-2 bg-dark">' +
+      '<div class="fw-bold">T' + escapeHtml(e.tool) + '</div>' +
+      '<div class="small text-secondary mb-1"><code>' + escapeHtml(e.file) + '</code>' +
+        (e.section ? ' &rarr; <code>[' + escapeHtml(e.section) + ']</code>' : '') +
+      '</div>' +
+      '<table class="table table-sm table-borderless mb-0" style="font-size:0.85rem;">' +
+        '<tbody>' + rows + '</tbody>' +
+      '</table>' +
+    '</div>';
+  });
+
+  if (note) html += '<div class="small text-secondary">' + note + '</div>';
+  return html;
+}
+
+// --------------------------
 // Config file update via Moonraker File API
 // --------------------------
 // Updates gcode offsets directly in tool config files (avoids SAVE_CONFIG conflicts with included files)
@@ -110,6 +208,62 @@ function updateToolConfigOffsets(toolOffsets) {
         }
         var formData = new FormData();
         var blob = new Blob([content], {type: 'text/plain'});
+        formData.append('file', blob, filePath);
+        formData.append('root', 'config');
+        return fetch(baseUrl + "/server/files/upload", { method: 'POST', body: formData })
+          .then(function() { return processNext(idx + 1); });
+      });
+  }
+  return processNext(0);
+}
+
+// Replaces `key` inside the given config section only. Returns the new
+// content, or null if the section/key was not found.
+// Needed for tool_probe z_offset: T<n>.cfg also has x_offset/y_offset in the
+// same section and gcode_z_offset in [tool T<n>].
+function replaceInConfigSection(content, sectionName, key, value) {
+  var lines = content.split('\n');
+  var escName = sectionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  var sectionRx = new RegExp('^\\s*\\[\\s*' + escName + '\\s*\\]');
+  var anySectionRx = /^\s*\[[^\]]+\]/;
+  var keyRx = new RegExp('^(\\s*' + key + '\\s*[:=]\\s*).*$');
+  var inSection = false;
+
+  for (var i = 0; i < lines.length; i++) {
+    if (anySectionRx.test(lines[i])) {
+      inSection = sectionRx.test(lines[i]);
+      continue;
+    }
+    if (!inSection) continue;
+    if (keyRx.test(lines[i])) {
+      lines[i] = lines[i].replace(keyRx, "$1" + value);
+      return lines.join('\n');
+    }
+  }
+  return null;
+}
+
+// Updates tool_probe z_offset directly in tool config files.
+// toolZOffsets: { "0": "-0.812", "1": "-0.831", ... }
+function updateToolProbeOffsets(toolZOffsets) {
+  var tools = Object.keys(toolZOffsets);
+  var baseUrl = printerUrl(printerIp, "");
+
+  function processNext(idx) {
+    if (idx >= tools.length) return Promise.resolve();
+    var t = tools[idx];
+    var filePath = "toolchanger/tools/T" + t + ".cfg";
+    return fetch(baseUrl + "/server/files/config/" + filePath)
+      .then(function(r) { return r.text(); })
+      .then(function(content) {
+        var updated = replaceInConfigSection(
+          content, "tool_probe T" + t, "z_offset", toolZOffsets[t]);
+        if (updated === null) {
+          OffsetDebug.log("No [tool_probe T" + t + "] z_offset line in " + filePath);
+          return processNext(idx + 1);
+        }
+        var formData = new FormData();
+        var blob = new Blob([updated], {type: 'text/plain'});
         formData.append('file', blob, filePath);
         formData.append('root', 'config');
         return fetch(baseUrl + "/server/files/upload", { method: 'POST', body: formData })
@@ -658,6 +812,16 @@ function probeCalResultsTable(sortedTools) {
     '</tr>';
   }).join('');
 
+  // Apply button only makes sense once a calibration produced new values
+  var hasResults = sortedTools.some(function(t) { return !!_probeCalResults[String(t)]; });
+  var applyBtn = hasResults
+    ? '<div class="pt-2">' +
+        '<button class="btn btn-success w-100" id="apply-probe-btn">' +
+          '<i class="bi bi-check-circle"></i> APPLY PROBE OFFSETS TO CONFIG' +
+        '</button>' +
+      '</div>'
+    : '';
+
   return '<div class="border border-secondary-subtle rounded p-2 bg-dark">' +
     '<span class="fs-6 fw-bold d-block mb-1">Probe Z-Offsets</span>' +
     '<table class="table table-sm table-borderless mb-0" style="font-size:0.85rem;">' +
@@ -669,6 +833,7 @@ function probeCalResultsTable(sortedTools) {
       '</tr></thead>' +
       '<tbody>' + rows + '</tbody>' +
     '</table>' +
+    applyBtn +
   '</div>';
 }
 
@@ -778,24 +943,52 @@ $(document).on("click", "#calibrate-all-btn", function() {
   const tempPart = (extruderTemp > 0) ? ` EXTRUDER_TEMP=${extruderTemp}` : "";
   const script = `CALIBRATE_ALL_Z_OFFSETS TOOLS=${selectedTools.join(",")}${zCalcPart}${tempPart} REF=${refTool}`;
 
-  const $btn = $("#calibrate-all-btn");
-  $btn.prop("disabled", true).text("Calibrating...");
-  if (typeof showToast === 'function') showToast("Calibration started...", "info");
+  const body =
+    '<div class="border border-secondary-subtle rounded p-2 mb-2 bg-dark">' +
+      '<table class="table table-sm table-borderless mb-0" style="font-size:0.85rem;"><tbody>' +
+        '<tr><td class="px-1 py-0 text-secondary">Tools</td>' +
+            '<td class="px-1 py-0 fw-bold">' + selectedTools.map(t => "T" + t).join(", ") + '</td></tr>' +
+        '<tr><td class="px-1 py-0 text-secondary">Reference</td>' +
+            '<td class="px-1 py-0 fw-bold">T' + escapeHtml(refTool) + '</td></tr>' +
+        '<tr><td class="px-1 py-0 text-secondary">Z calc</td>' +
+            '<td class="px-1 py-0">' + escapeHtml(method) + '</td></tr>' +
+        '<tr><td class="px-1 py-0 text-secondary">Extruder temp</td>' +
+            '<td class="px-1 py-0">' + (extruderTemp > 0 ? escapeHtml(extruderTemp) + ' &deg;C' : 'no heating') + '</td></tr>' +
+      '</tbody></table>' +
+    '</div>' +
+    '<div class="small text-secondary mb-2">Command: <code>' + escapeHtml(script) + '</code></div>' +
+    '<div class="small text-warning">' +
+      '<i class="bi bi-exclamation-triangle"></i> The printer moves and changes tools. ' +
+      'Nothing is written to a config file — the results appear in the table for review.' +
+    '</div>';
 
-  $.get(printerUrl(printerIp, `/printer/gcode/script?script=${encodeURIComponent(script)}`))
-    .done(() => {
-      console.log("Calibration started:", script);
-      if (typeof showToast === 'function') showToast("Calibration command sent", "success");
-    })
-    .fail(err => {
-      console.error("Calibration failed:", err);
-      var msg = "Calibration failed";
-      try { msg += ": " + err.responseJSON.error.message; } catch(_){}
-      if (typeof showToast === 'function') showToast(msg, "danger");
-    })
-    .always(() => {
-      $btn.prop("disabled", false).text("CALIBRATE Z-OFFSETS");
-    });
+  confirmDialog({
+    title: "Start Z-switch calibration?",
+    body: body,
+    okLabel: "OK — start",
+    okClass: "btn-primary"
+  }).then(function(ok) {
+    if (!ok) return;
+
+    const $btn = $("#calibrate-all-btn");
+    $btn.prop("disabled", true).text("Calibrating...");
+    if (typeof showToast === 'function') showToast("Calibration started...", "info");
+
+    $.get(printerUrl(printerIp, `/printer/gcode/script?script=${encodeURIComponent(script)}`))
+      .done(() => {
+        console.log("Calibration started:", script);
+        if (typeof showToast === 'function') showToast("Calibration command sent", "success");
+      })
+      .fail(err => {
+        console.error("Calibration failed:", err);
+        var msg = "Calibration failed";
+        try { msg += ": " + err.responseJSON.error.message; } catch(_){}
+        if (typeof showToast === 'function') showToast(msg, "danger");
+      })
+      .always(() => {
+        $btn.prop("disabled", false).text("CALIBRATE Z-OFFSETS");
+      });
+  });
 });
 
 $(document).on("click", "span[id$='-x-new'], span[id$='-y-new'], span[id$='-z-new'], span[id$='-pz-new']", function() {
@@ -989,10 +1182,12 @@ $(document).on("click", "#probe-cal-btn", function() {
 // Apply XY offsets to Klipper
 $(document).on("click", "#apply-xy-btn", function() {
   var $btn = $(this);
-  $btn.prop("disabled", true).text("Applying...");
+  var btnHtml = '<i class="bi bi-check-circle"></i> APPLY XY OFFSETS TO KLIPPER';
   var master = getSelectedReferenceTool(0);
   var lines = [];
   var toolOffsets = {};
+  var entries = [];
+
   $('button.toolchange-btn').each(function(){
     var tool = $(this).data("tool");
     if (parseInt(tool, 10) === parseInt(master, 10)) return;
@@ -1001,83 +1196,225 @@ $(document).on("click", "#apply-xy-btn", function() {
     if (rawX && rawY) {
       lines.push("SET_TOOL_GCODE_OFFSET T=" + tool + " X=" + rawX + " Y=" + rawY);
       toolOffsets[tool] = { x: rawX, y: rawY };
+      var cur = _toolGcodeOffsets[String(tool)] || {};
+      entries.push({
+        tool: tool,
+        file: "toolchanger/tools/T" + tool + ".cfg",
+        section: "tool T" + tool,
+        changes: [
+          { key: "gcode_x_offset", from: (typeof cur.x === 'number') ? cur.x.toFixed(3) : null, to: rawX },
+          { key: "gcode_y_offset", from: (typeof cur.y === 'number') ? cur.y.toFixed(3) : null, to: rawY }
+        ]
+      });
     }
   });
+
   if (!lines.length) {
     if (typeof showToast === 'function') showToast("No XY offsets to apply", "warning");
-    $btn.prop("disabled", false).html('<i class="bi bi-check-circle"></i> APPLY XY OFFSETS TO KLIPPER');
     return;
   }
-  // Set runtime offsets immediately
-  var script = lines.join('\n');
-  var runtimeDone = $.get(printerUrl(printerIp, "/printer/gcode/script?script=" + encodeURIComponent(script)));
-  // Also persist to config files directly (avoids SAVE_CONFIG conflict with included files)
-  var configDone = updateToolConfigOffsets(toolOffsets);
-  Promise.all([runtimeDone, configDone])
-    .then(function() {
-      if (typeof showToast === 'function') showToast("XY offsets applied and saved to config", "success");
-    })
-    .catch(function(err) {
-      var msg = "Apply XY offsets failed";
-      try { msg += ": " + (err.responseJSON || err).message; } catch(_){}
-      if (typeof showToast === 'function') showToast(msg, "danger");
-    })
-    .finally(function() {
-      $btn.prop("disabled", false).html('<i class="bi bi-check-circle"></i> APPLY XY OFFSETS TO KLIPPER');
-    });
+
+  var note = 'Reference tool <strong>T' + escapeHtml(master) + '</strong> is not changed.<br>' +
+    'The values are set at runtime via <code>SET_TOOL_GCODE_OFFSET</code> and written ' +
+    'into the config files listed above.';
+
+  confirmDialog({
+    title: "Apply XY offsets?",
+    body: offsetChangeListHtml(entries, note),
+    okLabel: "OK — apply",
+    okClass: "btn-success"
+  }).then(function(ok) {
+    if (!ok) return;
+
+    $btn.prop("disabled", true).text("Applying...");
+    // Set runtime offsets immediately
+    var script = lines.join('\n');
+    var runtimeDone = $.get(printerUrl(printerIp, "/printer/gcode/script?script=" + encodeURIComponent(script)));
+    // Also persist to config files directly (avoids SAVE_CONFIG conflict with included files)
+    var configDone = updateToolConfigOffsets(toolOffsets);
+    Promise.all([runtimeDone, configDone])
+      .then(function() {
+        if (typeof showToast === 'function') showToast("XY offsets applied and saved to config", "success");
+      })
+      .catch(function(err) {
+        var msg = "Apply XY offsets failed";
+        try { msg += ": " + (err.responseJSON || err).message; } catch(_){}
+        if (typeof showToast === 'function') showToast(msg, "danger");
+      })
+      .finally(function() {
+        $btn.prop("disabled", false).html(btnHtml);
+      });
+  });
 });
 
 // Apply Z-switch offsets to Klipper
 $(document).on("click", "#apply-z-btn", function() {
   var $btn = $(this);
-  $btn.prop("disabled", true).text("Applying...");
+  var btnHtml = '<i class="bi bi-check-circle"></i> APPLY Z OFFSETS TO KLIPPER';
   var lines = [];
   var toolOffsets = {};
-  for (var k in _zSwitchResults) {
+  var entries = [];
+
+  var keys = Object.keys(_zSwitchResults).sort(function(a, b){ return a - b; });
+  keys.forEach(function(k) {
     var zOff = _zSwitchResults[k].z_offset;
-    if (typeof zOff === 'number') {
-      lines.push("SET_TOOL_GCODE_OFFSET T=" + k + " Z=" + zOff.toFixed(6));
-      toolOffsets[k] = { z: zOff.toFixed(6) };
-    }
-  }
+    if (typeof zOff !== 'number') return;
+    var zTxt = zOff.toFixed(6);
+    lines.push("SET_TOOL_GCODE_OFFSET T=" + k + " Z=" + zTxt);
+    toolOffsets[k] = { z: zTxt };
+    var cur = _toolGcodeOffsets[String(k)] || {};
+    entries.push({
+      tool: k,
+      file: "toolchanger/tools/T" + k + ".cfg",
+      section: "tool T" + k,
+      changes: [
+        { key: "gcode_z_offset", from: (typeof cur.z === 'number') ? cur.z.toFixed(3) : null, to: zTxt }
+      ]
+    });
+  });
+
   if (!lines.length) {
     if (typeof showToast === 'function') showToast("No Z offsets to apply", "warning");
-    $btn.prop("disabled", false).html('<i class="bi bi-check-circle"></i> APPLY Z OFFSETS TO KLIPPER');
     return;
   }
-  // Set runtime offsets immediately
-  var script = lines.join('\n');
-  var runtimeDone = $.get(printerUrl(printerIp, "/printer/gcode/script?script=" + encodeURIComponent(script)));
-  // Also persist to config files directly (avoids SAVE_CONFIG conflict with included files)
-  var configDone = updateToolConfigOffsets(toolOffsets);
-  Promise.all([runtimeDone, configDone])
-    .then(function() {
-      if (typeof showToast === 'function') showToast("Z offsets applied and saved to config", "success");
-    })
-    .catch(function(err) {
-      var msg = "Apply Z offsets failed";
-      try { msg += ": " + (err.responseJSON || err).message; } catch(_){}
-      if (typeof showToast === 'function') showToast(msg, "danger");
-    })
-    .finally(function() {
-      $btn.prop("disabled", false).html('<i class="bi bi-check-circle"></i> APPLY Z OFFSETS TO KLIPPER');
+
+  var note = 'The values are set at runtime via <code>SET_TOOL_GCODE_OFFSET</code> and written ' +
+    'into the config files listed above.';
+
+  confirmDialog({
+    title: "Apply Z offsets?",
+    body: offsetChangeListHtml(entries, note),
+    okLabel: "OK — apply",
+    okClass: "btn-success"
+  }).then(function(ok) {
+    if (!ok) return;
+
+    $btn.prop("disabled", true).text("Applying...");
+    // Set runtime offsets immediately
+    var script = lines.join('\n');
+    var runtimeDone = $.get(printerUrl(printerIp, "/printer/gcode/script?script=" + encodeURIComponent(script)));
+    // Also persist to config files directly (avoids SAVE_CONFIG conflict with included files)
+    var configDone = updateToolConfigOffsets(toolOffsets);
+    Promise.all([runtimeDone, configDone])
+      .then(function() {
+        if (typeof showToast === 'function') showToast("Z offsets applied and saved to config", "success");
+      })
+      .catch(function(err) {
+        var msg = "Apply Z offsets failed";
+        try { msg += ": " + (err.responseJSON || err).message; } catch(_){}
+        if (typeof showToast === 'function') showToast(msg, "danger");
+      })
+      .finally(function() {
+        $btn.prop("disabled", false).html(btnHtml);
+      });
+  });
+});
+
+// Apply probe offsets (tool_probe z_offset) to the tool config files
+$(document).on("click", "#apply-probe-btn", function() {
+  var $btn = $(this);
+  var btnHtml = '<i class="bi bi-check-circle"></i> APPLY PROBE OFFSETS TO CONFIG';
+  var toolZOffsets = {};
+  var entries = [];
+
+  var keys = Object.keys(_probeCalResults).sort(function(a, b){ return a - b; });
+  keys.forEach(function(k) {
+    var pz = _probeCalResults[k].probe_z_offset;
+    if (typeof pz !== 'number') return;
+    var pzTxt = pz.toFixed(3);
+    toolZOffsets[k] = pzTxt;
+    var cur = _toolProbeOffsets[String(k)];
+    entries.push({
+      tool: k,
+      file: "toolchanger/tools/T" + k + ".cfg",
+      section: "tool_probe T" + k,
+      changes: [
+        { key: "z_offset", from: (typeof cur === 'number') ? cur.toFixed(3) : null, to: pzTxt }
+      ]
     });
+  });
+
+  if (!entries.length) {
+    if (typeof showToast === 'function') showToast("No probe offsets to apply", "warning");
+    return;
+  }
+
+  var note = 'CALIBRATE_PROBE_OFFSETS already set these values at runtime. ' +
+    'Writing them into the config files above makes them permanent — ' +
+    'no <code>SAVE_CONFIG</code> needed.';
+
+  confirmDialog({
+    title: "Apply probe offsets?",
+    body: offsetChangeListHtml(entries, note),
+    okLabel: "OK — apply",
+    okClass: "btn-success"
+  }).then(function(ok) {
+    if (!ok) return;
+
+    $btn.prop("disabled", true).text("Applying...");
+    updateToolProbeOffsets(toolZOffsets)
+      .then(function() {
+        if (typeof showToast === 'function') showToast("Probe offsets saved to config", "success");
+        // Refresh the "Current" column so the table reflects the new state
+        return fetchOffsetStatus().then(function() {
+          var $container = $('#probe-cal-results-container');
+          if ($container.length) {
+            var tools = Object.keys(_toolProbeOffsets).map(Number).sort(function(a, b){ return a - b; });
+            $container.html(probeCalResultsTable(tools));
+          }
+        });
+      })
+      .catch(function(err) {
+        var msg = "Apply probe offsets failed";
+        try { msg += ": " + (err.responseJSON || err).message; } catch(_){}
+        if (typeof showToast === 'function') showToast(msg, "danger");
+      })
+      .finally(function() {
+        $btn.prop("disabled", false).html(btnHtml);
+      });
+  });
 });
 
 // Global SAVE_CONFIG
 $(document).on("click", "#global-save-config-btn", function() {
   var $btn = $(this);
-  $btn.prop("disabled", true).text("Saving...");
-  $.get(printerUrl(printerIp, "/printer/gcode/script?script=SAVE_CONFIG"))
-    .done(function() {
-      if (typeof showToast === 'function') showToast("Config saved — Klipper restarting", "success");
-    })
-    .fail(function(err) {
-      var msg = "SAVE_CONFIG failed";
-      try { msg += ": " + err.responseJSON.error.message; } catch(_){}
-      if (typeof showToast === 'function') showToast(msg, "danger");
-      $btn.prop("disabled", false).html('<i class="bi bi-save"></i> SAVE_CONFIG (persist all changes)');
-    });
+  var btnHtml = '<i class="bi bi-save"></i> SAVE_CONFIG (persist all changes)';
+
+  var body =
+    '<div class="border border-secondary-subtle rounded p-2 mb-2 bg-dark">' +
+      '<div class="fw-bold mb-1">SAVE_CONFIG</div>' +
+      '<div class="small">Writes every value Klipper has staged at runtime into the ' +
+      '<code>#*#</code> auto-save block at the bottom of <code>printer.cfg</code>.</div>' +
+    '</div>' +
+    '<div class="small text-warning">' +
+      '<i class="bi bi-exclamation-triangle"></i> Klipper restarts afterwards. ' +
+      'Do not run this during a print.' +
+    '</div>' +
+    '<div class="small text-secondary mt-1">' +
+      'The APPLY buttons above already write directly into the ' +
+      '<code>toolchanger/tools/T&lt;n&gt;.cfg</code> files, so offsets do not need this.' +
+    '</div>';
+
+  confirmDialog({
+    title: "Run SAVE_CONFIG?",
+    body: body,
+    okLabel: "OK — save & restart",
+    okClass: "btn-warning"
+  }).then(function(ok) {
+    if (!ok) return;
+
+    $btn.prop("disabled", true).text("Saving...");
+    $.get(printerUrl(printerIp, "/printer/gcode/script?script=SAVE_CONFIG"))
+      .done(function() {
+        if (typeof showToast === 'function') showToast("Config saved — Klipper restarting", "success");
+      })
+      .fail(function(err) {
+        var msg = "SAVE_CONFIG failed";
+        try { msg += ": " + err.responseJSON.error.message; } catch(_){}
+        if (typeof showToast === 'function') showToast(msg, "danger");
+        $btn.prop("disabled", false).html(btnHtml);
+      });
+  });
 });
 
 // --------------------------
