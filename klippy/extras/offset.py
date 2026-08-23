@@ -1070,10 +1070,14 @@ class Offset:
                 if not name:
                     continue
                 heater = self.printer.lookup_object(name).get_heater()
-                control = heater.get_control()
+                # Heater exposes set_control() but no getter; the active
+                # algorithm sits in the plain attribute.
+                control = getattr(heater, 'control', None)
+                if control is None and hasattr(heater, 'get_control'):
+                    control = heater.get_control()
                 kp = getattr(control, 'Kp', None)
                 if kp is None:
-                    continue
+                    continue  # bang-bang or watermark control
                 out[str(tn)] = {
                     'pid_kp': control.Kp * 255.0,
                     'pid_ki': control.Ki * 255.0,

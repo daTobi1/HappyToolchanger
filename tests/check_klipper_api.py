@@ -170,6 +170,24 @@ def main():
        "keine Klasse mit status_save_pending in configfile gefunden",
        "_unstage_autosave() raeumt genau dieses dict auf")
 
+    # --- heaters: _current_tool_pid() liest Kp/Ki/Kd fuer die PID-Anzeige ---
+    from extras import heaters
+    ok(hasattr(heaters, "ControlPID"), "heaters.ControlPID fehlt")
+    if hasattr(heaters, "ControlPID"):
+        src = source_of(heaters.ControlPID.__init__) or ""
+        ok("self.Kp" in src and "PID_PARAM_BASE" in src,
+           "ControlPID speichert Kp nicht mehr als config-Wert / PID_PARAM_BASE",
+           "_current_tool_pid() rechnet mit *255 zurueck")
+    ok(getattr(heaters, "PID_PARAM_BASE", None) == 255.,
+       "heaters.PID_PARAM_BASE ist nicht mehr 255")
+    hc = getattr(heaters, "Heater", None)
+    ok(hc is not None, "heaters.Heater fehlt")
+    if hc is not None:
+        src = source_of(hc.__init__) or ""
+        ok("self.control" in src,
+           "heaters.Heater.control fehlt",
+           "es gibt keinen Getter, _current_tool_pid() liest das Attribut")
+
     # --- toolhead: manual_move/set_position umgehen gcode_move bewusst ---
     sys.path.insert(0, os.path.dirname(klippy))
     import toolhead as th_mod
