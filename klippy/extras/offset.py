@@ -991,8 +991,10 @@ class Offset:
     cmd_NOZZLE_ZERO_help = (
         "Set Z=0 at the active tool's nozzle contact, using whatever probe "
         "that tool has (Eddy tap or mechanical Tap). TOOL=<n> picks up that "
-        "tool first. APPLY_OFFSETS=1 (default) then re-references every "
-        "tool's gcode_z_offset to it, so all nozzles print at one height.")
+        "tool first. X/Y select the tap point (default: bed centre), Z_HOP "
+        "the approach height. APPLY_OFFSETS=1 (default) then re-references "
+        "every tool's gcode_z_offset to it, so all nozzles print at one "
+        "height no matter which tool homed.")
 
     def cmd_NOZZLE_ZERO(self, gcmd):
         if not self.is_homed():
@@ -1005,6 +1007,25 @@ class Offset:
                 self.gcode.run_script_from_command(
                     "SELECT_TOOL T=%d RESTORE_AXIS=XYZ" % tool_nr)
         tool_nr = self._active_tool_number(gcmd)
+
+        # Position the nozzle over the tap point (bed centre by default).
+        # A nozzle touch needs the nozzle there, not the sensor, so no
+        # probe x/y offset is applied.
+        toolhead = self.printer.lookup_object('toolhead')
+        axmin = toolhead.get_status(
+            self.printer.get_reactor().monotonic())['axis_minimum']
+        axmax = toolhead.get_status(
+            self.printer.get_reactor().monotonic())['axis_maximum']
+        cx = gcmd.get_float('X', (max(0., axmin[0]) + axmax[0]) / 2.)
+        cy = gcmd.get_float('Y', (max(0., axmin[1]) + axmax[1]) / 2.)
+        approach_z = gcmd.get_float('Z_HOP', self.probe_offset_z_hop, above=0.)
+        self._move_z(approach_z)
+        self.gcode_move.cmd_G1(
+            self.gcode.create_gcode_command(
+                "G0", "G0",
+                {'X': cx, 'Y': cy,
+                 'F': self.probe_offset_travel_speed * 60}))
+        toolhead.wait_moves()
 
         self._nozzle_zero(tool_nr, gcmd)
 
