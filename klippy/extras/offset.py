@@ -747,6 +747,15 @@ class Offset:
         self.gcode.run_script_from_command(
             "SET_ACTIVE_TOOL_PROBE T=%d" % ref_tool)
 
+        # The reference tap defines Z=0 for every other tool, so it has to
+        # happen at the same nozzle temperature as those. Two reasons it
+        # would otherwise run cold: EXTRUDER_TEMP was only honoured in step 2,
+        # and an Eddy-routed reference never executes the tool_probe's
+        # activate_gcode (_TAP_PROBE_ACTIVATE), which is what heats the Tap
+        # tools as a side effect.
+        if extruder_temp > 0:
+            self.gcode.run_script_from_command("M109 S%d" % extruder_temp)
+
         # Lift before travelling, then position the nozzle at the probe point
         self._move_z(z_hop)
         self.gcode_move.cmd_G1(
@@ -795,6 +804,10 @@ class Offset:
                     "Note: T%d is both reference and measured with its own "
                     "Tap — its result is circular and will be ~0"
                     % ref_tool)
+
+        if extruder_temp > 0 and ref_tool not in calibrate_tools:
+            # Step 2 would otherwise never cool this one down again
+            self.gcode.run_script_from_command("M104 S0")
 
         self._move_z(z_hop)
 
