@@ -1054,11 +1054,22 @@ class Offset:
         "for SAVE_CONFIG.")
 
     def cmd_APPLY_TOOL_Z_OFFSETS(self, gcmd):
-        ref = gcmd.get_int('REF', None)
-        if ref is None:
-            ref = self._active_tool_number(gcmd)
-        self._apply_tool_z_offsets(ref, gcmd,
-                                   save=bool(gcmd.get_int('SAVE', 0)))
+        # OPTIONAL=1: never abort the caller (used by the G28 wrapper, which
+        # must still work before any calibration data exists).
+        optional = bool(gcmd.get_int('OPTIONAL', 0))
+        try:
+            if optional and not self.is_homed():
+                return
+            ref = gcmd.get_int('REF', None)
+            if ref is None:
+                ref = self._active_tool_number(gcmd)
+            self._apply_tool_z_offsets(ref, gcmd,
+                                       save=bool(gcmd.get_int('SAVE', 0)))
+        except Exception as e:
+            if not optional:
+                raise
+            self.gcode.respond_info(
+                "APPLY_TOOL_Z_OFFSETS skipped: %s" % e)
 
     def _apply_tool_z_offsets(self, ref, gcmd, save=False):
         """gcode_z_offset(n) = z_trigger(n) - z_trigger(ref).
@@ -1101,13 +1112,15 @@ class Offset:
         lines = []
         for tn in tools:
             val = triggers[tn] - base
-            self.gcode.run_script_from_command(
-                'SET_TOOL_PARAMETER T=%d PARAMETER=gcode_z_offset '
-                'VALUE="%.6f"' % (tn, val))
+            # Set the attribute directly instead of via SET_TOOL_PARAMETER:
+            # this also has to work from contexts where running gcode would
+            # be re-entrant (e.g. straight after G28).
+            tool_obj = self.printer.lookup_object('tool T%d' % tn, None)
+            if tool_obj is None:
+                raise gcmd.error("Tool T%d not found" % tn)
+            tool_obj.set_parameter('gcode_z_offset', '%.6f' % val)
             if save:
-                tool_obj = self.printer.lookup_object('tool T%d' % tn, None)
-                if tool_obj is not None:
-                    tool_obj.save_parameter('gcode_z_offset')
+                tool_obj.save_parameter('gcode_z_offset')
             # Keep the stored data consistent with what is applied
             self.probe_results[str(tn)]['z_offset'] = val
             self.probe_results[str(tn)]['ref_tool'] = ref
