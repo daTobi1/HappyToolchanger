@@ -281,7 +281,10 @@ function replaceInConfigSection(content, sectionName, key, value) {
   var escName = sectionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   var sectionRx = new RegExp('^\\s*\\[\\s*' + escName + '\\s*\\]');
   var anySectionRx = /^\s*\[[^\]]+\]/;
-  var keyRx = new RegExp('^(\\s*' + key + '\\s*[:=]\\s*).*$');
+  // Klipper normalisiert Optionsnamen (ConfigParser), die Configs hier
+  // nicht: T0 schreibt pid_Kp, die uebrigen pid_kp. Case-sensitiv wuerde
+  // das fuer einen Teil der Tools still nichts tun.
+  var keyRx = new RegExp('^(\s*' + key + '\s*[:=]\s*).*$', 'i');
   var inSection = false;
 
   for (var i = 0; i < lines.length; i++) {
@@ -306,7 +309,7 @@ function readConfigValue(content, sectionName, key) {
   var sectionRx = sectionName
     ? new RegExp('^\\s*\\[\\s*' + sectionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\]')
     : null;
-  var keyRx = new RegExp('^\\s*' + key + '\\s*[:=]\\s*([^#]*)');
+  var keyRx = new RegExp('^\s*' + key + '\s*[:=]\s*([^#]*)', 'i');
   var inSection = !sectionRx;
 
   for (var i = 0; i < lines.length; i++) {
