@@ -98,6 +98,7 @@ import {
 } from '@mdi/js'
 import { additionalSensors, opacityHeaterActive, opacityHeaterInactive } from '@/store/variables'
 import { CLOSE_CONTEXT_MENU, EventBus } from '@/plugins/eventBus'
+import { ServerSpoolmanStateSpool } from '@/store/server/spoolman/types'
 
 @Component
 export default class TemperaturePanelListItem extends Mixins(BaseMixin) {
@@ -173,21 +174,34 @@ export default class TemperaturePanelListItem extends Mixins(BaseMixin) {
         return this.mountedToolExtruder !== null && this.mountedToolExtruder === this.objectName
     }
 
-    // The dot takes this row's own colour, the one the icon and the chart
-    // series already use. Deliberately not the masked `color` getter: that
-    // falls back to #FFFFFF, which would hide the "no colour set" case.
-    get mountedToolDotColor(): string | null {
-        return this.$store.getters['printer/tempHistory/getDatasetColor'](this.objectName) ?? null
+    // Same colour source as the tool dot in the Extruder panel
+    // (ExtruderControlPanelToolsItem): the Spoolman filament colour first,
+    // then the tool macro's color/colour variable. Returns a hex string
+    // without the leading '#', or null when nothing is configured.
+    get mountedToolColor(): string | null {
+        if (this.mountedToolNumber === null) return null
+
+        const macroName = Object.keys(this.$store.state.printer).find(
+            (key) => key.toLowerCase() === `gcode_macro t${this.mountedToolNumber}`
+        )
+        const macro = macroName ? (this.$store.state.printer[macroName] ?? {}) : {}
+
+        const spoolId = macro?.spool_id ?? null
+        const spools = this.$store.state.server?.spoolman?.spools ?? []
+        const spool = spools.find((entry: ServerSpoolmanStateSpool) => entry.id === spoolId) ?? null
+        if (spool) return spool.filament?.color_hex ?? '000000'
+
+        const color = macro?.color ?? macro?.colour ?? null
+        if (color === '' || color === 'undefined') return null
+
+        return color
     }
 
     // No colour configured -> outline only, no fill.
     get mountedToolDotStyle(): Record<string, string> {
-        const color = this.mountedToolDotColor
+        const color = this.mountedToolColor
 
-        return {
-            backgroundColor: color ?? 'transparent',
-            borderColor: color ?? 'currentColor',
-        }
+        return { backgroundColor: color ? `#${color}` : 'transparent' }
     }
 
     get formatName() {
@@ -409,16 +423,17 @@ export default class TemperaturePanelListItem extends Mixins(BaseMixin) {
     cursor: pointer;
 }
 
-/* Marks the extruder of the currently mounted tool. Fill and border colour
-   come from mountedToolDotStyle: this row's own colour when one is set,
-   otherwise a bare outline in the current text colour. */
+/* Marks the extruder of the currently mounted tool. Same look as the tool
+   dot in the Extruder panel (._extruderColorState), just smaller to fit a
+   table row. The fill comes from mountedToolDotStyle; with no colour
+   configured the background stays transparent and only the ring remains. */
 .mounted-tool-dot {
     display: inline-block;
     box-sizing: border-box;
-    width: 9px;
-    height: 9px;
+    width: 11px;
+    height: 11px;
     margin-right: 6px;
-    border: 1.5px solid;
+    border: 1px solid lightgray;
     border-radius: 50%;
     vertical-align: middle;
 }
