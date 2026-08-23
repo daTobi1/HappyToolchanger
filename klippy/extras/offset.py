@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import ast
 import json
 from statistics import median, mean
@@ -134,6 +135,7 @@ class Offset:
             data = {}
             for k, v in self.probe_results.items():
                 entry = dict(v)
+                # transient, not worth persisting; run_id however must survive
                 entry.pop('last_run', None)
                 data[k] = entry
             with open(path, 'w') as f:
@@ -418,6 +420,15 @@ class Offset:
         self.probe_results = {}
         ref_trigger = None
 
+        # Marks this measurement session. CALIBRATE_PROBE_OFFSETS refuses to
+        # mix Z-switch data from a different run: its formula is
+        # probe_z_offset = trigger_z - gcode_z_offset, so any drift in the
+        # relative nozzle heights since the Z-switch run lands silently
+        # inside probe_z_offset instead of being flagged.
+        # Wall clock, not reactor.monotonic(): the latter restarts with
+        # Klipper, so two runs in different sessions could collide.
+        run_id = "%d" % int(time.time())
+
         for tool in ordered_tools:
             self.cmd_OFFSET_BEFORE_PICKUP_GCODE(gcmd)
             self.gcode.run_script_from_command(f"T{tool}")
@@ -451,13 +462,13 @@ class Offset:
                 if tool == ref_tool:
                     ref_trigger = z_trig
                     self.probe_results[key]['z_offset'] = 0.0
-                    self.probe_results[key]['ref_tool'] = ref_tool
                 else:
                     if ref_trigger is None:
                         self.probe_results[key]['z_offset'] = 0.0
                     else:
                         self.probe_results[key]['z_offset'] = z_trig - ref_trigger
-                    self.probe_results[key]['ref_tool'] = ref_tool
+                self.probe_results[key]['ref_tool'] = ref_tool
+                self.probe_results[key]['run_id'] = run_id
 
         self._save_probe_results()
         self.cmd_OFFSET_FINISH_GCODE(gcmd)
@@ -667,6 +678,35 @@ class Offset:
                 "Z-switch data (T%d). Either use REF_TOOL=%d or re-run "
                 "CALIBRATE_ALL_Z_OFFSETS with REF=%d."
                 % (ref_tool, data_ref, data_ref, ref_tool))
+
+        # probe_z_offset = trigger_z - gcode_z_offset, and gcode_z_offset comes
+        # from the Z-switch run. Any drift in the relative nozzle heights since
+        # then lands silently inside probe_z_offset instead of being flagged,
+        # so require one common run and say how old it is.
+        run_ids = set()
+        for t in calibrate_tools:
+            rid = self.probe_results[str(t)].get('run_id')
+            run_ids.add(rid)
+        if len(run_ids) > 1:
+            raise gcmd.error(
+                "Z-switch data for the selected tools comes from different "
+                "runs. Re-run CALIBRATE_ALL_Z_OFFSETS for all of them.")
+        run_id = run_ids.pop() if run_ids else None
+        if run_id is None:
+            self.gcode.respond_info(
+                "Warning: Z-switch data predates run tracking - age unknown. "
+                "Re-run CALIBRATE_ALL_Z_OFFSETS if the nozzles were cleaned "
+                "or changed since.")
+        else:
+            age_h = max(0.0, (time.time() - float(run_id)) / 3600.0)
+            if age_h >= 1.0:
+                self.gcode.respond_info(
+                    "Warning: Z-switch data is %.1f h old. Anything that "
+                    "changed the relative nozzle heights since then will end "
+                    "up in probe_z_offset." % age_h)
+            else:
+                self.gcode.respond_info(
+                    "Z-switch data age: %d min" % int(age_h * 60))
 
         toolhead = self.printer.lookup_object('toolhead')
         probe_obj = self.printer.lookup_object('probe')
