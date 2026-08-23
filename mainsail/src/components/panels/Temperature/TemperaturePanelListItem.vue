@@ -8,7 +8,7 @@
         <td class="name">
             <v-tooltip v-if="isMountedTool" top>
                 <template #activator="{ on, attrs }">
-                    <span class="mounted-tool-dot primary" v-bind="attrs" v-on="on"></span>
+                    <span class="mounted-tool-dot" :style="mountedToolDotStyle" v-bind="attrs" v-on="on"></span>
                 </template>
                 <span>{{ $t('Panels.TemperaturePanel.ToolMounted', { tool: mountedToolName }) }}</span>
             </v-tooltip>
@@ -171,6 +171,23 @@ export default class TemperaturePanelListItem extends Mixins(BaseMixin) {
 
     get isMountedTool(): boolean {
         return this.mountedToolExtruder !== null && this.mountedToolExtruder === this.objectName
+    }
+
+    // The dot takes this row's own colour, the one the icon and the chart
+    // series already use. Deliberately not the masked `color` getter: that
+    // falls back to #FFFFFF, which would hide the "no colour set" case.
+    get mountedToolDotColor(): string | null {
+        return this.$store.getters['printer/tempHistory/getDatasetColor'](this.objectName) ?? null
+    }
+
+    // No colour configured -> outline only, no fill.
+    get mountedToolDotStyle(): Record<string, string> {
+        const color = this.mountedToolDotColor
+
+        return {
+            backgroundColor: color ?? 'transparent',
+            borderColor: color ?? 'currentColor',
+        }
     }
 
     get formatName() {
@@ -392,18 +409,17 @@ export default class TemperaturePanelListItem extends Mixins(BaseMixin) {
     cursor: pointer;
 }
 
-/* Marks the extruder of the currently mounted tool. Theme colour rather than
-   filament colour on purpose: this is a state indicator and must not depend
-   on Spoolman being reachable, and a light filament colour would vanish
-   against the light theme. */
+/* Marks the extruder of the currently mounted tool. Fill and border colour
+   come from mountedToolDotStyle: this row's own colour when one is set,
+   otherwise a bare outline in the current text colour. */
 .mounted-tool-dot {
     display: inline-block;
-    width: 8px;
-    height: 8px;
+    box-sizing: border-box;
+    width: 9px;
+    height: 9px;
     margin-right: 6px;
+    border: 1.5px solid;
     border-radius: 50%;
     vertical-align: middle;
-    /* keeps the dot legible on any row background */
-    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
 }
 </style>
