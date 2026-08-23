@@ -1045,7 +1045,15 @@ class Offset:
         self._nozzle_zero(tool_nr, gcmd)
 
         if gcmd.get_int('APPLY_OFFSETS', 1):
-            self._apply_tool_z_offsets(tool_nr, gcmd, save=False)
+            # The nozzle zero itself succeeded; only the re-referencing may
+            # be impossible (no Z-switch data yet, single-tool setup, ...).
+            # Aborting here would take homing down with it, so warn instead.
+            try:
+                self._apply_tool_z_offsets(tool_nr, gcmd, save=False)
+            except Exception as e:
+                self.gcode.respond_info(
+                    "NOZZLE_ZERO: Z=0 gesetzt, aber die Tool-Offsets konnten "
+                    "nicht auf T%d umreferenziert werden: %s" % (tool_nr, e))
 
     cmd_APPLY_TOOL_Z_OFFSETS_help = (
         "Re-reference every tool's gcode_z_offset to REF (default: active "
@@ -1216,13 +1224,20 @@ class Offset:
             self.gcode.run_script_from_command(
                 "BED_MESH_CALIBRATE METHOD=rapid_scan" + prof)
         finally:
-            # Always put the original tool back, even if the mesh failed
-            if self._active_tool_number(gcmd) != tool_nr:
+            # Always put the original tool back, even if the mesh failed.
+            # Guarded so a follow-up failure cannot mask the original error.
+            try:
+                if self._active_tool_number(gcmd) != tool_nr:
+                    self.gcode.run_script_from_command(
+                        "SELECT_TOOL T=%d RESTORE_AXIS=XYZ" % tool_nr)
                 self.gcode.run_script_from_command(
-                    "SELECT_TOOL T=%d RESTORE_AXIS=XYZ" % tool_nr)
-            self.gcode.run_script_from_command(
-                "SET_ACTIVE_TOOL_PROBE T=%d" % tool_nr)
-            self.gcode.run_script_from_command("APPLY_TOOL_PROBE_FOR OP=mesh")
+                    "SET_ACTIVE_TOOL_PROBE T=%d" % tool_nr)
+                self.gcode.run_script_from_command(
+                    "APPLY_TOOL_PROBE_FOR OP=mesh")
+            except Exception as e:
+                self.gcode.respond_info(
+                    "BED_MESH_AUTO: Rueckwechsel auf T%d fehlgeschlagen: %s"
+                    % (tool_nr, e))
 
     def _tool_mesh_probe(self, tool_nr):
         tp = self.printer.lookup_object('tool_probe T%d' % tool_nr, None)
