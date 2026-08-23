@@ -330,6 +330,8 @@ class Offset:
         toolhead.move(start_pos, self.z_move_speed)
         toolhead.set_position(start_pos)
         toolhead.wait_moves()
+        # set_position bypasses gcode_move's cached position
+        self.gcode_move.reset_last_position()
 
     def cmd_CALIBRATE_ALL_Z_OFFSETS(self, gcmd):
         if not self.is_homed():
@@ -479,8 +481,59 @@ class Offset:
             % (self.recover_max_attempts, last_err))
 
     def _is_eddy_probe(self, probe_name):
-        """Check if a probe name refers to an Eddy-NG probe."""
-        return 'eddy' in probe_name.lower()
+        """Check if a probe name refers to an Eddy-NG probe.
+        Identified by the Eddy-NG API rather than by a substring match, so
+        that a tool_probe with 'eddy' in its name is not misdetected and a
+        renamed Eddy still works.  Probes with their own tap that are not
+        Eddy-NG (Cartographer, Beacon) are treated as Tap here."""
+        if not probe_name:
+            return False
+        obj = self.printer.lookup_object(probe_name, None)
+        if obj is not None:
+            return hasattr(obj, 'probe_static_height')
+        return probe_name.lower().startswith('probe_eddy_ng')
+
+    def _eddy_computed_tap_z(self, probe_name):
+        """Toolhead Z at which the Eddy's nozzle tap found the bed,
+        in the current Z reference frame (tap_z + tap_adjust_z,
+        see probe_eddy_ng: computed_tap_z)."""
+        obj = self.printer.lookup_object(probe_name, None)
+        if obj is None:
+            raise self.gcode.error(
+                "Eddy probe '%s' not found" % probe_name)
+        st = obj.get_status(self.printer.get_reactor().monotonic())
+        return float(st['last_tap_z']) + float(st['tap_adjust_z'])
+
+    def _gcode_z_offset(self):
+        """Current gcode Z offset (SET_GCODE_OFFSET Z / homing_origin.z)."""
+        try:
+            return float(self.gcode_move.homing_position[2])
+        except Exception:
+            st = self.gcode_move.get_status(
+                self.printer.get_reactor().monotonic())
+            return float(st['homing_origin'].z)
+
+    def _move_z(self, z, speed=10.):
+        """Move to an absolute kinematic Z and resync gcode_move.
+        Direct toolhead moves bypass gcode_move's cached last_position;
+        without the resync the next G0/G1 would command that stale Z."""
+        toolhead = self.printer.lookup_object('toolhead')
+        toolhead.wait_moves()
+        toolhead.manual_move([None, None, z], speed)
+        toolhead.wait_moves()
+        self.gcode_move.reset_last_position()
+
+    def _set_z_reference(self, bed_z):
+        """Re-reference Z so the nozzle contacts the bed at kinematic Z=0.
+        bed_z is the kinematic Z of bed contact as reported by the probe."""
+        toolhead = self.printer.lookup_object('toolhead')
+        toolhead.wait_moves()
+        pos = toolhead.get_position()
+        pos[2] = pos[2] - bed_z
+        toolhead.set_position(pos)
+        # Match what PROBE_EDDY_NG_TAP HOME_Z=1 leaves behind
+        self.gcode.run_script_from_command("SET_GCODE_OFFSET Z=0")
+        self.gcode_move.reset_last_position()
 
     def _get_probe_for_tool(self, tool_nr, ref_tool):
         """Get probe name for a tool from probe_cal_map with fallback."""
@@ -500,9 +553,13 @@ class Offset:
         "Uses probe_cal_map to determine probe per tool (Eddy Tap or "
         "mechanical Tap). REF_TOOL selects the bed reference tool. "
         "Requires CALIBRATE_ALL_Z_OFFSETS to have been "
-        "run first (needs z_offset / gcode_z_offset data). "
+        "run first (needs z_offset / gcode_z_offset data), measured against "
+        "the same reference tool. "
         "TOOLS=0,1,2,3 to select tools (default: all with z_offset data). "
-        "APPLY=1 (default) sets z_offset at runtime and stages config save.")
+        "REF_PROBE=\"<name>\" overrides the probe used for the reference "
+        "zero (default: the tool's probe_cal_map entry). "
+        "APPLY=1 (default) sets z_offset at runtime and stages config save; "
+        "only tools measured with their mechanical Tap are applied.")
 
     def cmd_CALIBRATE_PROBE_OFFSETS(self, gcmd):
         if not self.is_homed():
@@ -524,6 +581,17 @@ class Offset:
 
         # REF_TOOL parameter (was hardcoded to 0)
         ref_tool = gcmd.get_int('REF_TOOL', self.default_ref_tool, minval=0)
+
+        # REF_PROBE overrides the probe used for the step 1 reference zero.
+        # Parsed from the raw command line because probe names contain a
+        # space ("probe_eddy_ng my_eddy").
+        ref_probe_override = None
+        raw_cmdline = gcmd.get_commandline()
+        m = re.search(r'REF_PROBE="([^"]+)"', raw_cmdline, re.IGNORECASE)
+        if not m:
+            m = re.search(r'REF_PROBE=(\S+)', raw_cmdline, re.IGNORECASE)
+        if m:
+            ref_probe_override = m.group(1)
 
         # Parse TOOLS parameter
         tools_param = gcmd.get('TOOLS', None)
@@ -561,6 +629,28 @@ class Offset:
                 "Run CALIBRATE_ALL_Z_OFFSETS first"
                 % ",".join(str(t) for t in missing))
 
+        # The gcode_z_offset values below are relative to the tool that
+        # CALIBRATE_ALL_Z_OFFSETS used as its reference. Step 1 sets Z=0 at
+        # REF_TOOL's nozzle. If those two differ, every result is shifted by
+        # a constant without any sign of it, so refuse instead.
+        data_refs = set()
+        for t in calibrate_tools:
+            r = self.probe_results[str(t)].get('ref_tool')
+            if r is not None:
+                data_refs.add(int(r))
+        if len(data_refs) > 1:
+            raise gcmd.error(
+                "Z-switch data was measured against different reference "
+                "tools (%s). Re-run CALIBRATE_ALL_Z_OFFSETS for all tools."
+                % ", ".join("T%d" % r for r in sorted(data_refs)))
+        if data_refs and ref_tool not in data_refs:
+            data_ref = data_refs.pop()
+            raise gcmd.error(
+                "REF_TOOL=T%d does not match the reference tool of the "
+                "Z-switch data (T%d). Either use REF_TOOL=%d or re-run "
+                "CALIBRATE_ALL_Z_OFFSETS with REF=%d."
+                % (ref_tool, data_ref, data_ref, ref_tool))
+
         toolhead = self.printer.lookup_object('toolhead')
         probe_obj = self.printer.lookup_object('probe')
 
@@ -575,8 +665,9 @@ class Offset:
         self.gcode.respond_info(
             "Applied Z-switch offsets to %d tools" % len(calibrate_tools))
 
-        # Get ref probe from map
-        ref_probe_name = self._get_probe_for_tool(ref_tool, ref_tool)
+        # Reference probe: explicit REF_PROBE wins over the per-tool map
+        ref_probe_name = (ref_probe_override
+                          or self._get_probe_for_tool(ref_tool, ref_tool))
         ref_is_eddy = self._is_eddy_probe(ref_probe_name)
 
         # ── Step 1: Reference probe on ref_tool → Z=0 at true nozzle contact ──
@@ -596,7 +687,8 @@ class Offset:
         self.gcode.run_script_from_command(
             "SET_ACTIVE_TOOL_PROBE T=%d" % ref_tool)
 
-        # Position nozzle at probe point
+        # Lift before travelling, then position the nozzle at the probe point
+        self._move_z(z_hop)
         self.gcode_move.cmd_G1(
             self.gcode.create_gcode_command(
                 "G0", "G0",
@@ -605,26 +697,46 @@ class Offset:
         )
         toolhead.wait_moves()
 
-        # Use ref probe (Eddy or Tap) based on map
+        # Use ref probe (Eddy or Tap) based on map — both are nozzle taps
         if ref_is_eddy:
             self.gcode.run_script_from_command(
                 'SET_ACTIVE_Z_PROBE PROBE="%s"' % ref_probe_name)
-            self.gcode.run_script_from_command(
-                "PROBE_EDDY_NG_TAP HOME_Z=1 SAMPLES=%d" % samples)
+            # No SAMPLES here: tap sampling is governed by the Eddy's own
+            # tap_samples / tap_max_samples / tap_samples_stddev, and a
+            # SAMPLES above tap_max_samples would be rejected outright.
+            self.gcode.run_script_from_command("PROBE_EDDY_NG_TAP HOME_Z=1")
+            # PROBE_EDDY_NG_TAP moves the toolhead and rewrites gcode_move's
+            # Z frame without touching its cached position.
+            self.gcode_move.reset_last_position()
             self.gcode.respond_info(
                 "T%d Eddy Tap: Z=0 set at nozzle contact" % ref_tool)
         else:
             self.gcode.run_script_from_command(
                 "SET_ACTIVE_Z_PROBE PROBE=none")
-            # Tap reference: probe and set Z=0 at contact
-            toolhead.manual_move([None, None, 5.0], 10.)
-            toolhead.wait_moves()
+            # Tap reference: probe, then actually set Z=0 at contact.
+            # Without this the whole step 2 formula loses its origin.
+            self._move_z(5.0)
+            ref_pz = probe_obj.get_offsets()[2]
             bed_z = self._do_tap_probe(probe_obj, samples)
+            self._set_z_reference(bed_z)
             self.gcode.respond_info(
-                "T%d Tap: bed_z=%.4f (reference)" % (ref_tool, bed_z))
+                "T%d Tap: bed_z=%.4f -> Z=0 set at nozzle contact"
+                % (ref_tool, bed_z))
+            # A mechanical Tap has no independent ground truth: the zero is
+            # only as good as that tool's own z_offset. An Eddy tap zeroes
+            # itself, so prefer it as the reference when one exists.
+            self.gcode.respond_info(
+                "Note: reference zero is based on T%d's tool_probe "
+                "z_offset=%.4f%s"
+                % (ref_tool, ref_pz,
+                   " (uncalibrated)" if abs(ref_pz) < 1e-9 else ""))
+            if ref_tool in calibrate_tools:
+                self.gcode.respond_info(
+                    "Note: T%d is both reference and measured with its own "
+                    "Tap — its result is circular and will be ~0"
+                    % ref_tool)
 
-        toolhead.manual_move([None, None, z_hop], 10.)
-        toolhead.wait_moves()
+        self._move_z(z_hop)
 
         # ── Step 2: Probe on each selected tool ──
         self.gcode.respond_info("Step 2: Probe per tool")
@@ -652,67 +764,94 @@ class Offset:
                 self.gcode.run_script_from_command(
                     "M109 S%d" % extruder_temp)
 
-            # Activate probe from map
-            if tool_is_eddy:
-                self.gcode.run_script_from_command(
-                    'SET_ACTIVE_Z_PROBE PROBE="%s"' % tool_probe_name)
-            else:
-                self.gcode.run_script_from_command(
-                    "SET_ACTIVE_Z_PROBE PROBE=none")
-
-            # Position nozzle at probe point
+            # Lift BEFORE the XY travel, then position the nozzle
+            self._move_z(z_hop)
             self.gcode_move.cmd_G1(
                 self.gcode.create_gcode_command(
                     "G0", "G0",
                     {'X': probe_x, 'Y': probe_y, 'F': travel_speed * 60}
                 )
             )
-            toolhead.manual_move([None, None, 5.0], 10.)
             toolhead.wait_moves()
 
-            # Get current tool_probe z_offset (subtracted inside run_single_probe)
-            current_pz = probe_obj.get_offsets()[2]
+            # Z=0 is ref_tool's nozzle contact (step 1). Tn's nozzle contacts
+            # the bed at kinematic Z = gcode_z_off, because ToolGcodeTransform
+            # maps kinematic = gcode + gcode_z_offset.
+            if tool_is_eddy:
+                # Nozzle tap with the Eddy. HOME_Z=0 keeps step 1's reference
+                # zero; the tap result lands in the gcode Z offset, which we
+                # read back and then restore.
+                self.gcode.run_script_from_command(
+                    'SET_ACTIVE_Z_PROBE PROBE="%s"' % tool_probe_name)
+                saved_gcode_z = self._gcode_z_offset()
+                self.gcode.run_script_from_command("PROBE_EDDY_NG_TAP HOME_Z=0")
+                computed_tap_z = self._eddy_computed_tap_z(tool_probe_name)
+                self.gcode.run_script_from_command(
+                    "SET_GCODE_OFFSET Z=%.6f" % saved_gcode_z)
+                self.gcode_move.reset_last_position()
 
-            # Probe via z_probe router (SET_ACTIVE_Z_PROBE already
-            # routes to the correct Eddy or Tap probe for this tool)
-            bed_z = self._do_tap_probe(probe_obj, samples)
+                if extruder_temp > 0:
+                    self.gcode.run_script_from_command("M104 S0")
 
-            # After HOME_Z=1: Z=0 at ref_tool nozzle contact.
-            # Tn contacts bed at kinematic Z = gcode_z_off (ToolGcodeTransform
-            # adds offset: kinematic = gcode + offset).
-            # Tap triggers at kinematic Z = gcode_z_off + true_pz.
-            # run_single_probe: bed_z = trigger_z - current_pz.
-            # → true_pz = bed_z + current_pz - gcode_z_off
-            probe_z_offset = bed_z + current_pz - gcode_z_off
+                # How far the Eddy's tap zero sits from where the Z-switch
+                # chain says this nozzle is. This is NOT the mechanical
+                # Tap's trigger height, so it must never be written into
+                # [tool_probe Tn] z_offset — correct it via tap_adjust_z.
+                deviation = computed_tap_z - gcode_z_off
+                self.probe_results[key]['eddy_tap_z'] = computed_tap_z
+                self.probe_results[key]['eddy_tap_deviation'] = deviation
+                self.probe_results[key]['eddy_probe'] = tool_probe_name
+                self.probe_results[key].pop('probe_z_offset', None)
+                self.probe_results[key].pop('tap_bed_z', None)
 
-            if extruder_temp > 0:
-                self.gcode.run_script_from_command("M104 S0")
+                self.gcode.respond_info(
+                    "T%d Eddy Tap: tap_z=%.4f  deviation=%+.4f "
+                    "(not applied — adjust tap_adjust_z on '%s' if needed)"
+                    % (tool_nr, computed_tap_z, deviation, tool_probe_name))
+            else:
+                self.gcode.run_script_from_command(
+                    "SET_ACTIVE_Z_PROBE PROBE=none")
+                self._move_z(5.0)
 
-            self.probe_results[key]['probe_z_offset'] = probe_z_offset
-            self.probe_results[key]['tap_bed_z'] = bed_z
+                # tool_probe z_offset, subtracted inside run_single_probe
+                current_pz = probe_obj.get_offsets()[2]
+                bed_z = self._do_tap_probe(probe_obj, samples)
 
-            self.gcode.respond_info(
-                "T%d: Tap bed_z=%.4f  probe_z_offset=%.4f"
-                % (tool_nr, bed_z, probe_z_offset))
+                # Tap triggers at kinematic Z = gcode_z_off + true_pz.
+                # run_single_probe: bed_z = trigger_z - current_pz.
+                # → true_pz = bed_z + current_pz - gcode_z_off
+                probe_z_offset = bed_z + current_pz - gcode_z_off
 
-            if apply_offsets:
-                try:
-                    tp = self.printer.lookup_object(
-                        'tool_probe T%d' % tool_nr)
-                    tp.probe_offsets.z_offset = probe_z_offset
-                    configfile = self.printer.lookup_object('configfile')
-                    configfile.set('tool_probe T%d' % tool_nr,
-                                   'z_offset', '%.3f' % probe_z_offset)
-                    self.gcode.respond_info(
-                        "T%d: z_offset applied (SAVE_CONFIG to persist)"
-                        % tool_nr)
-                except Exception as e:
-                    self.gcode.respond_info(
-                        "T%d: could not apply z_offset: %s"
-                        % (tool_nr, str(e)))
+                if extruder_temp > 0:
+                    self.gcode.run_script_from_command("M104 S0")
 
-            toolhead.manual_move([None, None, z_hop], 10.)
-            toolhead.wait_moves()
+                self.probe_results[key]['probe_z_offset'] = probe_z_offset
+                self.probe_results[key]['tap_bed_z'] = bed_z
+                self.probe_results[key].pop('eddy_tap_deviation', None)
+                self.probe_results[key].pop('eddy_tap_z', None)
+                self.probe_results[key].pop('eddy_probe', None)
+
+                self.gcode.respond_info(
+                    "T%d: Tap bed_z=%.4f  probe_z_offset=%.4f"
+                    % (tool_nr, bed_z, probe_z_offset))
+
+                if apply_offsets:
+                    try:
+                        tp = self.printer.lookup_object(
+                            'tool_probe T%d' % tool_nr)
+                        tp.probe_offsets.z_offset = probe_z_offset
+                        configfile = self.printer.lookup_object('configfile')
+                        configfile.set('tool_probe T%d' % tool_nr,
+                                       'z_offset', '%.3f' % probe_z_offset)
+                        self.gcode.respond_info(
+                            "T%d: z_offset applied (SAVE_CONFIG to persist)"
+                            % tool_nr)
+                    except Exception as e:
+                        self.gcode.respond_info(
+                            "T%d: could not apply z_offset: %s"
+                            % (tool_nr, str(e)))
+
+            self._move_z(z_hop)
 
         # ── Restore ref_tool with its probe routing ──
         if self.toolchanger.active_tool.tool_number != ref_tool:
@@ -721,27 +860,34 @@ class Offset:
         self.gcode.run_script_from_command(
             "SET_ACTIVE_TOOL_PROBE T=%d" % ref_tool)
 
-        # Restore ref probe routing from map (not hardcoded eddy)
-        ref_restore = self._get_probe_for_tool(ref_tool, ref_tool)
-        if self._is_eddy_probe(ref_restore):
+        # Restore ref probe routing (same source as step 1)
+        if ref_is_eddy:
             self.gcode.run_script_from_command(
-                'SET_ACTIVE_Z_PROBE PROBE="%s"' % ref_restore)
+                'SET_ACTIVE_Z_PROBE PROBE="%s"' % ref_probe_name)
         else:
             self.gcode.run_script_from_command(
                 "SET_ACTIVE_Z_PROBE PROBE=none")
 
         # ── Summary ──
         self.gcode.respond_info("=== Probe Offset Calibration Complete ===")
+        any_applied = False
         for tool_nr in calibrate_tools:
             key = str(tool_nr)
             data = self.probe_results[key]
-            pzo = data.get('probe_z_offset', 0.0)
             zo = data.get('z_offset', 0.0)
-            saved = " [APPLIED]" if apply_offsets else ""
-            self.gcode.respond_info(
-                "T%d: gcode_z_offset=%.4f  probe_z_offset=%.4f%s"
-                % (tool_nr, zo, pzo, saved))
-        if apply_offsets:
+            if 'eddy_tap_deviation' in data:
+                self.gcode.respond_info(
+                    "T%d: gcode_z_offset=%.4f  eddy tap deviation=%+.4f "
+                    "[not applied]" % (tool_nr, zo,
+                                       data['eddy_tap_deviation']))
+            else:
+                pzo = data.get('probe_z_offset', 0.0)
+                saved = " [APPLIED]" if apply_offsets else ""
+                any_applied = any_applied or bool(apply_offsets)
+                self.gcode.respond_info(
+                    "T%d: gcode_z_offset=%.4f  probe_z_offset=%.4f%s"
+                    % (tool_nr, zo, pzo, saved))
+        if any_applied:
             self.gcode.respond_info(
                 "Offsets applied at runtime. Use SAVE_CONFIG to persist.")
         self._save_probe_results()

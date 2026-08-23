@@ -22,6 +22,7 @@ let _availableProbes = [];    // ["probe", "probe_eddy_ng my_eddy"]
 let _probeCalConfig = null;   // { ref_tool, ref_probe, tool_probes: { "0": "probe", ... } }
 let _toolProbeOffsets = {};    // { "0": 0.05, "1": -0.02, ... } current tool_probe z_offsets
 let _probeCalResults = {};     // { "0": { probe_z_offset: 0.05 }, ... } from probe_results
+let _eddyTapDeviations = {};   // { "0": { deviation: 0.01, probe: "..." } } — info only, not applicable
 let _toolGcodeOffsets = {};    // { "0": {x:0, y:0, z:0}, ... } current tool gcode offsets
 let _zSwitchResults = {};      // { "0": { z_offset: 0.0, z_trigger: 1.23 }, ... }
 
@@ -652,11 +653,20 @@ function fetchOffsetStatus() {
       _toolGcodeOffsets = (st?.tool_gcode_offsets || {});
       // Extract results from probe_results per tool
       _probeCalResults = {};
+      _eddyTapDeviations = {};
       _zSwitchResults = {};
       var pr = st?.probe_results || {};
       for (var k in pr) {
         if (pr[k] && typeof pr[k].probe_z_offset === 'number') {
           _probeCalResults[k] = { probe_z_offset: pr[k].probe_z_offset };
+        }
+        // Eddy-measured tools: informational only, never applied to
+        // the mechanical Tap's z_offset
+        if (pr[k] && typeof pr[k].eddy_tap_deviation === 'number') {
+          _eddyTapDeviations[k] = {
+            deviation: pr[k].eddy_tap_deviation,
+            probe: pr[k].eddy_probe || 'eddy'
+          };
         }
         if (pr[k] && typeof pr[k].z_offset === 'number') {
           _zSwitchResults[k] = { z_offset: pr[k].z_offset, z_trigger: pr[k].z_trigger };
@@ -670,6 +680,7 @@ function fetchOffsetStatus() {
       _toolProbeOffsets = {};
       _toolGcodeOffsets = {};
       _probeCalResults = {};
+      _eddyTapDeviations = {};
       _zSwitchResults = {};
       return null;
     });
@@ -707,11 +718,29 @@ function updateAllProbeResults() {
     });
     var changed = false;
     for (var k in probeResults) {
-      if (probeResults[k] && typeof probeResults[k].probe_z_offset === 'number') {
-        if (!_probeCalResults[k] || _probeCalResults[k].probe_z_offset !== probeResults[k].probe_z_offset) {
+      var r = probeResults[k];
+      if (!r) continue;
+      if (typeof r.probe_z_offset === 'number') {
+        if (!_probeCalResults[k] || _probeCalResults[k].probe_z_offset !== r.probe_z_offset) {
           changed = true;
         }
-        _probeCalResults[k] = { probe_z_offset: probeResults[k].probe_z_offset };
+        _probeCalResults[k] = { probe_z_offset: r.probe_z_offset };
+      } else if (_probeCalResults[k]) {
+        // Tool switched to an Eddy measurement — drop the stale Tap value
+        delete _probeCalResults[k];
+        changed = true;
+      }
+      if (typeof r.eddy_tap_deviation === 'number') {
+        if (!_eddyTapDeviations[k] || _eddyTapDeviations[k].deviation !== r.eddy_tap_deviation) {
+          changed = true;
+        }
+        _eddyTapDeviations[k] = {
+          deviation: r.eddy_tap_deviation,
+          probe: r.eddy_probe || 'eddy'
+        };
+      } else if (_eddyTapDeviations[k]) {
+        delete _eddyTapDeviations[k];
+        changed = true;
       }
     }
     if (changed) {
@@ -841,7 +870,8 @@ function calibrateButton(toolNumbers = [], enabled = false) {
 function probeCalResultsTable(sortedTools) {
   var hasAny = sortedTools.some(function(t) {
     var k = String(t);
-    return _toolProbeOffsets[k] !== undefined || _probeCalResults[k];
+    return _toolProbeOffsets[k] !== undefined
+        || _probeCalResults[k] || _eddyTapDeviations[k];
   });
   if (!hasAny) return '';
 
@@ -849,6 +879,23 @@ function probeCalResultsTable(sortedTools) {
     var k = String(t);
     var current = _toolProbeOffsets[k];
     var currentStr = (typeof current === 'number') ? current.toFixed(3) : '-';
+    var eddy = _eddyTapDeviations[k];
+
+    // Measured with an Eddy nozzle tap: the deviation describes the Eddy's
+    // tap zero, not the mechanical Tap's trigger height, so it is shown
+    // for information and never offered for apply.
+    if (eddy) {
+      var devTxt = (eddy.deviation >= 0 ? '+' : '') + eddy.deviation.toFixed(3);
+      return '<tr>' +
+        '<td class="px-2 py-1 fw-bold">T' + t + '</td>' +
+        '<td class="px-2 py-1 text-end text-secondary">' + currentStr + '</td>' +
+        '<td class="px-2 py-1 text-end text-secondary" colspan="2">' +
+          '<span class="badge bg-secondary me-1">Eddy</span>' +
+          'tap dev ' + devTxt +
+        '</td>' +
+      '</tr>';
+    }
+
     var calResult = _probeCalResults[k];
     var newStr = calResult ? calResult.probe_z_offset.toFixed(3) : '-';
     var diffStr = '-';
@@ -863,6 +910,14 @@ function probeCalResultsTable(sortedTools) {
       '<td class="px-2 py-1 text-end text-info">' + diffStr + '</td>' +
     '</tr>';
   }).join('');
+
+  var eddyNote = sortedTools.some(function(t) { return !!_eddyTapDeviations[String(t)]; })
+    ? '<div class="small text-secondary mt-1">' +
+        'Eddy rows show how far the Eddy tap zero sits from the Z-switch ' +
+        'result. Correct via <code>tap_adjust_z</code> — it is not a ' +
+        '<code>tool_probe</code> offset.' +
+      '</div>'
+    : '';
 
   // Apply button only makes sense once a calibration produced new values
   var hasResults = sortedTools.some(function(t) { return !!_probeCalResults[String(t)]; });
@@ -885,6 +940,7 @@ function probeCalResultsTable(sortedTools) {
       '</tr></thead>' +
       '<tbody>' + rows + '</tbody>' +
     '</table>' +
+    eddyNote +
     applyBtn +
   '</div>';
 }
@@ -1207,18 +1263,26 @@ $(document).on("click", "#probe-cal-btn", function() {
   });
   var probeTemp = parseInt($("#probe-cal-extruder-temp").val(), 10) || 0;
   var tempPart = (probeTemp > 0) ? ' EXTRUDER_TEMP=' + probeTemp : '';
-  lines.push('CALIBRATE_PROBE_OFFSETS TOOLS=' + selectedTools.join(',') + ' REF_TOOL=' + config.ref_tool + tempPart);
+  // REF_PROBE must be sent explicitly — it is not part of probe_cal_map,
+  // and without it Klipper falls back to "first Eddy found".
+  var refProbePart = config.ref_probe
+    ? ' REF_PROBE="' + config.ref_probe + '"' : '';
+  lines.push('CALIBRATE_PROBE_OFFSETS TOOLS=' + selectedTools.join(',') +
+             ' REF_TOOL=' + config.ref_tool + refProbePart + tempPart);
 
   var script = lines.join('\n');
 
   var toolRows = selectedTools.map(function(t) {
     var probe = config.tool_probes[String(t)] || 'probe';
     var isRef = (parseInt(t, 10) === parseInt(config.ref_tool, 10));
+    var isEddy = probe.indexOf('eddy') !== -1;
     return '<tr>' +
       '<td class="px-1 py-0 fw-bold text-nowrap">T' + escapeHtml(t) +
         (isRef ? ' <span class="badge bg-success">REF</span>' : '') + '</td>' +
       '<td class="px-1 py-0 text-secondary">&rarr;</td>' +
       '<td class="px-1 py-0"><code>' + escapeHtml(probe) + '</code></td>' +
+      '<td class="px-1 py-0 text-end small text-secondary">' +
+        (isEddy ? 'info only' : 'writes z_offset') + '</td>' +
     '</tr>';
   }).join('');
 
@@ -1243,9 +1307,14 @@ $(document).on("click", "#probe-cal-btn", function() {
       escapeHtml(script).replace(/\n/g, '<br>') + '</code></div>' +
     '<div class="small text-warning">' +
       '<i class="bi bi-exclamation-triangle"></i> The printer moves and changes tools. ' +
-      '<code>CALIBRATE_PROBE_OFFSETS</code> also sets <code>z_offset</code> at runtime and ' +
-      'stages it for <code>SAVE_CONFIG</code> — use APPLY PROBE OFFSETS afterwards to write ' +
-      'it into the tool config files instead.' +
+      'Every probe measures by touching the nozzle to the bed.' +
+    '</div>' +
+    '<div class="small text-secondary mt-1">' +
+      'Tools measured with their mechanical Tap get <code>z_offset</code> set at ' +
+      'runtime and staged for <code>SAVE_CONFIG</code> — use APPLY PROBE OFFSETS ' +
+      'afterwards to write it into the tool config files instead. Tools measured ' +
+      'with an Eddy only report how far the Eddy tap zero deviates; that value is ' +
+      'not a <code>tool_probe</code> offset and is never applied.' +
     '</div>';
 
   confirmDialog({
