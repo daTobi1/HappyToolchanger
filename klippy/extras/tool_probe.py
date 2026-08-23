@@ -45,6 +45,10 @@ class ToolProbe:
         self._z_probe_home = _UNSET
         self._z_probe_qgl = _UNSET
         self._z_probe_mesh = _UNSET
+        # Tool to borrow for bed meshing when this tool has no scanning
+        # probe of its own (a tapped mesh takes minutes, a scan seconds).
+        # Overrides [offset] mesh_tool. Use -1 to force the tapped mesh.
+        self.mesh_tool = config.getint('mesh_tool', None)
         if any(n is not None for n in [
                 self.z_probe_name, self._z_probe_home_name,
                 self._z_probe_qgl_name, self._z_probe_mesh_name]):

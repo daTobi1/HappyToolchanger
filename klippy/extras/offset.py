@@ -59,11 +59,18 @@ class Offset:
         self.probe_offset_travel_speed = config.getfloat(
             'probe_offset_travel_speed', 80.0, above=0.)
 
+        # Bed mesh: tool to borrow when the mounted tool has no scanning
+        # probe. Per-tool override lives in [tool_probe Tn] mesh_tool.
+        self.mesh_tool = config.getint('mesh_tool', None)
+
         self.gcode_macro = self.printer.load_object(config, 'gcode_macro')
         self.start_gcode = self.gcode_macro.load_template(config, 'start_gcode', '')
         self.before_pickup_gcode = self.gcode_macro.load_template(config, 'before_pickup_gcode', '')
         self.after_pickup_gcode  = self.gcode_macro.load_template(config, 'after_pickup_gcode', '')
         self.finish_gcode        = self.gcode_macro.load_template(config, 'finish_gcode', '')
+        # Runs after the mesh tool is picked up, before its nozzle tap
+        # (e.g. CLEAN_NOZZLE — a dirty nozzle ruins the tap).
+        self.mesh_tool_gcode     = self.gcode_macro.load_template(config, 'mesh_tool_gcode', '')
 
         self.has_cfg_data = False
         self.probe_results = {}
@@ -112,6 +119,9 @@ class Offset:
         self.gcode.register_command('APPLY_TOOL_Z_OFFSETS',
                                     self.cmd_APPLY_TOOL_Z_OFFSETS,
                                     desc=self.cmd_APPLY_TOOL_Z_OFFSETS_help)
+        self.gcode.register_command('BED_MESH_AUTO',
+                                    self.cmd_BED_MESH_AUTO,
+                                    desc=self.cmd_BED_MESH_AUTO_help)
 
     def _get_state_file_path(self):
         config_file = self.printer.get_start_args().get('config_file', '')
@@ -958,6 +968,29 @@ class Offset:
                getattr(obj, 'name',
                getattr(obj, '_name', str(obj))))
 
+    def _move_to_tap_point(self, gcmd):
+        """Position the nozzle over the tap point (bed centre by default).
+        A nozzle touch needs the nozzle there, not the sensor, so no probe
+        x/y offset is applied."""
+        toolhead = self.printer.lookup_object('toolhead')
+        st = toolhead.get_status(self.printer.get_reactor().monotonic())
+        axmin, axmax = st['axis_minimum'], st['axis_maximum']
+        cx = gcmd.get_float('X', (max(0., axmin[0]) + axmax[0]) / 2.)
+        cy = gcmd.get_float('Y', (max(0., axmin[1]) + axmax[1]) / 2.)
+        self._move_z(gcmd.get_float('Z_HOP', self.probe_offset_z_hop,
+                                    above=0.))
+        self.gcode_move.cmd_G1(
+            self.gcode.create_gcode_command(
+                "G0", "G0",
+                {'X': cx, 'Y': cy,
+                 'F': self.probe_offset_travel_speed * 60}))
+        toolhead.wait_moves()
+
+    @staticmethod
+    def _is_scanning_probe(obj):
+        """Can this probe do a rapid_scan bed mesh? (Eddy-NG API marker)"""
+        return obj is not None and hasattr(obj, 'probe_static_height')
+
     def _nozzle_zero(self, tool_nr, gcmd):
         """Set kinematic Z=0 at this tool's nozzle contact, using whatever
         probe it is configured with. Both paths are nozzle touches."""
@@ -1008,25 +1041,7 @@ class Offset:
                     "SELECT_TOOL T=%d RESTORE_AXIS=XYZ" % tool_nr)
         tool_nr = self._active_tool_number(gcmd)
 
-        # Position the nozzle over the tap point (bed centre by default).
-        # A nozzle touch needs the nozzle there, not the sensor, so no
-        # probe x/y offset is applied.
-        toolhead = self.printer.lookup_object('toolhead')
-        axmin = toolhead.get_status(
-            self.printer.get_reactor().monotonic())['axis_minimum']
-        axmax = toolhead.get_status(
-            self.printer.get_reactor().monotonic())['axis_maximum']
-        cx = gcmd.get_float('X', (max(0., axmin[0]) + axmax[0]) / 2.)
-        cy = gcmd.get_float('Y', (max(0., axmin[1]) + axmax[1]) / 2.)
-        approach_z = gcmd.get_float('Z_HOP', self.probe_offset_z_hop, above=0.)
-        self._move_z(approach_z)
-        self.gcode_move.cmd_G1(
-            self.gcode.create_gcode_command(
-                "G0", "G0",
-                {'X': cx, 'Y': cy,
-                 'F': self.probe_offset_travel_speed * 60}))
-        toolhead.wait_moves()
-
+        self._move_to_tap_point(gcmd)
         self._nozzle_zero(tool_nr, gcmd)
 
         if gcmd.get_int('APPLY_OFFSETS', 1):
@@ -1107,6 +1122,100 @@ class Offset:
             % (ref, "  ".join(lines),
                " (staged for SAVE_CONFIG)" if save else ""))
         self.last_ref_tool = ref
+
+    # ─── BED_MESH_AUTO ───────────────────────────────────────────────────
+
+    def _resolve_mesh_tool(self, tool_nr, gcmd):
+        """Which tool to borrow for meshing. Per-tool mesh_tool wins over
+        [offset] mesh_tool; -1 forces the tapped mesh."""
+        override = gcmd.get_int('MESH_TOOL', None)
+        if override is not None:
+            return override
+        tp = self.printer.lookup_object('tool_probe T%d' % tool_nr, None)
+        per_tool = getattr(tp, 'mesh_tool', None) if tp else None
+        if per_tool is not None:
+            return per_tool
+        return self.mesh_tool
+
+    cmd_BED_MESH_AUTO_help = (
+        "Bed mesh with the best probe available. The mounted tool's own "
+        "scanning probe is used if it has one. Otherwise MESH_TOOL / "
+        "[tool_probe] mesh_tool / [offset] mesh_tool names a tool that does: "
+        "it is picked up, re-zeroes Z on its nozzle (which becomes the "
+        "reference for all tools), scans, and the original tool is put back. "
+        "Falls back to a tapped mesh when no scanning probe is reachable.")
+
+    def cmd_BED_MESH_AUTO(self, gcmd):
+        if not self.is_homed():
+            raise gcmd.error("Must home first")
+        tool_nr = self._active_tool_number(gcmd)
+        profile = gcmd.get('PROFILE', None)
+        prof = (' PROFILE=%s' % profile) if profile else ''
+
+        own = self._tool_mesh_probe(tool_nr)
+        self.gcode.run_script_from_command("BED_MESH_CLEAR")
+
+        if self._is_scanning_probe(own):
+            self.gcode.respond_info(
+                "Bed mesh: rapid_scan with T%d's own %s"
+                % (tool_nr, self._obj_name(own)))
+            self.gcode.run_script_from_command("APPLY_TOOL_PROBE_FOR OP=mesh")
+            self.gcode.run_script_from_command(
+                "BED_MESH_CALIBRATE METHOD=rapid_scan" + prof)
+            return
+
+        mesh_tool = self._resolve_mesh_tool(tool_nr, gcmd)
+        helper = None
+        if (mesh_tool is not None and mesh_tool >= 0
+                and mesh_tool != tool_nr
+                and mesh_tool in self.toolchanger.tool_numbers):
+            helper = self._tool_mesh_probe(mesh_tool)
+            if not self._is_scanning_probe(helper):
+                self.gcode.respond_info(
+                    "Bed mesh: T%d has no scanning probe either — "
+                    "falling back to a tapped mesh" % mesh_tool)
+                helper = None
+
+        if helper is None:
+            self.gcode.respond_info(
+                "Bed mesh: probed with T%d's Tap (slow — set mesh_tool to a "
+                "tool with a scanning probe to speed this up)" % tool_nr)
+            self.gcode.run_script_from_command("SET_ACTIVE_Z_PROBE PROBE=none")
+            self.gcode.run_script_from_command("BED_MESH_CALIBRATE" + prof)
+            return
+
+        # Borrow the mesh tool: swap, re-zero on its nozzle, scan, swap back.
+        # The nozzle zero re-references every tool to the mesh tool, so the
+        # print height no longer depends on the Tap tools' z_offset at all.
+        self.gcode.respond_info(
+            "Bed mesh: borrowing T%d (%s) for rapid_scan, then back to T%d"
+            % (mesh_tool, self._obj_name(helper), tool_nr))
+        try:
+            self.gcode.run_script_from_command(
+                "SELECT_TOOL T=%d RESTORE_AXIS=XYZ" % mesh_tool)
+            if self.mesh_tool_gcode:
+                self.mesh_tool_gcode.run_gcode_from_command(
+                    {'MESH_TOOL': mesh_tool, 'PREVIOUS_TOOL': tool_nr})
+            self._move_to_tap_point(gcmd)
+            self._nozzle_zero(mesh_tool, gcmd)
+            self._apply_tool_z_offsets(mesh_tool, gcmd, save=False)
+            self.gcode.run_script_from_command("APPLY_TOOL_PROBE_FOR OP=mesh")
+            self.gcode.run_script_from_command(
+                "BED_MESH_CALIBRATE METHOD=rapid_scan" + prof)
+        finally:
+            # Always put the original tool back, even if the mesh failed
+            if self._active_tool_number(gcmd) != tool_nr:
+                self.gcode.run_script_from_command(
+                    "SELECT_TOOL T=%d RESTORE_AXIS=XYZ" % tool_nr)
+            self.gcode.run_script_from_command(
+                "SET_ACTIVE_TOOL_PROBE T=%d" % tool_nr)
+            self.gcode.run_script_from_command("APPLY_TOOL_PROBE_FOR OP=mesh")
+
+    def _tool_mesh_probe(self, tool_nr):
+        tp = self.printer.lookup_object('tool_probe T%d' % tool_nr, None)
+        if tp is None or not hasattr(tp, 'get_z_probe_for'):
+            return None
+        return tp.get_z_probe_for('mesh')
 
     # ─── SET_TOOL_GCODE_OFFSET ───────────────────────────────────────────
 
