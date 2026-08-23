@@ -106,6 +106,13 @@ class Offset:
                                     self.cmd_SET_TOOL_GCODE_OFFSET,
                                     desc="Set gcode_x/y/z_offset on a tool and stage for SAVE_CONFIG")
 
+        self.gcode.register_command('NOZZLE_ZERO',
+                                    self.cmd_NOZZLE_ZERO,
+                                    desc=self.cmd_NOZZLE_ZERO_help)
+        self.gcode.register_command('APPLY_TOOL_Z_OFFSETS',
+                                    self.cmd_APPLY_TOOL_Z_OFFSETS,
+                                    desc=self.cmd_APPLY_TOOL_Z_OFFSETS_help)
+
     def _get_state_file_path(self):
         config_file = self.printer.get_start_args().get('config_file', '')
         config_dir = os.path.dirname(os.path.abspath(config_file))
@@ -928,6 +935,157 @@ class Offset:
         self.probe_cal_map[tool] = probe_match
         self.gcode.respond_info(
             "Probe cal map: T%d -> %s" % (tool, probe_match))
+
+    # ─── NOZZLE_ZERO / APPLY_TOOL_Z_OFFSETS ──────────────────────────────
+
+    def _active_tool_number(self, gcmd):
+        at = getattr(self.toolchanger, 'active_tool', None)
+        if at is None:
+            raise gcmd.error(
+                "No active tool — mount a tool or pass TOOL=/REF=")
+        return at.tool_number
+
+    def _tool_home_probe(self, tool_nr):
+        """The probe this tool is configured to home with, or None for Tap."""
+        tp = self.printer.lookup_object('tool_probe T%d' % tool_nr, None)
+        if tp is None or not hasattr(tp, 'get_z_probe_for'):
+            return None
+        return tp.get_z_probe_for('home')
+
+    @staticmethod
+    def _obj_name(obj):
+        return getattr(obj, '_full_name',
+               getattr(obj, 'name',
+               getattr(obj, '_name', str(obj))))
+
+    def _nozzle_zero(self, tool_nr, gcmd):
+        """Set kinematic Z=0 at this tool's nozzle contact, using whatever
+        probe it is configured with. Both paths are nozzle touches."""
+        probe_obj = self.printer.lookup_object('probe')
+        z_probe = self._tool_home_probe(tool_nr)
+        self.gcode.run_script_from_command(
+            "SET_ACTIVE_TOOL_PROBE T=%d" % tool_nr)
+        self.gcode.run_script_from_command("STOP_TOOL_PROBE_CRASH_DETECTION")
+
+        if z_probe is not None and hasattr(z_probe, 'probe_static_height'):
+            name = self._obj_name(z_probe)
+            self.gcode.run_script_from_command(
+                'SET_ACTIVE_Z_PROBE PROBE="%s"' % name)
+            self.gcode.run_script_from_command("PROBE_EDDY_NG_TAP HOME_Z=1")
+            self.gcode_move.reset_last_position()
+            self.gcode.respond_info(
+                "NOZZLE_ZERO: T%d Z=0 set by Eddy tap (%s)" % (tool_nr, name))
+            return
+
+        # Mechanical Tap: it triggers at the nozzle, so probing it and
+        # zeroing on bed_z puts Z=0 at nozzle contact. Accuracy depends on
+        # this tool's [tool_probe] z_offset (CALIBRATE_PROBE_OFFSETS).
+        self.gcode.run_script_from_command("SET_ACTIVE_Z_PROBE PROBE=none")
+        self._move_z(5.0)
+        bed_z = self._do_tap_probe(probe_obj, self.probe_offset_samples)
+        self._set_z_reference(bed_z)
+        self.gcode.respond_info(
+            "NOZZLE_ZERO: T%d Z=0 set by Tap (bed_z=%.4f)"
+            % (tool_nr, bed_z))
+
+    cmd_NOZZLE_ZERO_help = (
+        "Set Z=0 at the active tool's nozzle contact, using whatever probe "
+        "that tool has (Eddy tap or mechanical Tap). TOOL=<n> picks up that "
+        "tool first. APPLY_OFFSETS=1 (default) then re-references every "
+        "tool's gcode_z_offset to it, so all nozzles print at one height.")
+
+    def cmd_NOZZLE_ZERO(self, gcmd):
+        if not self.is_homed():
+            raise gcmd.error("Must home first")
+        tool_nr = gcmd.get_int('TOOL', None)
+        if tool_nr is not None:
+            if tool_nr not in self.toolchanger.tool_numbers:
+                raise gcmd.error("Tool T%d not configured" % tool_nr)
+            if self._active_tool_number(gcmd) != tool_nr:
+                self.gcode.run_script_from_command(
+                    "SELECT_TOOL T=%d RESTORE_AXIS=XYZ" % tool_nr)
+        tool_nr = self._active_tool_number(gcmd)
+
+        self._nozzle_zero(tool_nr, gcmd)
+
+        if gcmd.get_int('APPLY_OFFSETS', 1):
+            self._apply_tool_z_offsets(tool_nr, gcmd, save=False)
+
+    cmd_APPLY_TOOL_Z_OFFSETS_help = (
+        "Re-reference every tool's gcode_z_offset to REF (default: active "
+        "tool) from the Z-switch data, so all nozzles sit at the same height "
+        "no matter which tool established Z=0. SAVE=1 also stages the values "
+        "for SAVE_CONFIG.")
+
+    def cmd_APPLY_TOOL_Z_OFFSETS(self, gcmd):
+        ref = gcmd.get_int('REF', None)
+        if ref is None:
+            ref = self._active_tool_number(gcmd)
+        self._apply_tool_z_offsets(ref, gcmd,
+                                   save=bool(gcmd.get_int('SAVE', 0)))
+
+    def _apply_tool_z_offsets(self, ref, gcmd, save=False):
+        """gcode_z_offset(n) = z_trigger(n) - z_trigger(ref).
+
+        The Z-switch triggers are absolute within one calibration run, so
+        switching the reference tool is pure arithmetic — no re-measurement.
+        Relative nozzle heights come from the Z-switch (probe independent),
+        the absolute zero comes from the homing tool's nozzle touch."""
+        if not self.probe_results:
+            raise gcmd.error(
+                "No Z-switch data. Run CALIBRATE_ALL_Z_OFFSETS first")
+
+        tools = sorted(self.toolchanger.tool_numbers)
+        triggers = {}
+        missing = []
+        data_refs = set()
+        for tn in tools:
+            entry = self.probe_results.get(str(tn))
+            trig = entry.get('z_trigger') if entry else None
+            if not isinstance(trig, (int, float)):
+                missing.append(tn)
+                continue
+            triggers[tn] = float(trig)
+            if entry.get('ref_tool') is not None:
+                data_refs.add(int(entry['ref_tool']))
+        if missing:
+            raise gcmd.error(
+                "Missing Z-switch data for T%s. Run CALIBRATE_ALL_Z_OFFSETS "
+                "for all tools first"
+                % ",".join(str(t) for t in missing))
+        if len(data_refs) > 1:
+            raise gcmd.error(
+                "Z-switch data comes from different runs (references %s). "
+                "Re-run CALIBRATE_ALL_Z_OFFSETS for all tools."
+                % ", ".join("T%d" % r for r in sorted(data_refs)))
+        if ref not in triggers:
+            raise gcmd.error("No Z-switch data for reference tool T%d" % ref)
+
+        base = triggers[ref]
+        lines = []
+        for tn in tools:
+            val = triggers[tn] - base
+            self.gcode.run_script_from_command(
+                'SET_TOOL_PARAMETER T=%d PARAMETER=gcode_z_offset '
+                'VALUE="%.6f"' % (tn, val))
+            if save:
+                tool_obj = self.printer.lookup_object('tool T%d' % tn, None)
+                if tool_obj is not None:
+                    tool_obj.save_parameter('gcode_z_offset')
+            # Keep the stored data consistent with what is applied
+            self.probe_results[str(tn)]['z_offset'] = val
+            self.probe_results[str(tn)]['ref_tool'] = ref
+            lines.append("T%d=%+.4f" % (tn, val))
+
+        # The transform changed under gcode_move's cached position
+        self.gcode_move.reset_last_position()
+        self._save_probe_results()
+
+        self.gcode.respond_info(
+            "Tool Z offsets referenced to T%d: %s%s"
+            % (ref, "  ".join(lines),
+               " (staged for SAVE_CONFIG)" if save else ""))
+        self.last_ref_tool = ref
 
     # ─── SET_TOOL_GCODE_OFFSET ───────────────────────────────────────────
 

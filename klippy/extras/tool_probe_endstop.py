@@ -128,11 +128,14 @@ class ToolProbeEndstop:
 
     @staticmethod
     def _probe_name(obj):
+        """Full object name, usable with lookup_object / SET_ACTIVE_Z_PROBE.
+        _full_name comes first: Eddy-NG's _name is only the short suffix
+        ('my_eddy'), which cannot be looked up."""
         if obj is None:
             return None
-        return getattr(obj, 'name',
-               getattr(obj, '_name',
-               getattr(obj, '_full_name', str(obj))))
+        return getattr(obj, '_full_name',
+               getattr(obj, 'name',
+               getattr(obj, '_name', str(obj))))
 
     def get_status(self, eventtime):
         status = self.cmd_helper.get_status(eventtime)
