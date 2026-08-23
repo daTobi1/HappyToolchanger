@@ -6,6 +6,12 @@
             </v-icon>
         </td>
         <td class="name">
+            <v-tooltip v-if="isMountedTool" top>
+                <template #activator="{ on, attrs }">
+                    <span class="mounted-tool-dot primary" v-bind="attrs" v-on="on"></span>
+                </template>
+                <span>{{ $t('Panels.TemperaturePanel.ToolMounted', { tool: mountedToolName }) }}</span>
+            </v-tooltip>
             <span class="cursor-pointer" @click="openEditDialog">{{ formatName }}</span>
         </td>
         <td v-if="!isResponsiveMobile" class="state">
@@ -127,6 +133,44 @@ export default class TemperaturePanelListItem extends Mixins(BaseMixin) {
         if (splits.length === 1) return this.objectName
 
         return splits[1]
+    }
+
+    // Which tool is physically mounted, in order of trustworthiness:
+    // the tool detection switches are the truth, happy_toolchanger.active_tool
+    // is persisted state ("last known", stale after a manual swap while off),
+    // and toolchanger.tool_number is only the logical selection.
+    get mountedToolNumber(): number | null {
+        const printer = this.$store.state.printer ?? {}
+        const candidates = [
+            printer.tool_probe_endstop?.active_tool_number,
+            printer.happy_toolchanger?.active_tool,
+            printer.toolchanger?.tool_number,
+        ]
+
+        for (const candidate of candidates) {
+            if (typeof candidate === 'number' && candidate >= 0) return candidate
+        }
+
+        return null
+    }
+
+    get mountedToolName(): string {
+        return this.mountedToolNumber === null ? '' : `T${this.mountedToolNumber}`
+    }
+
+    // Klipper names the tool objects "tool T0", "tool T1", ... and each one
+    // reports the extruder it drives.
+    get mountedToolExtruder(): string | null {
+        if (this.mountedToolNumber === null) return null
+
+        const toolObject = this.$store.state.printer?.[`tool T${this.mountedToolNumber}`]
+        const extruder = toolObject?.extruder
+
+        return typeof extruder === 'string' && extruder !== '' ? extruder : null
+    }
+
+    get isMountedTool(): boolean {
+        return this.mountedToolExtruder !== null && this.mountedToolExtruder === this.objectName
     }
 
     get formatName() {
@@ -346,5 +390,20 @@ export default class TemperaturePanelListItem extends Mixins(BaseMixin) {
 
 ::v-deep .cursor-pointer {
     cursor: pointer;
+}
+
+/* Marks the extruder of the currently mounted tool. Theme colour rather than
+   filament colour on purpose: this is a state indicator and must not depend
+   on Spoolman being reachable, and a light filament colour would vanish
+   against the light theme. */
+.mounted-tool-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 6px;
+    border-radius: 50%;
+    vertical-align: middle;
+    /* keeps the dot legible on any row background */
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
 }
 </style>
