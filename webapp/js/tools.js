@@ -1211,24 +1211,70 @@ $(document).on("click", "#probe-cal-btn", function() {
 
   var script = lines.join('\n');
 
-  var $btn = $("#probe-cal-btn");
-  $btn.prop("disabled", true).text("Calibrating...");
-  if (typeof showToast === 'function') showToast("Probe calibration started...", "info");
+  var toolRows = selectedTools.map(function(t) {
+    var probe = config.tool_probes[String(t)] || 'probe';
+    var isRef = (parseInt(t, 10) === parseInt(config.ref_tool, 10));
+    return '<tr>' +
+      '<td class="px-1 py-0 fw-bold text-nowrap">T' + escapeHtml(t) +
+        (isRef ? ' <span class="badge bg-success">REF</span>' : '') + '</td>' +
+      '<td class="px-1 py-0 text-secondary">&rarr;</td>' +
+      '<td class="px-1 py-0"><code>' + escapeHtml(probe) + '</code></td>' +
+    '</tr>';
+  }).join('');
 
-  $.get(printerUrl(printerIp, "/printer/gcode/script?script=" + encodeURIComponent(script)))
-    .done(function() {
-      console.log("Probe calibration started:", script);
-      if (typeof showToast === 'function') showToast("Probe calibration command sent", "success");
-    })
-    .fail(function(err) {
-      console.error("Probe calibration failed:", err);
-      var msg = "Probe calibration failed";
-      try { msg += ": " + err.responseJSON.error.message; } catch(_){}
-      if (typeof showToast === 'function') showToast(msg, "danger");
-    })
-    .always(function() {
-      $btn.prop("disabled", false).text("CALIBRATE PROBE OFFSETS");
-    });
+  var body =
+    '<div class="border border-secondary-subtle rounded p-2 mb-2 bg-dark">' +
+      '<div class="fw-bold mb-1">Tools &amp; probes</div>' +
+      '<table class="table table-sm table-borderless mb-0" style="font-size:0.85rem;">' +
+        '<tbody>' + toolRows + '</tbody>' +
+      '</table>' +
+    '</div>' +
+    '<div class="border border-secondary-subtle rounded p-2 mb-2 bg-dark">' +
+      '<table class="table table-sm table-borderless mb-0" style="font-size:0.85rem;"><tbody>' +
+        '<tr><td class="px-1 py-0 text-secondary">Reference tool</td>' +
+            '<td class="px-1 py-0 fw-bold">T' + escapeHtml(config.ref_tool) + '</td></tr>' +
+        '<tr><td class="px-1 py-0 text-secondary">Reference probe</td>' +
+            '<td class="px-1 py-0"><code>' + escapeHtml(config.ref_probe) + '</code></td></tr>' +
+        '<tr><td class="px-1 py-0 text-secondary">Extruder temp</td>' +
+            '<td class="px-1 py-0">' + (probeTemp > 0 ? escapeHtml(probeTemp) + ' &deg;C' : 'no heating') + '</td></tr>' +
+      '</tbody></table>' +
+    '</div>' +
+    '<div class="small text-secondary mb-2">Command:<br><code>' +
+      escapeHtml(script).replace(/\n/g, '<br>') + '</code></div>' +
+    '<div class="small text-warning">' +
+      '<i class="bi bi-exclamation-triangle"></i> The printer moves and changes tools. ' +
+      '<code>CALIBRATE_PROBE_OFFSETS</code> also sets <code>z_offset</code> at runtime and ' +
+      'stages it for <code>SAVE_CONFIG</code> — use APPLY PROBE OFFSETS afterwards to write ' +
+      'it into the tool config files instead.' +
+    '</div>';
+
+  confirmDialog({
+    title: "Start probe calibration?",
+    body: body,
+    okLabel: "OK — start",
+    okClass: "btn-primary"
+  }).then(function(ok) {
+    if (!ok) return;
+
+    var $btn = $("#probe-cal-btn");
+    $btn.prop("disabled", true).text("Calibrating...");
+    if (typeof showToast === 'function') showToast("Probe calibration started...", "info");
+
+    $.get(printerUrl(printerIp, "/printer/gcode/script?script=" + encodeURIComponent(script)))
+      .done(function() {
+        console.log("Probe calibration started:", script);
+        if (typeof showToast === 'function') showToast("Probe calibration command sent", "success");
+      })
+      .fail(function(err) {
+        console.error("Probe calibration failed:", err);
+        var msg = "Probe calibration failed";
+        try { msg += ": " + err.responseJSON.error.message; } catch(_){}
+        if (typeof showToast === 'function') showToast(msg, "danger");
+      })
+      .always(function() {
+        $btn.prop("disabled", false).text("CALIBRATE PROBE OFFSETS");
+      });
+  });
 });
 
 // Apply XY offsets to Klipper
