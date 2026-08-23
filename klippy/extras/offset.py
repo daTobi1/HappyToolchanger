@@ -179,6 +179,26 @@ class Offset:
             else:
                 self.gcode.respond_info(f"Offset config file not found ({self.config_file_path})")
 
+    def _require_leveled(self, gcmd):
+        """Refuse to measure on an unlevelled gantry.
+
+        Every routine here compares tools against one common Z. A gantry
+        that has not been levelled puts a position-dependent error into
+        that comparison, and the result looks plausible but is wrong.
+        Silently skipped when the printer has no such section."""
+        for name in ('quad_gantry_level', 'z_tilt'):
+            obj = self.printer.lookup_object(name, None)
+            if obj is None:
+                continue
+            try:
+                st = obj.get_status(self.printer.get_reactor().monotonic())
+            except Exception:
+                continue
+            if not st.get('applied', False):
+                raise gcmd.error(
+                    "%s has not been applied - run it first"
+                    % name.upper().replace('_', ' '))
+
     def is_homed(self):
         toolhead = self.printer.lookup_object('toolhead')
         homed = toolhead.get_kinematics().get_status(
@@ -244,11 +264,9 @@ class Offset:
 
     def cmd_MOVE_TO_ZSWITCH(self, gcmd):
         if not self.is_homed():
-            gcmd.respond_error("Must home first")
-            return
+            raise gcmd.error("Must home first")
         if not self.has_switch_pos():
-            gcmd.respond_error("Z switch positions invalid")
-            return
+            raise gcmd.error("Z switch positions invalid")
 
         toolhead = self.printer.lookup_object('toolhead')
         toolhead.wait_moves()
@@ -376,8 +394,8 @@ class Offset:
 
     def cmd_CALIBRATE_ALL_Z_OFFSETS(self, gcmd):
         if not self.is_homed():
-            gcmd.respond_error("Must home first")
-            return
+            raise gcmd.error("Must home first")
+        self._require_leveled(gcmd)
 
         self.cmd_OFFSET_START_GCODE(gcmd)
 
@@ -385,8 +403,7 @@ class Offset:
 
         z_calc = (gcmd.get('Z_CALC', None) or '').strip().lower()
         if z_calc and z_calc not in ('median', 'average', 'avg', 'mean', 'trimmed', 'trim', 'trimmed_mean'):
-            gcmd.respond_error("Invalid Z_CALC. Use median, average or trimmed")
-            return
+            raise gcmd.error("Invalid Z_CALC. Use median, average or trimmed")
 
         effective_method = self._effective_calc_method(gcmd)
         origin = "override" if z_calc else "config default"
@@ -407,8 +424,7 @@ class Offset:
         # Sorted list for stable fallback behavior
         available_tools = sorted(self.toolchanger.tool_numbers)
         if not available_tools:
-            gcmd.respond_error("No tools available")
-            return
+            raise gcmd.error("No tools available")
 
         # Reference tool with fallback:
         # - prefer gcmd REF
@@ -428,8 +444,7 @@ class Offset:
                 ordered_tools.append(tool)
 
         if not ordered_tools:
-            gcmd.respond_error("No valid tools selected")
-            return
+            raise gcmd.error("No valid tools selected")
 
         # Ensure reference is included and first
         if ref_tool not in ordered_tools:
@@ -618,6 +633,7 @@ class Offset:
     def cmd_CALIBRATE_PROBE_OFFSETS(self, gcmd):
         if not self.is_homed():
             raise gcmd.error("Must home first")
+        self._require_leveled(gcmd)
 
         # Check that z_offset data exists from Z-switch calibration
         if not self.probe_results:
@@ -1099,6 +1115,7 @@ class Offset:
     def cmd_CALIBRATE_TOOL_PID(self, gcmd):
         if not self.is_homed():
             raise gcmd.error("Must home first")
+        self._require_leveled(gcmd)
 
         available = sorted(self.toolchanger.tool_numbers)
         tools_param = gcmd.get('TOOLS', None)
@@ -1203,10 +1220,13 @@ class Offset:
                 self.printer.get_reactor().monotonic()
             )['save_config_pending_items']
             entry = pending.get(section) or {}
+            # Klipper stages them as pid_Kp / pid_Ki / pid_Kd - the option
+            # name is kept verbatim, so match case-insensitively.
+            lower = {str(k).lower(): v for k, v in entry.items()}
             out = {}
             for key in ('pid_kp', 'pid_ki', 'pid_kd'):
-                if key in entry:
-                    out[key] = float(entry[key])
+                if key in lower:
+                    out[key] = float(lower[key])
             return out if len(out) == 3 else None
         except Exception:
             return None
