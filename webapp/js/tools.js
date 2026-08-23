@@ -243,6 +243,58 @@ function replaceInConfigSection(content, sectionName, key, value) {
   return null;
 }
 
+// Reads a key out of a config file. sectionName null = first match anywhere
+// (mirrors updateToolConfigOffsets); otherwise the key must sit in that section.
+function readConfigValue(content, sectionName, key) {
+  var lines = content.split('\n');
+  var anySectionRx = /^\s*\[[^\]]+\]/;
+  var sectionRx = sectionName
+    ? new RegExp('^\\s*\\[\\s*' + sectionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\]')
+    : null;
+  var keyRx = new RegExp('^\\s*' + key + '\\s*[:=]\\s*([^#]*)');
+  var inSection = !sectionRx;
+
+  for (var i = 0; i < lines.length; i++) {
+    if (anySectionRx.test(lines[i])) {
+      inSection = sectionRx ? sectionRx.test(lines[i]) : true;
+      continue;
+    }
+    if (!inSection) continue;
+    var m = lines[i].match(keyRx);
+    if (m) return m[1].trim();
+  }
+  return null;
+}
+
+// Reads the current values straight out of the tool config files, so the
+// confirmation dialog shows what actually changes on disk. The runtime value
+// can differ — the XY measuring flow zeroes gcode_x/y_offset at runtime while
+// the file still holds the calibrated value.
+// requests: [{ tool, key, section }] -> Promise<{ "<tool>|<key>": string|null }>
+function fetchToolConfigValues(requests) {
+  var baseUrl = printerUrl(printerIp, "");
+  var tools = [];
+  requests.forEach(function(r) {
+    if (tools.indexOf(String(r.tool)) === -1) tools.push(String(r.tool));
+  });
+
+  var out = {};
+  return Promise.all(tools.map(function(t) {
+    var mine = requests.filter(function(r) { return String(r.tool) === t; });
+    return fetch(baseUrl + "/server/files/config/toolchanger/tools/T" + t + ".cfg")
+      .then(function(r) { return r.ok ? r.text() : null; })
+      .then(function(content) {
+        mine.forEach(function(r) {
+          out[t + "|" + r.key] = (content === null)
+            ? null : readConfigValue(content, r.section, r.key);
+        });
+      })
+      .catch(function() {
+        mine.forEach(function(r) { out[t + "|" + r.key] = null; });
+      });
+  })).then(function() { return out; });
+}
+
 // Updates tool_probe z_offset directly in tool config files.
 // toolZOffsets: { "0": "-0.812", "1": "-0.831", ... }
 function updateToolProbeOffsets(toolZOffsets) {
@@ -1186,7 +1238,8 @@ $(document).on("click", "#apply-xy-btn", function() {
   var master = getSelectedReferenceTool(0);
   var lines = [];
   var toolOffsets = {};
-  var entries = [];
+  var pending = [];
+  var requests = [];
 
   $('button.toolchange-btn').each(function(){
     var tool = $(this).data("tool");
@@ -1196,16 +1249,9 @@ $(document).on("click", "#apply-xy-btn", function() {
     if (rawX && rawY) {
       lines.push("SET_TOOL_GCODE_OFFSET T=" + tool + " X=" + rawX + " Y=" + rawY);
       toolOffsets[tool] = { x: rawX, y: rawY };
-      var cur = _toolGcodeOffsets[String(tool)] || {};
-      entries.push({
-        tool: tool,
-        file: "toolchanger/tools/T" + tool + ".cfg",
-        section: "tool T" + tool,
-        changes: [
-          { key: "gcode_x_offset", from: (typeof cur.x === 'number') ? cur.x.toFixed(3) : null, to: rawX },
-          { key: "gcode_y_offset", from: (typeof cur.y === 'number') ? cur.y.toFixed(3) : null, to: rawY }
-        ]
-      });
+      pending.push({ tool: tool, x: rawX, y: rawY });
+      requests.push({ tool: tool, key: "gcode_x_offset", section: null });
+      requests.push({ tool: tool, key: "gcode_y_offset", section: null });
     }
   });
 
@@ -1215,14 +1261,31 @@ $(document).on("click", "#apply-xy-btn", function() {
   }
 
   var note = 'Reference tool <strong>T' + escapeHtml(master) + '</strong> is not changed.<br>' +
-    'The values are set at runtime via <code>SET_TOOL_GCODE_OFFSET</code> and written ' +
-    'into the config files listed above.';
+    '"Current" is read from the config file. The new values are also set at runtime ' +
+    'via <code>SET_TOOL_GCODE_OFFSET</code>.';
 
-  confirmDialog({
-    title: "Apply XY offsets?",
-    body: offsetChangeListHtml(entries, note),
-    okLabel: "OK — apply",
-    okClass: "btn-success"
+  $btn.prop("disabled", true).text("Loading...");
+  fetchToolConfigValues(requests).then(function(cur) {
+    $btn.prop("disabled", false).html(btnHtml);
+
+    var entries = pending.map(function(p) {
+      return {
+        tool: p.tool,
+        file: "toolchanger/tools/T" + p.tool + ".cfg",
+        section: "tool T" + p.tool,
+        changes: [
+          { key: "gcode_x_offset", from: cur[p.tool + "|gcode_x_offset"], to: p.x },
+          { key: "gcode_y_offset", from: cur[p.tool + "|gcode_y_offset"], to: p.y }
+        ]
+      };
+    });
+
+    return confirmDialog({
+      title: "Apply XY offsets?",
+      body: offsetChangeListHtml(entries, note),
+      okLabel: "OK — apply",
+      okClass: "btn-success"
+    });
   }).then(function(ok) {
     if (!ok) return;
 
@@ -1253,7 +1316,8 @@ $(document).on("click", "#apply-z-btn", function() {
   var btnHtml = '<i class="bi bi-check-circle"></i> APPLY Z OFFSETS TO KLIPPER';
   var lines = [];
   var toolOffsets = {};
-  var entries = [];
+  var pending = [];
+  var requests = [];
 
   var keys = Object.keys(_zSwitchResults).sort(function(a, b){ return a - b; });
   keys.forEach(function(k) {
@@ -1262,15 +1326,8 @@ $(document).on("click", "#apply-z-btn", function() {
     var zTxt = zOff.toFixed(6);
     lines.push("SET_TOOL_GCODE_OFFSET T=" + k + " Z=" + zTxt);
     toolOffsets[k] = { z: zTxt };
-    var cur = _toolGcodeOffsets[String(k)] || {};
-    entries.push({
-      tool: k,
-      file: "toolchanger/tools/T" + k + ".cfg",
-      section: "tool T" + k,
-      changes: [
-        { key: "gcode_z_offset", from: (typeof cur.z === 'number') ? cur.z.toFixed(3) : null, to: zTxt }
-      ]
-    });
+    pending.push({ tool: k, z: zTxt });
+    requests.push({ tool: k, key: "gcode_z_offset", section: null });
   });
 
   if (!lines.length) {
@@ -1278,14 +1335,30 @@ $(document).on("click", "#apply-z-btn", function() {
     return;
   }
 
-  var note = 'The values are set at runtime via <code>SET_TOOL_GCODE_OFFSET</code> and written ' +
-    'into the config files listed above.';
+  var note = '"Current" is read from the config file. The new values are also set at ' +
+    'runtime via <code>SET_TOOL_GCODE_OFFSET</code>.';
 
-  confirmDialog({
-    title: "Apply Z offsets?",
-    body: offsetChangeListHtml(entries, note),
-    okLabel: "OK — apply",
-    okClass: "btn-success"
+  $btn.prop("disabled", true).text("Loading...");
+  fetchToolConfigValues(requests).then(function(cur) {
+    $btn.prop("disabled", false).html(btnHtml);
+
+    var entries = pending.map(function(p) {
+      return {
+        tool: p.tool,
+        file: "toolchanger/tools/T" + p.tool + ".cfg",
+        section: "tool T" + p.tool,
+        changes: [
+          { key: "gcode_z_offset", from: cur[p.tool + "|gcode_z_offset"], to: p.z }
+        ]
+      };
+    });
+
+    return confirmDialog({
+      title: "Apply Z offsets?",
+      body: offsetChangeListHtml(entries, note),
+      okLabel: "OK — apply",
+      okClass: "btn-success"
+    });
   }).then(function(ok) {
     if (!ok) return;
 
@@ -1315,7 +1388,8 @@ $(document).on("click", "#apply-probe-btn", function() {
   var $btn = $(this);
   var btnHtml = '<i class="bi bi-check-circle"></i> APPLY PROBE OFFSETS TO CONFIG';
   var toolZOffsets = {};
-  var entries = [];
+  var pending = [];
+  var requests = [];
 
   var keys = Object.keys(_probeCalResults).sort(function(a, b){ return a - b; });
   keys.forEach(function(k) {
@@ -1323,31 +1397,40 @@ $(document).on("click", "#apply-probe-btn", function() {
     if (typeof pz !== 'number') return;
     var pzTxt = pz.toFixed(3);
     toolZOffsets[k] = pzTxt;
-    var cur = _toolProbeOffsets[String(k)];
-    entries.push({
-      tool: k,
-      file: "toolchanger/tools/T" + k + ".cfg",
-      section: "tool_probe T" + k,
-      changes: [
-        { key: "z_offset", from: (typeof cur === 'number') ? cur.toFixed(3) : null, to: pzTxt }
-      ]
-    });
+    pending.push({ tool: k, z: pzTxt });
+    requests.push({ tool: k, key: "z_offset", section: "tool_probe T" + k });
   });
 
-  if (!entries.length) {
+  if (!pending.length) {
     if (typeof showToast === 'function') showToast("No probe offsets to apply", "warning");
     return;
   }
 
-  var note = 'CALIBRATE_PROBE_OFFSETS already set these values at runtime. ' +
-    'Writing them into the config files above makes them permanent — ' +
-    'no <code>SAVE_CONFIG</code> needed.';
+  var note = '"Current" is read from the config file. ' +
+    'CALIBRATE_PROBE_OFFSETS already set the new values at runtime — writing them ' +
+    'into the files above makes them permanent, no <code>SAVE_CONFIG</code> needed.';
 
-  confirmDialog({
-    title: "Apply probe offsets?",
-    body: offsetChangeListHtml(entries, note),
-    okLabel: "OK — apply",
-    okClass: "btn-success"
+  $btn.prop("disabled", true).text("Loading...");
+  fetchToolConfigValues(requests).then(function(cur) {
+    $btn.prop("disabled", false).html(btnHtml);
+
+    var entries = pending.map(function(p) {
+      return {
+        tool: p.tool,
+        file: "toolchanger/tools/T" + p.tool + ".cfg",
+        section: "tool_probe T" + p.tool,
+        changes: [
+          { key: "z_offset", from: cur[p.tool + "|z_offset"], to: p.z }
+        ]
+      };
+    });
+
+    return confirmDialog({
+      title: "Apply probe offsets?",
+      body: offsetChangeListHtml(entries, note),
+      okLabel: "OK — apply",
+      okClass: "btn-success"
+    });
   }).then(function(ok) {
     if (!ok) return;
 
