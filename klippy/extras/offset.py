@@ -469,6 +469,9 @@ class Offset:
                         self.probe_results[key]['z_offset'] = z_trig - ref_trigger
                 self.probe_results[key]['ref_tool'] = ref_tool
                 self.probe_results[key]['run_id'] = run_id
+                zs_temp = self._tool_extruder_temp(tool)
+                if zs_temp is not None:
+                    self.probe_results[key]['zswitch_temp'] = zs_temp
 
         self._save_probe_results()
         self.cmd_OFFSET_FINISH_GCODE(gcmd)
@@ -884,6 +887,18 @@ class Offset:
 
                 self.probe_results[key]['probe_z_offset'] = probe_z_offset
                 self.probe_results[key]['tap_bed_z'] = bed_z
+                tap_temp = self._tool_extruder_temp(tool_nr)
+                if tap_temp is not None:
+                    self.probe_results[key]['tap_temp'] = tap_temp
+                    zs_temp = self.probe_results[key].get('zswitch_temp')
+                    if zs_temp is not None and abs(tap_temp - zs_temp) > 5.0:
+                        self.gcode.respond_info(
+                            "T%d: WARNUNG Z-Switch bei %.0fC, Tap bei %.0fC "
+                            "gemessen - die Waermeausdehnung der Duese "
+                            "(Groessenordnung 0.1mm) steckt damit im "
+                            "probe_z_offset. Beide Laeufe mit demselben "
+                            "EXTRUDER_TEMP fahren."
+                            % (tool_nr, zs_temp, tap_temp))
                 self.probe_results[key].pop('eddy_tap_deviation', None)
                 self.probe_results[key].pop('eddy_tap_z', None)
                 self.probe_results[key].pop('eddy_probe', None)
@@ -987,6 +1002,28 @@ class Offset:
             "Probe cal map: T%d -> %s" % (tool, probe_match))
 
     # ─── NOZZLE_ZERO / APPLY_TOOL_Z_OFFSETS ──────────────────────────────
+
+    def _tool_extruder_temp(self, tool_nr):
+        """Current nozzle temperature of a tool, or None.
+
+        Thermal expansion of the hot end is not negligible here: ~30mm of
+        brass over 175K is about 0.1mm, the same order as the tap overtravel
+        being measured. A Z-switch run taken cold and a tap taken hot
+        therefore differ by the expansion, and that difference lands in
+        probe_z_offset."""
+        try:
+            tool = self.printer.lookup_object('tool T%d' % tool_nr, None)
+            name = getattr(tool, 'extruder_name', None) if tool else None
+            if not name:
+                return None
+            extruder = self.printer.lookup_object(name, None)
+            if extruder is None:
+                return None
+            st = extruder.get_status(self.printer.get_reactor().monotonic())
+            temp = st.get('temperature')
+            return float(temp) if temp is not None else None
+        except Exception:
+            return None
 
     def _active_tool_number(self, gcmd):
         at = getattr(self.toolchanger, 'active_tool', None)
