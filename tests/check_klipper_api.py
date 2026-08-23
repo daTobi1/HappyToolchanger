@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""Verify the Klipper internals this project builds on still look as expected.
+
+Our extras are not plugins against a stable API -- they subclass and call
+Klipper internals directly. A Klipper update can move any of these without
+warning, and the failure would only show up mid-print. This checks the whole
+surface up front, so an update breaks the test instead of the printer.
+
+Run on the printer:
+
+    ~/klippy-env/bin/python check_klipper_api.py [--klipper ~/klipper]
+
+Exit code 0 = clean, 1 = findings.
+"""
+import argparse
+import inspect
+import os
+import re
+import sys
+
+FINDINGS = []
+CHECKS = [0]
+
+
+def ok(cond, what, detail=""):
+    CHECKS[0] += 1
+    if not cond:
+        FINDINGS.append("%s%s" % (what, (" -- " + detail) if detail else ""))
+
+
+def has_attrs(obj, names, label):
+    for n in names:
+        ok(hasattr(obj, n), "%s fehlt Attribut/Methode '%s'" % (label, n))
+
+
+def arg_names(fn):
+    try:
+        return list(inspect.signature(fn).parameters)
+    except (TypeError, ValueError):
+        return []
+
+
+def source_of(fn):
+    try:
+        return inspect.getsource(fn)
+    except (OSError, TypeError):
+        return ""
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--klipper", default=os.path.expanduser("~/klipper"))
+    args = ap.parse_args()
+
+    klippy = os.path.join(args.klipper, "klippy")
+    if not os.path.isdir(klippy):
+        raise SystemExit("Klipper nicht gefunden: %s" % klippy)
+    sys.path.insert(0, klippy)
+
+    from extras import probe, manual_probe, homing, gcode_macro  # noqa: F401
+    import gcode as gcode_mod
+
+    # --- probe.py: tool_probe.py und offset.py bauen direkt darauf auf ---
+    has_attrs(probe, [
+        "ProbeOffsetsHelper", "ProbeParameterHelper", "ProbeEndstopWrapper",
+        "SampleAveragingHelper", "HomingViaProbeHelper", "ProbeCommandHelper",
+        "run_single_probe",
+    ], "probe")
+
+    if hasattr(probe, "ProbeEndstopWrapper"):
+        p = arg_names(probe.ProbeEndstopWrapper.__init__)
+        ok(p[:4] == ["self", "config", "probe_offsets", "param_helper"],
+           "probe.ProbeEndstopWrapper.__init__ Signatur geaendert",
+           "erwartet (self, config, probe_offsets, param_helper), ist %s" % p)
+
+    if hasattr(probe, "HomingViaProbeHelper"):
+        p = arg_names(probe.HomingViaProbeHelper.__init__)
+        ok(p[:3] == ["self", "config", "position_endstop"],
+           "probe.HomingViaProbeHelper.__init__ Signatur geaendert",
+           "ist %s" % p)
+
+    if hasattr(probe, "ProbeOffsetsHelper"):
+        has_attrs(probe.ProbeOffsetsHelper, ["get_offsets"],
+                  "probe.ProbeOffsetsHelper")
+
+    # bed_z semantics: create_probe_result must subtract z_offset
+    if hasattr(probe, "run_single_probe"):
+        ok(len(arg_names(probe.run_single_probe)) == 2,
+           "probe.run_single_probe Signatur geaendert")
+
+    # --- manual_probe.ProbeResult: wir lesen .bed_z ---
+    ok(hasattr(manual_probe, "ProbeResult"), "manual_probe.ProbeResult fehlt")
+    if hasattr(manual_probe, "ProbeResult"):
+        f = getattr(manual_probe.ProbeResult, "_fields", ())
+        ok("bed_z" in f, "ProbeResult hat kein Feld 'bed_z'", "Felder: %s" % (f,))
+    if hasattr(manual_probe, "create_probe_result"):
+        src = source_of(manual_probe.create_probe_result)
+        ok("test_pos[2]-z_offset" in src.replace(" ", ""),
+           "create_probe_result subtrahiert z_offset nicht mehr",
+           "bed_z = trigger_z - z_offset ist die Grundlage aller Offset-Formeln")
+
+    # --- homing.py: G28 Z laeuft ueber _do_home_z_via_probe ---
+    ok(hasattr(homing, "HomingMove"), "homing.HomingMove fehlt")
+    hm = getattr(homing, "Homing", None)
+    ok(hm is not None, "homing.Homing fehlt")
+    if hm is not None:
+        has_attrs(hm, ["_do_home_z_via_probe", "_probing_home",
+                       "_create_probe_gcmd", "home_rails",
+                       "_do_home_rails"], "homing.Homing")
+        src = source_of(getattr(hm, "_probing_home", None)) or ""
+        ok("curpos[2] -= ppos.bed_z" in src,
+           "homing._probing_home setzt Z nicht mehr ueber bed_z",
+           "davon haengt ab, dass G28 Z den Nozzle-Kontakt trifft")
+        src = source_of(getattr(hm, "_create_probe_gcmd", None)) or ""
+        ok("PROBE_SPEED" in src,
+           "homing._create_probe_gcmd uebergibt kein PROBE_SPEED mehr",
+           "beeinflusst die Tap-Ueberfahrt; siehe homing_retract_dist")
+        src = source_of(getattr(hm, "home_rails", None)) or ""
+        ok("home_rails_end" not in src,
+           "homing.home_rails sendet jetzt evtl. doch ein Event fuer den "
+           "Probe-Pfad -- der G28-Wrapper koennte dadurch ueberfluessig sein")
+
+    # --- gcode.py: Parameterwerte mit Leerzeichen brauchen shlex ---
+    gc = getattr(gcode_mod, "GCodeDispatch", None)
+    ok(gc is not None, "gcode.GCodeDispatch fehlt")
+    if gc is not None:
+        src = source_of(getattr(gc, "_get_extended_params", None)) or ""
+        ok("shlex" in src,
+           "gcode._get_extended_params nutzt kein shlex mehr",
+           'PROBE="probe_eddy_ng my_eddy" wuerde am Leerzeichen zerbrechen')
+
+    # --- gcode_move: wir rufen reset_last_position/cmd_G1 und lesen
+    #     homing_position direkt ---
+    from extras import gcode_move
+    gm = getattr(gcode_move, "GCodeMove", None)
+    ok(gm is not None, "gcode_move.GCodeMove fehlt")
+    if gm is not None:
+        has_attrs(gm, ["reset_last_position", "cmd_G1", "get_status"],
+                  "gcode_move.GCodeMove")
+        src = source_of(gm.__init__) or ""
+        ok("homing_position" in src,
+           "gcode_move.homing_position fehlt",
+           "_gcode_z_offset() hat aber einen get_status-Fallback")
+        ok("self.last_position" in src,
+           "gcode_move.last_position fehlt -- reset_last_position pruefen")
+
+    # --- toolhead: manual_move/set_position umgehen gcode_move bewusst ---
+    sys.path.insert(0, os.path.dirname(klippy))
+    import toolhead as th_mod
+    th = getattr(th_mod, "ToolHead", None)
+    ok(th is not None, "toolhead.ToolHead fehlt")
+    if th is not None:
+        has_attrs(th, ["manual_move", "set_position", "get_position",
+                       "wait_moves", "get_status"], "toolhead.ToolHead")
+
+    print("geprueft: %d Zusicherungen gegen Klipper in %s"
+          % (CHECKS[0], args.klipper))
+    if FINDINGS:
+        print("\n%d Befund(e) -- Klipper hat sich geaendert:" % len(FINDINGS))
+        for f in FINDINGS:
+            print("  " + f)
+        return 1
+    print("OK - alle genutzten Klipper-Interna unveraendert")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

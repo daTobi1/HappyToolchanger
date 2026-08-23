@@ -1,0 +1,62 @@
+# Tests
+
+Beide Tests laufen **auf dem Drucker** (sie brauchen `jinja2` aus Klippers venv
+und einen laufenden Moonraker) und **bewegen nichts**.
+
+```bash
+scp tests/*.py biqu@<IP>:/tmp/
+ssh biqu@<IP> '~/klippy-env/bin/python /tmp/check_gcode_vocabulary.py'
+ssh biqu@<IP> '~/klippy-env/bin/python /tmp/check_klipper_api.py'
+```
+
+Exit-Code 0 = sauber, 1 = Befunde.
+
+## `check_gcode_vocabulary.py`
+
+Prüft, dass jedes GCode-Kommando, das dieses Projekt absetzt, auch existiert.
+
+Ein erfolgreicher Klipper-Start beweist das **nicht**: Klipper kompiliert die
+Jinja-Templates beim Laden, rendert sie aber erst beim Aufruf. Tippfehler in
+Kommandonamen und undefinierte Attribute fliegen also erst mitten im Druck auf.
+
+Zwei Quellen:
+
+1. **Jedes geladene `[gcode_macro]`**, gerendert mit Klippers eigenen
+   Jinja-Delimitern (`{% %}` / `{ }`) gegen den **Live-Status** des Druckers.
+   Die Makros kommen aus `printer.configfile.settings`, also aus der Config,
+   die Klipper tatsächlich geladen hat — nicht aus den `.cfg`-Dateien. Sonst
+   würden nie `[include]`-te Dateien mitgeprüft (z.B. `print_area_bed_mesh.cfg`
+   liegt im Config-Ordner, ist aber nicht eingebunden).
+2. **Jedes GCode-Stringliteral** aus `run_script_from_command()` in
+   `klippy/extras/*.py`, extrahiert per `ast` (behandelt f-Strings und
+   `%`-Formatierung).
+
+Aus beiden wird das erste Token jeder Zeile gegen `printer.gcode.commands`
+geprüft, Klippers Registry aller registrierten Kommandos.
+
+**Deckt nicht ab:** Parameternamen und -werte, nur Kommandonamen. Makros, die
+ohne Argumente nicht renderbar sind, werden als solche ausgewiesen statt als
+Fehler. Kommandos hinter einem Laufzeit-Guard stehen in `CONDITIONAL` (mit
+Begründung), weil ein statischer Scan die Bedingung nicht auswerten kann.
+
+## `check_klipper_api.py`
+
+Unsere Extras sind keine Plugins gegen eine stabile API — sie erben von
+Klipper-Interna und rufen sie direkt auf. Ein Klipper-Update kann jedes davon
+ohne Vorwarnung verschieben, und der Ausfall zeigt sich erst mitten im Druck.
+
+Der Test prüft die genutzte Oberfläche vorab, damit ein Update **den Test**
+bricht statt den Drucker. Abgedeckt sind u.a.:
+
+| Zusicherung | warum sie zählt |
+|---|---|
+| `manual_probe.create_probe_result` subtrahiert `z_offset` | `bed_z = trigger_z − z_offset` ist die Grundlage **aller** Offset-Formeln |
+| `homing.Homing._probing_home` macht `curpos[2] -= ppos.bed_z` | nur dadurch trifft `G28 Z` den Nozzle-Kontakt |
+| `homing.Homing._create_probe_gcmd` übergibt `PROBE_SPEED` | überschreibt `speed:` aus `[tool_probe]` → Tap-Überfahrt, siehe `homing_retract_dist` |
+| `homing.Homing.home_rails` sendet **kein** `home_rails_end` im Probe-Pfad | Begründung für den `G28`-Wrapper; fällt das weg, geht es per Event eleganter |
+| `gcode._get_extended_params` nutzt `shlex` | sonst zerbricht `PROBE="probe_eddy_ng my_eddy"` am Leerzeichen |
+| `probe.ProbeEndstopWrapper.__init__(config, probe_offsets, param_helper)` | `tool_probe.py` konstruiert das direkt |
+| `gcode_move`: `reset_last_position`, `cmd_G1`, `homing_position`, `last_position` | direkte Toolhead-Moves umgehen den Cache und müssen resynct werden |
+
+**Deckt nicht ab:** Verhalten. Dass die Interna existieren heißt nicht, dass
+sie dasselbe *tun*. Ein echter Homing-Lauf bleibt der einzige Beweis.
