@@ -877,6 +877,7 @@ class Offset:
                 self.probe_results[key]['eddy_probe'] = tool_probe_name
                 self.probe_results[key].pop('probe_z_offset', None)
                 self.probe_results[key].pop('tap_bed_z', None)
+                self._record_tap_temp(tool_nr, key)
 
                 self.gcode.respond_info(
                     "T%d Eddy Tap: tap_z=%.4f  deviation=%+.4f "
@@ -901,18 +902,7 @@ class Offset:
 
                 self.probe_results[key]['probe_z_offset'] = probe_z_offset
                 self.probe_results[key]['tap_bed_z'] = bed_z
-                tap_temp = self._tool_extruder_temp(tool_nr)
-                if tap_temp is not None:
-                    self.probe_results[key]['tap_temp'] = tap_temp
-                    zs_temp = self.probe_results[key].get('zswitch_temp')
-                    if zs_temp is not None and abs(tap_temp - zs_temp) > 5.0:
-                        self.gcode.respond_info(
-                            "T%d: WARNUNG Z-Switch bei %.0fC, Tap bei %.0fC "
-                            "gemessen - die Waermeausdehnung der Duese "
-                            "(Groessenordnung 0.1mm) steckt damit im "
-                            "probe_z_offset. Beide Laeufe mit demselben "
-                            "EXTRUDER_TEMP fahren."
-                            % (tool_nr, zs_temp, tap_temp))
+                self._record_tap_temp(tool_nr, key)
                 self.probe_results[key].pop('eddy_tap_deviation', None)
                 self.probe_results[key].pop('eddy_tap_z', None)
                 self.probe_results[key].pop('eddy_probe', None)
@@ -1022,6 +1012,24 @@ class Offset:
             "Probe cal map: T%d -> %s" % (tool, probe_match))
 
     # ─── NOZZLE_ZERO / APPLY_TOOL_Z_OFFSETS ──────────────────────────────
+
+    def _record_tap_temp(self, tool_nr, key):
+        """Store the nozzle temperature of this measurement and flag a
+        mismatch against the Z-switch run. Both branches need this: the
+        expansion enters probe_z_offset either way, and for an Eddy-measured
+        tool it enters the reference that every other tool is compared to."""
+        tap_temp = self._tool_extruder_temp(tool_nr)
+        if tap_temp is None:
+            return
+        self.probe_results[key]['tap_temp'] = tap_temp
+        zs_temp = self.probe_results[key].get('zswitch_temp')
+        if zs_temp is not None and abs(tap_temp - zs_temp) > 5.0:
+            self.gcode.respond_info(
+                "T%d: WARNUNG Z-Switch bei %.0fC, Tap bei %.0fC gemessen - "
+                "die Waermeausdehnung der Duese (Groessenordnung 0.1mm) "
+                "steckt damit im Ergebnis. Beide Laeufe mit demselben "
+                "EXTRUDER_TEMP fahren."
+                % (tool_nr, zs_temp, tap_temp))
 
     def _tool_extruder_temp(self, tool_nr):
         """Current nozzle temperature of a tool, or None.
