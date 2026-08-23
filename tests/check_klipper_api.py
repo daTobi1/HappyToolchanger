@@ -144,6 +144,32 @@ def main():
         ok("self.last_position" in src,
            "gcode_move.last_position fehlt -- reset_last_position pruefen")
 
+    # --- configfile: CALIBRATE_TOOL_PID haengt aus, was PID_CALIBRATE fuer
+    #     SAVE_CONFIG vormerkt (pid_Kp liegt in der eingebundenen T<n>.cfg) ---
+    import configfile as cfg_mod
+    pc = getattr(cfg_mod, "PrinterConfig", None)
+    ok(pc is not None, "configfile.PrinterConfig fehlt")
+    if pc is not None:
+        has_attrs(pc, ["set", "remove_section"], "configfile.PrinterConfig")
+    autosave_cls = getattr(cfg_mod, "ConfigAutoSave", None)
+    if autosave_cls is None:
+        # Name variiert zwischen Versionen - Attribute am set() pruefen
+        src = source_of(getattr(pc, "set", None)) or ""
+        ok("autosave" in src,
+           "configfile.PrinterConfig.set delegiert nicht mehr an autosave",
+           "_unstage_autosave() greift auf configfile.autosave zu")
+    src = ""
+    for name in dir(cfg_mod):
+        obj = getattr(cfg_mod, name)
+        if isinstance(obj, type) and hasattr(obj, "set"):
+            s2 = source_of(obj.set) or ""
+            if "status_save_pending" in s2:
+                src = s2
+                break
+    ok("status_save_pending" in src,
+       "keine Klasse mit status_save_pending in configfile gefunden",
+       "_unstage_autosave() raeumt genau dieses dict auf")
+
     # --- toolhead: manual_move/set_position umgehen gcode_move bewusst ---
     sys.path.insert(0, os.path.dirname(klippy))
     import toolhead as th_mod

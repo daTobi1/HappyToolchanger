@@ -64,6 +64,17 @@ class Offset:
         # probe. Per-tool override lives in [tool_probe Tn] mesh_tool.
         self.mesh_tool = config.getint('mesh_tool', None)
 
+        # Per-tool PID tuning. The part fan and the distance to the bed
+        # dominate the thermal response, so both belong to the measurement
+        # and are recorded with the result.
+        self.pid_temp = config.getfloat('pid_temp', 245.0, minval=60.,
+                                        maxval=500.)
+        self.pid_height = config.getfloat('pid_height', 10.0, minval=0.)
+        self.pid_fan_speed = config.getint('pid_fan_speed', 100,
+                                           minval=0, maxval=100)
+        self.pid_tool = config.getint('pid_tool', None)
+        self.pid_results = {}
+
         self.gcode_macro = self.printer.load_object(config, 'gcode_macro')
         self.start_gcode = self.gcode_macro.load_template(config, 'start_gcode', '')
         self.before_pickup_gcode = self.gcode_macro.load_template(config, 'before_pickup_gcode', '')
@@ -123,6 +134,9 @@ class Offset:
         self.gcode.register_command('BED_MESH_AUTO',
                                     self.cmd_BED_MESH_AUTO,
                                     desc=self.cmd_BED_MESH_AUTO_help)
+        self.gcode.register_command('CALIBRATE_TOOL_PID',
+                                    self.cmd_CALIBRATE_TOOL_PID,
+                                    desc=self.cmd_CALIBRATE_TOOL_PID_help)
 
     def _get_state_file_path(self):
         config_file = self.printer.get_start_args().get('config_file', '')
@@ -218,6 +232,14 @@ class Offset:
             'available_probes': available_probes,
             'probe_cal_map': pcm,
             'tool_gcode_offsets': tool_gcode_offsets,
+            'pid_results': self.pid_results,
+            'pid_defaults': {
+                'temp': self.pid_temp,
+                'height': self.pid_height,
+                'fan_speed': self.pid_fan_speed,
+                'tool': self.pid_tool,
+            },
+            'tool_pid': self._current_tool_pid(),
         }
 
     def cmd_MOVE_TO_ZSWITCH(self, gcmd):
@@ -1030,6 +1052,157 @@ class Offset:
                 "steckt damit im Ergebnis. Beide Laeufe mit demselben "
                 "EXTRUDER_TEMP fahren."
                 % (tool_nr, zs_temp, tap_temp))
+
+    # ─── CALIBRATE_TOOL_PID ──────────────────────────────────────────────
+
+    def _tool_extruder_name(self, tool_nr):
+        tool = self.printer.lookup_object('tool T%d' % tool_nr, None)
+        return getattr(tool, 'extruder_name', None) if tool else None
+
+    def _current_tool_pid(self):
+        """Live pid_Kp/Ki/Kd per tool, so the UI can show current vs new.
+        Klipper divides the config values by PID_PARAM_BASE (255) when it
+        builds ControlPID, so scale them back."""
+        out = {}
+        for tn in self.toolchanger.tool_numbers:
+            try:
+                name = self._tool_extruder_name(tn)
+                if not name:
+                    continue
+                heater = self.printer.lookup_object(name).get_heater()
+                control = heater.get_control()
+                kp = getattr(control, 'Kp', None)
+                if kp is None:
+                    continue
+                out[str(tn)] = {
+                    'pid_kp': control.Kp * 255.0,
+                    'pid_ki': control.Ki * 255.0,
+                    'pid_kd': control.Kd * 255.0,
+                }
+            except Exception:
+                pass
+        return out
+
+    def _unstage_autosave(self, section):
+        """Drop what PID_CALIBRATE staged for SAVE_CONFIG.
+
+        pid_Kp/Ki/Kd live in the included T<n>.cfg, so leaving the entry
+        staged makes SAVE_CONFIG refuse with "conflicts with included value"
+        - and that blocks SAVE_CONFIG for everything else until a restart.
+        configfile.remove_section() is not usable here: it would stage the
+        section for deletion instead. Returns True when the entry is gone."""
+        try:
+            autosave = self.printer.lookup_object('configfile').autosave
+            if autosave.fileconfig.has_section(section):
+                autosave.fileconfig.remove_section(section)
+            pending = dict(autosave.status_save_pending)
+            pending.pop(section, None)
+            autosave.status_save_pending = pending
+            autosave.save_config_pending = bool(pending)
+            return True
+        except Exception as e:
+            self.gcode.respond_info(
+                "Warning: could not un-stage '%s' from SAVE_CONFIG (%s). "
+                "Do not run SAVE_CONFIG until Klipper has restarted."
+                % (section, e))
+            return False
+
+    cmd_CALIBRATE_TOOL_PID_help = (
+        "PID tune a tool's extruder under realistic conditions: the tool is "
+        "picked up, parked at HEIGHT over the bed centre and its part fan "
+        "runs at FAN percent during the tune. TOOL, TEMP, HEIGHT and FAN "
+        "default to the [offset] pid_* settings. The result is reported and "
+        "kept for the webapp - persist it with APPLY PID, not SAVE_CONFIG, "
+        "because pid_Kp lives in the included T<n>.cfg.")
+
+    def cmd_CALIBRATE_TOOL_PID(self, gcmd):
+        if not self.is_homed():
+            raise gcmd.error("Must home first")
+
+        tool_nr = gcmd.get_int('TOOL', self.pid_tool)
+        if tool_nr is None:
+            tool_nr = self._active_tool_number(gcmd)
+        if tool_nr not in self.toolchanger.tool_numbers:
+            raise gcmd.error("Tool T%d not configured" % tool_nr)
+
+        temp = gcmd.get_float('TEMP', self.pid_temp, minval=60., maxval=500.)
+        height = gcmd.get_float('HEIGHT', self.pid_height, minval=0.)
+        fan = gcmd.get_int('FAN', self.pid_fan_speed, minval=0, maxval=100)
+
+        extruder_name = self._tool_extruder_name(tool_nr)
+        if not extruder_name:
+            raise gcmd.error("T%d has no extruder" % tool_nr)
+        tool = self.printer.lookup_object('tool T%d' % tool_nr, None)
+        fan_name = getattr(tool, 'fan_name', None)
+
+        if self._active_tool_number(gcmd) != tool_nr:
+            self.gcode.run_script_from_command(
+                "SELECT_TOOL T=%d RESTORE_AXIS=XYZ" % tool_nr)
+        self.gcode.run_script_from_command("STOP_TOOL_PROBE_CRASH_DETECTION")
+
+        toolhead = self.printer.lookup_object('toolhead')
+        st = toolhead.get_status(self.printer.get_reactor().monotonic())
+        axmin, axmax = st['axis_minimum'], st['axis_maximum']
+        cx = gcmd.get_float('X', (max(0., axmin[0]) + axmax[0]) / 2.)
+        cy = gcmd.get_float('Y', (max(0., axmin[1]) + axmax[1]) / 2.)
+
+        self._move_z(max(height, self.probe_offset_z_hop))
+        self.gcode_move.cmd_G1(
+            self.gcode.create_gcode_command(
+                "G0", "G0",
+                {'X': cx, 'Y': cy,
+                 'F': self.probe_offset_travel_speed * 60}))
+        toolhead.wait_moves()
+        self._move_z(height)
+
+        self.gcode.respond_info(
+            "PID tuning T%d (%s) at %.0fC, %.1fmm over the bed centre, "
+            "part fan %d%%" % (tool_nr, extruder_name, temp, height, fan))
+
+        if fan_name:
+            self.gcode.run_script_from_command(
+                "SET_FAN_SPEED FAN='%s' SPEED=%.3f" % (fan_name, fan / 100.0))
+        try:
+            self.gcode.run_script_from_command(
+                "PID_CALIBRATE HEATER=%s TARGET=%.1f" % (extruder_name, temp))
+        finally:
+            if fan_name:
+                self.gcode.run_script_from_command(
+                    "SET_FAN_SPEED FAN='%s' SPEED=0" % fan_name)
+            self.gcode.run_script_from_command(
+                "SET_HEATER_TEMPERATURE HEATER=%s TARGET=0" % extruder_name)
+
+        values = self._read_staged_pid(extruder_name)
+        if values is None:
+            raise gcmd.error(
+                "PID_CALIBRATE produced no pid_Kp/Ki/Kd for %s"
+                % extruder_name)
+        self._unstage_autosave(extruder_name)
+
+        values.update({'temp': temp, 'height': height, 'fan': fan,
+                       'extruder': extruder_name})
+        self.pid_results[str(tool_nr)] = values
+        self.gcode.respond_info(
+            "T%d PID: pid_Kp=%.3f pid_Ki=%.3f pid_Kd=%.3f "
+            "(use APPLY PID to write it into T%d.cfg; do NOT use SAVE_CONFIG)"
+            % (tool_nr, values['pid_kp'], values['pid_ki'], values['pid_kd'],
+               tool_nr))
+
+    def _read_staged_pid(self, section):
+        """The values PID_CALIBRATE just staged for SAVE_CONFIG."""
+        try:
+            configfile = self.printer.lookup_object('configfile')
+            pending = configfile.get_status(
+                self.printer.get_reactor().monotonic()
+            )['save_config_pending_items']
+            entry = pending.get(section) or {}
+            out = {}
+            for key in ('pid_kp', 'pid_ki', 'pid_kd'):
+                if key in entry:
+                    out[key] = float(entry[key])
+            return out if len(out) == 3 else None
+        except Exception:
+            return None
 
     def _tool_extruder_temp(self, tool_nr):
         """Current nozzle temperature of a tool, or None.

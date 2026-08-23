@@ -23,6 +23,9 @@ let _probeCalConfig = null;   // { ref_tool, ref_probe, tool_probes: { "0": "pro
 let _toolProbeOffsets = {};    // { "0": 0.05, "1": -0.02, ... } current tool_probe z_offsets
 let _probeCalResults = {};     // { "0": { probe_z_offset: 0.05 }, ... } from probe_results
 let _eddyTapDeviations = {};   // { "0": { deviation: 0.01, probe: "..." } } — info only, not applicable
+let _pidResults = {};        // { "0": {pid_kp, pid_ki, pid_kd, temp, height, fan} }
+let _pidDefaults = null;     // [offset] pid_temp / pid_height / pid_fan_speed / pid_tool
+let _toolPid = {};           // aktuell in Klipper aktive PID-Werte je Tool
 let _tapMinTemp = null;        // _TAP_PROBE_ACTIVATE variable_min_temp — Untergrenze, auf die der Tap heizt
 let _toolGcodeOffsets = {};    // { "0": {x:0, y:0, z:0}, ... } current tool gcode offsets
 let _zSwitchResults = {};      // { "0": { z_offset: 0.0, z_trigger: 1.23 }, ... }
@@ -705,6 +708,9 @@ function fetchOffsetStatus() {
       // Der Tap heizt ueber _TAP_PROBE_ACTIVATE ohnehin auf min_temp. Wird
       // niedriger kalibriert, messen Z-Switch und Tap bei verschiedenen
       // Temperaturen und die Waermeausdehnung landet im probe_z_offset.
+      _pidResults = (st?.pid_results || {});
+      _pidDefaults = (st?.pid_defaults || null);
+      _toolPid = (st?.tool_pid || {});
       var tapMacro = ax?.result?.status?.["gcode_macro _TAP_PROBE_ACTIVATE"];
       if (typeof tapMacro?.min_temp === 'number') _tapMinTemp = tapMacro.min_temp;
       _toolProbeOffsets = (st?.tool_probe_offsets || {});
@@ -740,6 +746,8 @@ function fetchOffsetStatus() {
       _probeCalResults = {};
       _eddyTapDeviations = {};
       _zSwitchResults = {};
+      _pidResults = {};
+      _toolPid = {};
       return null;
     });
 }
@@ -1306,6 +1314,160 @@ $(document).on("change", ".probe-cal-probe-select", function() {
   saveProbeCalConfig();
 });
 
+// --------------------------
+// PID Calibration Section
+// --------------------------
+function pidDefault(key, fallback) {
+  var v = _pidDefaults ? _pidDefaults[key] : null;
+  return (typeof v === 'number') ? v : fallback;
+}
+
+function pidResultsTable(sortedTools) {
+  var hasAny = sortedTools.some(function (t) {
+    return _toolPid[String(t)] || _pidResults[String(t)];
+  });
+  if (!hasAny) return '';
+
+  var rows = sortedTools.map(function (t) {
+    var k = String(t);
+    var cur = _toolPid[k];
+    var neu = _pidResults[k];
+    if (!cur && !neu) return '';
+
+    var cell = function (key) {
+      var c = cur ? cur[key].toFixed(3) : '-';
+      if (!neu) return '<td class="px-2 py-1 text-end text-secondary">' + c + '</td>';
+      return '<td class="px-2 py-1 text-end">' +
+             '<span class="text-secondary">' + c + '</span> &rarr; ' +
+             '<span class="text-success">' + neu[key].toFixed(3) + '</span></td>';
+    };
+
+    var cond = neu
+      ? '<div class="small text-secondary">' + neu.temp + '&deg;C, ' +
+        neu.height + 'mm, Fan ' + neu.fan + '%</div>'
+      : '';
+
+    return '<tr>' +
+      '<td class="px-2 py-1 fw-bold align-top">T' + t + cond + '</td>' +
+      cell('pid_kp') + cell('pid_ki') + cell('pid_kd') +
+    '</tr>';
+  }).join('');
+
+  var hasNew = sortedTools.some(function (t) { return !!_pidResults[String(t)]; });
+  var applyBtn = hasNew
+    ? '<div class="pt-2">' +
+        '<button class="btn btn-success w-100" id="apply-pid-btn">' +
+          '<i class="bi bi-check-circle"></i> APPLY PID TO CONFIG' +
+        '</button>' +
+      '</div>'
+    : '';
+
+  return '<div class="border border-secondary-subtle rounded p-2 bg-dark">' +
+    '<span class="fs-6 fw-bold d-block mb-1">Extruder PID</span>' +
+    '<table class="table table-sm table-borderless mb-0" style="font-size:0.85rem;">' +
+      '<thead><tr>' +
+        '<th class="px-2 py-1 text-secondary">Tool</th>' +
+        '<th class="px-2 py-1 text-end text-secondary">Kp</th>' +
+        '<th class="px-2 py-1 text-end text-secondary">Ki</th>' +
+        '<th class="px-2 py-1 text-end text-secondary">Kd</th>' +
+      '</tr></thead>' +
+      '<tbody>' + rows + '</tbody>' +
+    '</table>' +
+    applyBtn +
+  '</div>';
+}
+
+function pidCalibrationSection(toolNumbers, enabled) {
+  var sortedTools = toolNumbers.slice().sort(function (a, b) { return a - b; });
+  var btnClass = enabled ? 'btn-primary' : 'btn-secondary';
+  var disabledAttr = enabled ? '' : 'disabled';
+
+  var defTool = pidDefault('tool', null);
+  var toolOptions = sortedTools.map(function (t) {
+    var sel = (t === defTool) ? ' selected' : '';
+    return '<option value="' + t + '"' + sel + '>T' + t + '</option>';
+  }).join('');
+
+  var num = function (id, value, min, max, step, unit) {
+    return '<div class="input-group input-group-sm">' +
+      '<input type="number" id="' + id + '" class="form-control form-control-sm" ' +
+        'min="' + min + '" max="' + max + '" step="' + step + '" value="' + value + '">' +
+      '<span class="input-group-text">' + unit + '</span>' +
+    '</div>';
+  };
+
+  return '<div class="container p-0">' +
+    '<div class="border border-secondary-subtle rounded p-2 bg-dark mb-2">' +
+      '<div class="row g-2">' +
+        '<div class="col-6">' +
+          '<label class="form-label small text-secondary mb-1">Tool</label>' +
+          '<select class="form-select form-select-sm" id="pid-tool">' + toolOptions + '</select>' +
+        '</div>' +
+        '<div class="col-6">' +
+          '<label class="form-label small text-secondary mb-1">Temperature</label>' +
+          num('pid-temp', pidDefault('temp', 245), 60, 500, 5, '&deg;C') +
+        '</div>' +
+        '<div class="col-6">' +
+          '<label class="form-label small text-secondary mb-1">Height over bed</label>' +
+          num('pid-height', pidDefault('height', 10), 0, 100, 1, 'mm') +
+        '</div>' +
+        '<div class="col-6">' +
+          '<label class="form-label small text-secondary mb-1">Part fan</label>' +
+          num('pid-fan', pidDefault('fan_speed', 100), 0, 100, 5, '%') +
+        '</div>' +
+      '</div>' +
+      '<div class="small text-secondary mt-2">' +
+        'Tuning runs over the bed centre. Fan and distance to the bed dominate ' +
+        'the thermal response, so tune at the values you actually print with. ' +
+        'Defaults come from <code>[offset] pid_temp / pid_height / pid_fan_speed</code>.' +
+      '</div>' +
+    '</div>' +
+    '<button class="btn ' + btnClass + ' w-100 mb-2" id="pid-cal-btn" ' + disabledAttr + '>' +
+      'CALIBRATE PID' +
+    '</button>' +
+    '<div id="pid-results-container">' + pidResultsTable(sortedTools) + '</div>' +
+  '</div>';
+}
+
+// Updates pid_Kp/Ki/Kd in the [extruderN] section of the tool config files.
+// Klipper stages these for SAVE_CONFIG itself, but pid_Kp lives in the
+// included T<n>.cfg, so SAVE_CONFIG would refuse with "conflicts with
+// included value" - CALIBRATE_TOOL_PID therefore un-stages them and the
+// file is written here instead.
+function updateToolPidValues(toolValues) {
+  var tools = Object.keys(toolValues);
+  var baseUrl = printerUrl(printerIp, "");
+
+  function processNext(idx) {
+    if (idx >= tools.length) return Promise.resolve();
+    var t = tools[idx];
+    var v = toolValues[t];
+    var filePath = "toolchanger/tools/T" + t + ".cfg";
+    return fetch(baseUrl + "/server/files/config/" + filePath)
+      .then(function (r) { return r.text(); })
+      .then(function (content) {
+        var updated = content;
+        var ok = true;
+        [['pid_Kp', v.pid_kp], ['pid_Ki', v.pid_ki], ['pid_Kd', v.pid_kd]]
+          .forEach(function (pair) {
+            var next = replaceInConfigSection(updated, v.extruder, pair[0],
+                                              pair[1].toFixed(3));
+            if (next === null) ok = false; else updated = next;
+          });
+        if (!ok) {
+          OffsetDebug.log("PID lines not found in " + filePath);
+          return processNext(idx + 1);
+        }
+        var formData = new FormData();
+        formData.append('file', new Blob([updated], {type: 'text/plain'}), filePath);
+        formData.append('root', 'config');
+        return fetch(baseUrl + "/server/files/upload", {method: 'POST', body: formData})
+          .then(function () { return processNext(idx + 1); });
+      });
+  }
+  return processNext(0);
+}
+
 // Calibrate button click
 $(document).on("click", "#probe-cal-btn", function() {
   var config = getProbeCalConfig([]);
@@ -1647,6 +1809,168 @@ $(document).on("click", "#apply-probe-btn", function() {
   });
 });
 
+// PID calibration click
+$(document).on("click", "#pid-cal-btn", function () {
+  var $btn = $(this);
+  var tool = parseInt($("#pid-tool").val(), 10);
+  var temp = parseInt($("#pid-temp").val(), 10);
+  var height = parseFloat($("#pid-height").val());
+  var fan = parseInt($("#pid-fan").val(), 10);
+
+  if (Number.isNaN(tool) || Number.isNaN(temp)) {
+    if (typeof showToast === 'function') showToast("Tool und Temperatur wählen", "warning");
+    return;
+  }
+  if (Number.isNaN(height)) height = 10;
+  if (Number.isNaN(fan)) fan = 0;
+
+  var script = 'CALIBRATE_TOOL_PID TOOL=' + tool + ' TEMP=' + temp +
+               ' HEIGHT=' + height + ' FAN=' + fan;
+
+  var cur = _toolPid[String(tool)];
+  var curRow = cur
+    ? '<tr><td class="px-1 py-0 text-secondary">Current</td>' +
+      '<td class="px-1 py-0">Kp ' + cur.pid_kp.toFixed(3) +
+      ' &nbsp;Ki ' + cur.pid_ki.toFixed(3) +
+      ' &nbsp;Kd ' + cur.pid_kd.toFixed(3) + '</td></tr>'
+    : '';
+
+  var body =
+    '<div class="border border-secondary-subtle rounded p-2 mb-2 bg-dark">' +
+      '<table class="table table-sm table-borderless mb-0" style="font-size:0.85rem;"><tbody>' +
+        '<tr><td class="px-1 py-0 text-secondary">Tool</td>' +
+            '<td class="px-1 py-0 fw-bold">T' + escapeHtml(tool) + '</td></tr>' +
+        '<tr><td class="px-1 py-0 text-secondary">Temperature</td>' +
+            '<td class="px-1 py-0 fw-bold">' + escapeHtml(temp) + ' &deg;C</td></tr>' +
+        '<tr><td class="px-1 py-0 text-secondary">Height over bed</td>' +
+            '<td class="px-1 py-0">' + escapeHtml(height) + ' mm (bed centre)</td></tr>' +
+        '<tr><td class="px-1 py-0 text-secondary">Part fan</td>' +
+            '<td class="px-1 py-0">' + escapeHtml(fan) + ' %</td></tr>' +
+        curRow +
+      '</tbody></table>' +
+    '</div>' +
+    '<div class="small text-secondary mb-2">Command: <code>' + escapeHtml(script) + '</code></div>' +
+    '<div class="small text-warning">' +
+      '<i class="bi bi-exclamation-triangle"></i> The tool is picked up and heated ' +
+      'to ' + escapeHtml(temp) + '&deg;C. Tuning takes several minutes.' +
+    '</div>' +
+    '<div class="small text-secondary mt-1">' +
+      'Nothing is written yet — the result appears in the table for review. ' +
+      'Persist it with APPLY PID, never with <code>SAVE_CONFIG</code>: ' +
+      '<code>pid_Kp</code> lives in the included <code>T' + escapeHtml(tool) +
+      '.cfg</code>, which SAVE_CONFIG cannot write.' +
+    '</div>';
+
+  confirmDialog({
+    title: "Start PID tuning?",
+    body: body,
+    okLabel: "OK — start",
+    okClass: "btn-primary"
+  }).then(function (ok) {
+    if (!ok) return;
+
+    $btn.prop("disabled", true).text("Tuning...");
+    if (typeof showToast === 'function') showToast("PID tuning started...", "info");
+
+    $.get(printerUrl(printerIp, "/printer/gcode/script?script=" + encodeURIComponent(script)))
+      .done(function () {
+        if (typeof showToast === 'function') showToast("PID tuning done", "success");
+      })
+      .fail(function (err) {
+        console.error("PID tuning failed:", err);
+        var detail = gcodeErrorMessage(err);
+        if (typeof showToast === 'function') {
+          if (detail) {
+            showToast("PID tuning failed: " + detail, "danger");
+          } else {
+            showToast("Verbindung zum Lauf verloren - er laeuft weiter. "
+                      + "Fortschritt in der Konsole.", "warning");
+          }
+        }
+      })
+      .always(function () {
+        $btn.prop("disabled", false).text("CALIBRATE PID");
+        fetchOffsetStatus().then(function () {
+          var $c = $('#pid-results-container');
+          if ($c.length) {
+            var tools = Object.keys(_toolPid).map(Number).sort(function (a, b) { return a - b; });
+            $c.html(pidResultsTable(tools));
+          }
+        });
+      });
+  });
+});
+
+// Apply PID values to the tool config files
+$(document).on("click", "#apply-pid-btn", function () {
+  var $btn = $(this);
+  var btnHtml = '<i class="bi bi-check-circle"></i> APPLY PID TO CONFIG';
+  var toolValues = {};
+  var requests = [];
+  var pending = [];
+
+  Object.keys(_pidResults).sort(function (a, b) { return a - b; }).forEach(function (k) {
+    var v = _pidResults[k];
+    if (!v || typeof v.pid_kp !== 'number' || !v.extruder) return;
+    toolValues[k] = v;
+    pending.push({ tool: k, v: v });
+    ['pid_Kp', 'pid_Ki', 'pid_Kd'].forEach(function (key) {
+      requests.push({ tool: k, key: key, section: v.extruder });
+    });
+  });
+
+  if (!pending.length) {
+    if (typeof showToast === 'function') showToast("No PID values to apply", "warning");
+    return;
+  }
+
+  $btn.prop("disabled", true).text("Loading...");
+  fetchToolConfigValues(requests).then(function (cur) {
+    $btn.prop("disabled", false).html(btnHtml);
+
+    var entries = pending.map(function (p) {
+      return {
+        tool: p.tool,
+        file: "toolchanger/tools/T" + p.tool + ".cfg",
+        section: p.v.extruder,
+        changes: [
+          { key: "pid_Kp", from: cur[p.tool + "|pid_Kp"], to: p.v.pid_kp.toFixed(3) },
+          { key: "pid_Ki", from: cur[p.tool + "|pid_Ki"], to: p.v.pid_ki.toFixed(3) },
+          { key: "pid_Kd", from: cur[p.tool + "|pid_Kd"], to: p.v.pid_kd.toFixed(3) }
+        ]
+      };
+    });
+
+    var note = '"Current" is read from the config file. Klipper already uses ' +
+      'the new values at runtime; writing them here makes that permanent — ' +
+      'no <code>SAVE_CONFIG</code>, which cannot write options an included ' +
+      'file already defines.';
+
+    return confirmDialog({
+      title: "Apply PID values?",
+      body: offsetChangeListHtml(entries, note),
+      okLabel: "OK — apply",
+      okClass: "btn-success"
+    });
+  }).then(function (ok) {
+    if (!ok) return;
+
+    $btn.prop("disabled", true).text("Applying...");
+    updateToolPidValues(toolValues)
+      .then(function () {
+        if (typeof showToast === 'function') showToast("PID values saved to config", "success");
+      })
+      .catch(function (err) {
+        var msg = "Apply PID failed";
+        try { msg += ": " + (err.responseJSON || err).message; } catch (_) {}
+        if (typeof showToast === 'function') showToast(msg, "danger");
+      })
+      .finally(function () {
+        $btn.prop("disabled", false).html(btnHtml);
+      });
+  });
+});
+
 // Global SAVE_CONFIG
 $(document).on("click", "#global-save-config-btn", function() {
   var $btn = $(this);
@@ -1844,11 +2168,28 @@ function getTools() {
               false
             ));
 
+            var pidContent = pidCalibrationSection(tool_numbers, _offsetPresent);
+            var pidStatus = _offsetPresent
+              ? (Object.keys(_pidResults).length
+                  ? '<span class="text-success">Neu: ' +
+                    Object.keys(_pidResults).map(function(k){ return 'T'+k; }).join(', ') +
+                    '</span>'
+                  : '<span class="text-secondary">Bereit</span>')
+              : '<span class="text-warning">offset module not found</span>';
+
             $acc.append(accordionSection(
               'accordion-probecal',
               'Probe Offset Calibration',
               probeStatus,
               probeCalContent,
+              false
+            ));
+
+            $acc.append(accordionSection(
+              'accordion-pid',
+              'Extruder PID Calibration',
+              pidStatus,
+              pidContent,
               false
             ));
 
