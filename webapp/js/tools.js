@@ -2355,6 +2355,13 @@ function dockCalibrationSection(toolNumbers, enabled) {
           '<span class="text-secondary"> — alle Fenster durchklicken, ' +
           'ohne dass ein Kommando an den Drucker geht</span></label>' +
       '</div>' +
+      '<div class="form-check form-switch mt-1 mb-0">' +
+        '<input class="form-check-input" type="checkbox" id="dock-write-each">' +
+        '<label class="form-check-label small" for="dock-write-each">' +
+          '<span class="text-success">Nach jedem Tool schreiben</span>' +
+          '<span class="text-secondary"> — statt erst am Ende alle auf ' +
+          'einmal. Der Bestätigungsdialog kommt trotzdem.</span></label>' +
+      '</div>' +
     '</div>' +
     '<button class="btn ' + btnClass + ' w-100 mb-2" id="dock-cal-btn" ' + disabledAttr + '>' +
       'MOUNT KALIBRIERUNG' +
@@ -2507,6 +2514,14 @@ function dockJogLoop(tools, idx, opts) {
       .then(function (r) {
         if (!r.ok) return dockAbort();
         return refreshDockTable().then(function () {
+          // Sofort schreiben, wenn gewuenscht - sonst sammelt sich alles
+          // bis zum Schluss und ein Abbruch danach kostet den ganzen Lauf.
+          // Im Trockenlauf gibt es nichts zu schreiben.
+          if (!$("#dock-write-each").is(":checked") || dockIsDryRun()) {
+            return null;
+          }
+          return applyDockValues([String(t)]);
+        }).then(function () {
           return dockToolLoop(tools, idx + 1, opts);
         });
       });
@@ -2631,12 +2646,14 @@ function updateToolDockValues(toolValues) {
   return processNext(0);
 }
 
-$(document).on("click", "#apply-dock-btn", function () {
-  var $btn = $(this);
-  var btnHtml = '<i class="bi bi-check-circle"></i> APPLY DOCK TO CONFIG';
+// Schreibt die Dock-Werte der genannten Tools in die Configs. keys=null
+// heisst: alles, was gemessen wurde. Immer mit Bestaetigungsdialog - eine
+// falsche Dockposition laesst das Tool beim naechsten Wechsel danebengreifen.
+function applyDockValues(keys, onBusy) {
   var toolValues = {};
   var requests = [];
-  Object.keys(_dockResults).sort(function (a, b) { return a - b; }).forEach(function (k) {
+  var wanted = (keys || Object.keys(_dockResults)).map(String);
+  wanted.sort(function (a, b) { return a - b; }).forEach(function (k) {
     var v = _dockResults[k];
     if (!v || typeof v.params_park_x !== 'number') return;
     toolValues[k] = v;
@@ -2644,51 +2661,70 @@ $(document).on("click", "#apply-dock-btn", function () {
       requests.push({ tool: k, key: key, section: "tool T" + k });
     });
   });
-  if (!Object.keys(toolValues).length) {
-    if (typeof showToast === 'function') showToast("Keine Dock-Werte zu übernehmen", "warning");
-    return;
+  var names = Object.keys(toolValues).sort(function (a, b) { return a - b; });
+  if (!names.length) {
+    if (typeof showToast === 'function') {
+      showToast("Keine Dock-Werte zu übernehmen", "warning");
+    }
+    return Promise.resolve(false);
   }
 
-  $btn.prop("disabled", true).text("Lade...");
-  fetchToolConfigValues(requests).then(function (cur) {
-    $btn.prop("disabled", false).html(btnHtml);
-    var entries = Object.keys(toolValues).sort(function (a, b) { return a - b; })
-      .map(function (k) {
-        var v = toolValues[k];
-        return {
-          tool: k,
-          file: "toolchanger/tools/T" + k + ".cfg",
-          section: "tool T" + k,
-          changes: ['params_park_x', 'params_park_y', 'params_park_z'].map(function (key) {
-            return { key: key, from: cur[k + "|" + key], to: v[key].toFixed(3) };
-          })
-        };
-      });
+  var busy = function (b) { if (onBusy) onBusy(b); };
+  busy(true);
+  return fetchToolConfigValues(requests).then(function (cur) {
+    busy(false);
+    var entries = names.map(function (k) {
+      var v = _dockResults[k];
+      return {
+        tool: k,
+        file: "toolchanger/tools/T" + k + ".cfg",
+        section: "tool T" + k,
+        changes: ['params_park_x', 'params_park_y', 'params_park_z'].map(function (key) {
+          return { key: key, from: cur[k + "|" + key], to: v[key].toFixed(3) };
+        })
+      };
+    });
     return confirmDialog({
-      title: "Dock-Positionen übernehmen?",
+      title: names.length === 1
+        ? "Dock-Position von T" + names[0] + " übernehmen?"
+        : "Dock-Positionen übernehmen?",
       body: offsetChangeListHtml(entries,
         '"Current" kommt aus der Config-Datei. Ein falscher Wert lässt das ' +
         'Tool beim nächsten Wechsel neben dem Dock landen — die Zahlen bitte ' +
         'gegen den Testlauf prüfen.'),
       okLabel: "OK — übernehmen",
-      okClass: "btn-success"
+      okClass: "btn-success",
+      cancelLabel: "Später"
     });
   }).then(function (ok) {
-    if (!ok) return;
-    $btn.prop("disabled", true).text("Schreibe...");
-    updateToolDockValues(toolValues)
+    if (!ok) return false;
+    busy(true);
+    return updateToolDockValues(toolValues)
       .then(function () {
         if (typeof showToast === 'function') {
-          showToast("Dock-Positionen in die Config geschrieben", "success");
+          showToast(names.length === 1
+            ? "T" + names[0] + ": Dock-Position geschrieben"
+            : "Dock-Positionen in die Config geschrieben", "success");
         }
+        return true;
       })
       .catch(function (err) {
         var detail = "";
         try { detail = (err.responseJSON || err).message || ""; } catch (_) {}
-        alertDialog("Dock-Positionen übernehmen fehlgeschlagen",
-                    escapeHtml(detail || "Unbekannter Fehler"));
+        return alertDialog("Dock-Positionen übernehmen fehlgeschlagen",
+                           escapeHtml(detail || "Unbekannter Fehler"))
+          .then(function () { return false; });
       })
-      .finally(function () { $btn.prop("disabled", false).html(btnHtml); });
+      .then(function (res) { busy(false); return res; });
+  });
+}
+
+$(document).on("click", "#apply-dock-btn", function () {
+  var $btn = $(this);
+  var btnHtml = '<i class="bi bi-check-circle"></i> APPLY DOCK TO CONFIG';
+  applyDockValues(null, function (b) {
+    if (b) $btn.prop("disabled", true).text("Schreibe...");
+    else $btn.prop("disabled", false).html(btnHtml);
   });
 });
 
