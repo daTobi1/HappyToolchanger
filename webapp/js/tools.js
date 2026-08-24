@@ -260,11 +260,19 @@ function recoveryFor(detail) {
 function sendGcodeWithRecovery(script, title, onSend) {
   function send(full, attempt) {
     if (onSend) onSend(attempt);
-    return Promise.resolve(
-      $.get(printerUrl(printerIp,
-        "/printer/gcode/script?script=" + encodeURIComponent(full)))
-    ).then(function () { return { ok: true }; },
-           function (err) { return { err: err }; });
+    // $.get kann synchron werfen - kein Netz, kaputte URL, fehlendes
+    // jQuery. Ohne dieses try entstuende gar keine Kette, der Fehler flöge
+    // am Aufrufer vorbei und dessen .catch wuerde nie greifen: der Button
+    // bliebe gesperrt.
+    var req;
+    try {
+      req = $.get(printerUrl(printerIp,
+        "/printer/gcode/script?script=" + encodeURIComponent(full)));
+    } catch (e) {
+      return Promise.resolve({ err: e });
+    }
+    return Promise.resolve(req).then(function () { return { ok: true }; },
+                                     function (err) { return { err: err }; });
   }
 
   function fail(err) {
