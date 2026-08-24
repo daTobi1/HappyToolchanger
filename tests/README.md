@@ -138,12 +138,33 @@ also griff der Default `"tap"` — still.
 Der Test rendert `_QGL_FOR_ACTIVE_TOOL` gegen den Live-Status, einmal je
 Szenario, und liest aus `M117 QGL coarse (..)` ab, welche Probe gewählt würde:
 
+Der zweite Fall kam später dazu und war ein Eigentor. Weil der Eddy nur bis
+rund 2.5 mm über dem Bett liest, fiel der grobe Durchgang auf den Tap zurück,
+solange `quad_gantry_level.applied` noch `false` war. Nur: `applied` ist nach
+**jedem** Klipper-Neustart `false`, und genau dann fährt man QGL. Die Regel hat
+`_T0_QGL` mit `coarse_probe: "eddy"` damit praktisch immer überstimmt — im Log
+sichtbar als
+
+```
+// QGL: Gantry noch nicht geleveled - grober Durchgang mit Tap, ...
+// QGL mit T0: coarse=tap, fine=eddy
+```
+
+Das Sicherheitsnetz ist deshalb jetzt ein Schalter (`eddy_needs_level`) und
+steht auf **aus**: es gilt die Probe aus `_Tn_QGL`. Einschalten lässt es sich
+global in `[gcode_macro QUAD_GANTRY_LEVEL]`, pro Tool mit demselben
+`variable_eddy_needs_level` in `_Tn_QGL`, oder pro Lauf mit `NEEDS_LEVEL=1`.
+
 | Szenario | erwartet (coarse/fine) |
 |---|---|
 | Eddy-Tool, Gantry geleveled | `eddy/eddy` |
 | **Eddy-Tool, Toolchanger auf `-1`** | `eddy/eddy` — der Fall aus dem Fehlerbericht |
-| **Eddy-Tool, Gantry NICHT geleveled** | `tap/eddy` — Eddy wäre außer Reichweite |
-| dito, aber `COARSE_PROBE=eddy` | `eddy/eddy` — explizite Angabe hat Vorrang |
+| **Eddy-Tool, Gantry NICHT geleveled** | `eddy/eddy` — die Tool-Einstellung gilt |
+| dito, `NEEDS_LEVEL=1` | `tap/eddy` — Netz an, Eddy wäre außer Reichweite |
+| dito, `NEEDS_LEVEL=1 COARSE_PROBE=eddy` | `eddy/eddy` — explizite Angabe hat Vorrang |
+| Netz an, Gantry geleveled | `eddy/eddy` — Netz greift nur ungelevelt |
+| **Netz per `_Tn_QGL` an, nicht geleveled** | `tap/eddy` — pro Tool schaltbar |
+| dito, aber `NEEDS_LEVEL=0` | `eddy/eddy` — Aufruf schlägt Tool-Einstellung |
 | Tap-Tool montiert | `tap/tap` |
 | Tap-Tool, Gantry nicht geleveled | `tap/tap` |
 | kein Tool erkennbar | Abbruch mit Fehler, **nicht** stiller Rückfall auf `tap` |
@@ -151,10 +172,11 @@ Szenario, und liest aus `M117 QGL coarse (..)` ab, welche Probe gewählt würde:
 Gegen die alte Fassung gerechnet fällt der Test durch — er prüft also wirklich
 den Fehler und nicht nur sich selbst.
 
-**Deckt nicht ab:** ob die gewählte Probe brauchbare Werte liefert. Die
-Reichweiten-Regel hängt an `quad_gantry_level.applied`; ein Gantry, das trotz
-`applied` verstellt wurde (Kollision, von Hand gedreht), fällt nicht auf.
-Dann hilft `QUAD_GANTRY_LEVEL COARSE_PROBE=tap`.
+**Deckt nicht ab:** ob die gewählte Probe brauchbare Werte liefert. Steht das
+Gantry mehrere Millimeter schief, liest der Eddy an der tiefen Ecke Unsinn und
+QGL bricht ab (`required adjustment 640.7 > max_adjust 60`). Dann einmal
+`QUAD_GANTRY_LEVEL COARSE_PROBE=tap` fahren — oder `NEEDS_LEVEL=1` setzen,
+wenn das regelmäßig vorkommt.
 
 ## `check_tool_extruders.py`
 

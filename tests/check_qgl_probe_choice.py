@@ -11,7 +11,11 @@ Default "tap" - still und mit Aufheizen der Duese.
 Zweiter Fall: der Eddy liest nur bis rund 2.5mm zuverlaessig. Ist das Gantry
 noch nie geleveled worden, steht es womoeglich mehrere Millimeter schief, der
 Sensor liest an der tiefen Ecke Unsinn (gemessen: -381mm) und QGL bricht ab.
-Der grobe Durchgang faellt dann auf den Tap zurueck, der feine bleibt Eddy.
+Dagegen gibt es das Sicherheitsnetz eddy_needs_level: der grobe Durchgang
+faellt auf den Tap zurueck, der feine bleibt Eddy. Es ist AUS per Default -
+quad_gantry_level.applied ist nach jedem Neustart false, und genau dann laeuft
+QGL, das Netz hat die Tool-Einstellung also praktisch immer ueberstimmt.
+Der Test prueft deshalb beide Stellungen des Schalters.
 
 Der Test rendert _QGL_FOR_ACTIVE_TOOL gegen den Live-Status des Druckers,
 einmal je Szenario, und liest aus den gerenderten Zeilen "M117 QGL coarse (..)"
@@ -85,9 +89,12 @@ def render(body, printer, params=None):
 
 
 def choice_for(body, status, probe_tool, changer_tool,
-               applied=True, params=None):
+               applied=True, params=None, tool_vars=None):
     """Rendert das Makro mit gesetztem Tool- und Leveling-Zustand und gibt
-    "<coarse>/<fine>" zurueck - oder ("error", <meldung>) beim Abbruch."""
+    "<coarse>/<fine>" zurueck - oder ("error", <meldung>) beim Abbruch.
+
+    tool_vars setzt zusaetzliche variable_* am Makro des montierten Tools,
+    ohne die Druckerconfig anzufassen."""
     st = wrap(json.loads(json.dumps(status)))
     st.setdefault("tool_probe_endstop", Status())
     st.setdefault("toolchanger", Status())
@@ -95,6 +102,9 @@ def choice_for(body, status, probe_tool, changer_tool,
     st["tool_probe_endstop"]["active_tool_number"] = probe_tool
     st["toolchanger"]["tool_number"] = changer_tool
     st["quad_gantry_level"]["applied"] = applied
+    if tool_vars:
+        key = "gcode_macro _T%d_QGL" % probe_tool
+        st.setdefault(key, Status()).update(tool_vars)
     try:
         out = render(body, st, params)
     except Raised as e:
@@ -142,12 +152,26 @@ def main():
         # Toolchanger auf -1, die Probe-Erkennung kennt das Tool aber.
         cases.append(("Eddy-Tool, Toolchanger auf -1",
                       E, -1, True, None, "eddy/eddy"))
-        # Ungelevelt kann das Gantry mehrere mm schief stehen - dort ist der
-        # Eddy ausser Reichweite, also grob mit Tap, fein mit Eddy.
+        # Ungelevelt bleibt es bei der Tool-Einstellung, solange das
+        # Sicherheitsnetz aus ist - sonst waere "eddy" nie wirksam.
         cases.append(("Eddy-Tool, Gantry NICHT geleveled",
-                      E, E, False, None, "tap/eddy"))
-        cases.append(("dito, aber COARSE_PROBE=eddy erzwungen",
-                      E, E, False, {"COARSE_PROBE": "eddy"}, "eddy/eddy"))
+                      E, E, False, None, "eddy/eddy"))
+        # Mit Netz: grob mit Tap, fein mit Eddy.
+        cases.append(("dito, Netz an per NEEDS_LEVEL=1",
+                      E, E, False, {"NEEDS_LEVEL": "1"}, "tap/eddy"))
+        cases.append(("dito, Netz an aber COARSE_PROBE=eddy erzwungen",
+                      E, E, False, {"NEEDS_LEVEL": "1",
+                                    "COARSE_PROBE": "eddy"}, "eddy/eddy"))
+        # Netz an, Gantry schon geleveled -> Netz greift nicht.
+        cases.append(("Eddy-Tool, Netz an, Gantry geleveled",
+                      E, E, True, {"NEEDS_LEVEL": "1"}, "eddy/eddy"))
+        # Das Netz laesst sich auch pro Tool schalten - in _Tn_QGL.
+        cases.append(("Netz per _Tn_QGL an, Gantry NICHT geleveled",
+                      E, E, False, None, "tap/eddy",
+                      {"eddy_needs_level": 1}))
+        cases.append(("dito, aber NEEDS_LEVEL=0 im Aufruf",
+                      E, E, False, {"NEEDS_LEVEL": "0"}, "eddy/eddy",
+                      {"eddy_needs_level": 1}))
     if T is not None:
         cases.append(("Tap-Tool montiert", T, T, True, None, "tap/tap"))
         cases.append(("Tap-Tool, Gantry NICHT geleveled",
@@ -156,9 +180,11 @@ def main():
     cases.append(("kein Tool erkennbar", -1, -1, True, None, "error"))
 
     bad = 0
-    for name, probe_tool, changer_tool, applied, params, want in cases:
+    for case in cases:
+        name, probe_tool, changer_tool, applied, params, want = case[:6]
+        tool_vars = case[6] if len(case) > 6 else None
         got, extra = choice_for(body, status, probe_tool, changer_tool,
-                                applied, params)
+                                applied, params, tool_vars)
         ok = (got == want)
         if not ok:
             bad += 1
