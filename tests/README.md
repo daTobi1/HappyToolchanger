@@ -9,6 +9,8 @@ scp tests/*.py biqu@<IP>:/tmp/
 ssh biqu@<IP> '~/klippy-env/bin/python /tmp/check_gcode_vocabulary.py'
 ssh biqu@<IP> '~/klippy-env/bin/python /tmp/check_klipper_api.py'
 ssh biqu@<IP> '~/klippy-env/bin/python /tmp/check_qgl_probe_choice.py'
+ssh biqu@<IP> '~/klippy-env/bin/python /tmp/check_homing_rebound.py'
+ssh biqu@<IP> '~/klippy-env/bin/python /tmp/check_tool_extruders.py'
 ```
 
 Exit-Code 0 = sauber, 1 = Befunde.
@@ -153,3 +155,35 @@ den Fehler und nicht nur sich selbst.
 Reichweiten-Regel hängt an `quad_gantry_level.applied`; ein Gantry, das trotz
 `applied` verstellt wurde (Kollision, von Hand gedreht), fällt nicht auf.
 Dann hilft `QUAD_GANTRY_LEVEL COARSE_PROBE=tap`.
+
+## `check_tool_extruders.py`
+
+Prüft, dass jedes Tool seinen eigenen Extruder und Lüfter hat.
+
+Der Anlass: `[tool T5]` stand auf `extruder: extruder` statt `extruder5` —
+ein Tippfehler in einer Zeile. Aufgefallen ist er erst bei der PID-Übernahme,
+weil die Webapp daraufhin in `T5.cfg` nach einer Sektion `[extruder]` suchte,
+die dort nicht existiert. Die eigentliche Folge wäre schlimmer gewesen:
+`SELECT_TOOL` hätte bei T5 den Extruder von **T0** aktiviert — also mit dem
+falschen Motor extrudiert und die falsche Düse geheizt. Alle anderen sechs
+Verweise in derselben Datei waren korrekt, nur dieser eine nicht.
+
+Der Test prüft nicht die Dateistruktur, sondern die Bedeutung: auf einem
+Toolchanger hat jedes Tool eigene Hardware. Zwei Tools, die auf denselben
+Extruder oder Lüfter zeigen, sind ein Fehler — unabhängig davon, wie die
+Configs auf Dateien verteilt sind. Das bleibt auch auf fremden
+Konfigurationen gültig.
+
+| Zusicherung | warum sie zählt |
+|---|---|
+| jedes Tool hat `extruder:` gesetzt | ohne fällt Klipper still auf `extruder` zurück |
+| der genannte Extruder existiert | Tippfehler im Namen fliegen sonst erst beim Wechsel auf |
+| kein Extruder wird von zwei Tools benutzt | genau der Fall T0/T5 |
+| kein Lüfter wird von zwei Tools benutzt | dieselbe Copy-Paste-Klasse |
+
+Gegen den kaputten Zustand gerechnet meldete er `T0 und T5 teilen sich
+extruder 'extruder'`.
+
+**Deckt nicht ab:** ob die Zuordnung *physisch* stimmt. Dass T3 auf
+`extruder3` zeigt heißt nicht, dass an T3 auch das Kabel von `extruder3`
+steckt.
