@@ -158,7 +158,16 @@
                         <div class="btn-toolbar justify-content-center" role="toolbar" aria-label="Homing Toolbar">
                             <div class="btn-group btn-group-sm ps-5 pe-5 pb-1" role="group">
                             <button type="button" class="btn btn-danger border" id="home-all">HOME ALL</button>
-                            <button type="button" class="btn btn-danger border" id="qgl">QGL</button>
+                            <button type="button" class="btn btn-danger border qgl-btn" id="qgl">QGL</button>
+                            <button type="button" class="btn btn-danger border qgl-btn dropdown-toggle dropdown-toggle-split" id="qgl-menu" data-bs-toggle="dropdown" aria-expanded="false">
+                              <span class="visually-hidden">QGL-Varianten</span>
+                            </button>
+                            <ul class="dropdown-menu" aria-labelledby="qgl-menu">
+                              <li><button class="dropdown-item" type="button" id="qgl-tool">QGL &ndash; Probe aus der Tool-Config</button></li>
+                              <li><button class="dropdown-item" type="button" id="qgl-tap">QGL &ndash; grober Durchgang mit Tap</button></li>
+                              <li><hr class="dropdown-divider"></li>
+                              <li><span class="dropdown-item-text small text-secondary">Tap grob hilft, wenn das Gantry mehrere<br>Millimeter schief steht &ndash; dort liest der<br>Eddy nichts Brauchbares.</span></li>
+                            </ul>
                             <button type="button" class="btn btn-secondary border" id="cam-position">CAM POS</button>
                             <button type="button" class="btn btn-danger border" id="disable-motors">DISABLE</button>
                             </div>

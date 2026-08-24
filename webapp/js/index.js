@@ -109,15 +109,24 @@ function updateHoming(homed) {
     }
 }
 
+// Skript-URL fuer QUAD_GANTRY_LEVEL. needs_level=true haengt das
+// Sicherheitsnetz an, siehe Kommentar an der Button-Initialisierung.
+function qglUrl(needs_level) {
+    var script = "QUAD_GANTRY_LEVEL" + (needs_level ? " NEEDS_LEVEL=1" : "");
+    return printerUrl(printerIp,
+        "/printer/gcode/script?script=" + encodeURIComponent(script));
+}
+
 function updateQGL(qgl_done) {
     // Always update the data attribute first
     $("#qgl").data("qgl", qgl_done);
 
-    // Force update the button state
+    // Force update the button state - beide Haelften des Split-Buttons,
+    // sonst steht der Caret rot neben einem blauen QGL.
     if (qgl_done) {
-        replaceClass("#qgl", "btn-danger", "btn-primary");
+        replaceClass(".qgl-btn", "btn-danger", "btn-primary");
     } else {
-        replaceClass("#qgl", "btn-primary", "btn-danger");
+        replaceClass(".qgl-btn", "btn-primary", "btn-danger");
     }
 }
 
@@ -449,9 +458,16 @@ $(document).ready(function() {
             .data("homed", false)
             .addClass("btn-danger").removeClass("btn-primary");
 
-        $("#qgl")
-            .data("url", printerUrl(printerIp, '/printer/gcode/script?script=QUAD_GANTRY_LEVEL'))
-            .data("qgl", false)
+        // QGL ist ein Split-Button. Der Hauptklick nimmt die Probe aus
+        // _Tn_QGL - so wie ein QUAD_GANTRY_LEVEL aus Klipper oder Mainsail
+        // auch. NEEDS_LEVEL=1 schaltet das Sicherheitsnetz zu: der grobe
+        // Durchgang laeuft dann mit dem Tap, solange das Gantry noch nie
+        // geleveled wurde. Das steht bewusst nur hier zur Wahl und nicht
+        // als Default im Makro - dort hat es die Tool-Einstellung nach
+        // jedem Neustart ueberstimmt, weil applied dann false ist.
+        $("#qgl, #qgl-tool").data("url", qglUrl(false));
+        $("#qgl-tap").data("url", qglUrl(true));
+        $(".qgl-btn").data("qgl", false)
             .addClass("btn-danger").removeClass("btn-primary");
 
         $("#disable-motors")
