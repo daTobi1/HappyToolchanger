@@ -86,5 +86,29 @@ festnagelt:
 | Transportfehler öffnet **keinen** Dialog | da läuft der Job weiter, das ist kein Fehler |
 | unbekannter Fehler → Dialog **ohne** Recovery-Button | nur beheben, was sich wirklich beheben lässt |
 
-**Deckt nicht ab:** das DOM. Dass `confirmDialog` die drei Buttons korrekt
-rendert, zeigt erst der Browser.
+**Deckt nicht ab:** das DOM — und genau dort saß der eigentliche Fehler.
+Der Node-Test war grün, während im Browser gar kein Popup erschien: Bootstrap
+verwirft `show()`, solange das Modal noch aus der vorigen Nutzung ausblendet,
+und meldet das nicht. Der Bestätigungsdialog fuhr gerade zu, der HTTP-400 kam
+~50 ms später zurück — Inhalt wurde gesetzt, sichtbar wurde nichts.
+
+Diese Sequenz lässt sich nur im Browser prüfen. Offset-UI öffnen
+(`http://<IP>:3000/`), DevTools-Konsole, und einfügen:
+
+```js
+const el = document.getElementById('confirmModal');
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const pm = document.getElementById('printerModal');
+if (pm.classList.contains('show')) bootstrap.Modal.getOrCreateInstance(pm).hide();
+await wait(600);
+const p1 = confirmDialog({title:'TEST-1', body:'x', okLabel:'OK'});
+await wait(600);
+document.getElementById('confirmModalOk').click();
+await p1;
+await wait(50);                       // Fehler kommt mitten in der Transition
+alertDialog('TEST-2 FEHLER', 'Must home first', {extraLabel:'Home + QGL'});
+await wait(1200);
+console.log('sichtbar:', el.classList.contains('show'));   // muss true sein
+```
+
+`sichtbar: false` heißt: der Fehlerdialog wird wieder verschluckt.
