@@ -2344,6 +2344,13 @@ function dockCalibrationSection(toolNumbers, enabled) {
         'die Dockposition um genau diese Offsets daneben. Defaults aus ' +
         '<code>[offset] dock_*</code>.' +
       '</div>' +
+      '<div class="form-check form-switch mt-2 mb-0">' +
+        '<input class="form-check-input" type="checkbox" id="dock-dry-run">' +
+        '<label class="form-check-label small" for="dock-dry-run">' +
+          '<span class="text-warning">Trockenlauf</span>' +
+          '<span class="text-secondary"> — alle Fenster durchklicken, ' +
+          'ohne dass ein Kommando an den Drucker geht</span></label>' +
+      '</div>' +
     '</div>' +
     '<button class="btn ' + btnClass + ' w-100 mb-2" id="dock-cal-btn" ' + disabledAttr + '>' +
       'MOUNT KALIBRIERUNG' +
@@ -2363,12 +2370,49 @@ $(document).on("change", "#dock-select-all", function () {
 });
 $(document).on("change", ".dock-tool-checkbox", syncDockSelectAllState);
 
+function dockIsDryRun() {
+  return $("#dock-dry-run").is(":checked");
+}
+
+// Im Trockenlauf sichtbar machen, was gefahren WUERDE. Ohne diese Zeile
+// waere der Durchlauf stumm und man koennte nicht pruefen, ob die richtigen
+// Kommandos in der richtigen Reihenfolge kaemen.
+function dockDryLog(script) {
+  console.log("[Trockenlauf] " + script);
+  var $c = $('#console-output');
+  if ($c.length) {
+    $c.append($('<div>').css('color', '#d29922')
+        .text('[Trockenlauf] ' + script));
+    $c.scrollTop($c[0].scrollHeight);
+  }
+  if (typeof showToast === 'function') {
+    showToast("Trockenlauf: " + script, "warning");
+  }
+}
+
+function dockDryNote() {
+  return dockIsDryRun()
+    ? '<div class="alert alert-warning py-2 px-3 small mb-2">' +
+      '<i class="bi bi-eye"></i> <strong>Trockenlauf</strong> — der Drucker ' +
+      'bewegt sich nicht, es wird nichts gemessen und nichts gespeichert. ' +
+      'Die Kommandos stehen in der Klipper-Konsole.</div>'
+    : '';
+}
+
 // Ein Schritt der Prozedur. Liefert das Ergebnis von sendGcodeWithRecovery.
 function dockStep(script, title) {
+  if (dockIsDryRun()) {
+    dockDryLog(script);
+    return Promise.resolve({ ok: true, dry: true });
+  }
   return sendGcodeWithRecovery(script, title);
 }
 
 function dockAbort() {
+  if (dockIsDryRun()) {
+    dockDryLog("DOCK_CALIBRATE_ABORT");
+    return Promise.resolve(null);
+  }
   // Promise.resolve() drumherum: die Kette darf nicht davon abhaengen, dass
   // hier ein jqXHR mit .always zurueckkommt.
   return Promise.resolve(
@@ -2392,14 +2436,18 @@ function refreshDockTable() {
 function dockToolLoop(tools, idx, opts) {
   if (idx >= tools.length) {
     if (typeof showToast === 'function') {
-      showToast("Dock-Kalibrierung fertig - mit APPLY DOCK schreiben", "success");
+      showToast(dockIsDryRun()
+        ? "Trockenlauf beendet - es wurde nichts gemessen und nichts geschrieben"
+        : "Dock-Kalibrierung fertig - mit APPLY DOCK schreiben",
+        dockIsDryRun() ? "warning" : "success");
     }
     return refreshDockTable();
   }
   var t = tools[idx];
 
   return alertDialog(
-    "T" + t + " montieren",
+    (dockIsDryRun() ? "Trockenlauf: " : "") + "T" + t + " montieren",
+    dockDryNote() +
     '<p class="mb-2">Der Kopf steht auf Bettmitte, Z=' +
       escapeHtml(opts.startZ) + 'mm.</p>' +
     '<p class="mb-0"><strong>Ist T' + escapeHtml(t) + ' montiert?</strong> ' +
@@ -2420,7 +2468,8 @@ function dockToolLoop(tools, idx, opts) {
 function dockJogLoop(tools, idx, opts) {
   var t = tools[idx];
   return alertDialog(
-    "T" + t + ": Dockposition einstellen",
+    (dockIsDryRun() ? "Trockenlauf: " : "") + "T" + t + ": Dockposition einstellen",
+    dockDryNote() +
     '<p class="mb-2">Fahre den Kopf per Jogging (Offset-UI oder Mainsail), ' +
       'bis T' + escapeHtml(t) + ' sauber in seinem Dock sitzt.</p>' +
     '<p class="mb-2 text-secondary"><strong>Testfahrt</strong> fährt ' +
@@ -2500,8 +2549,8 @@ $(document).on("click", "#dock-cal-btn", function () {
     '</div>';
 
   confirmDialog({
-    title: "Dock-Kalibrierung starten",
-    body: body,
+    title: (dockIsDryRun() ? "Trockenlauf: " : "") + "Dock-Kalibrierung starten",
+    body: dockDryNote() + body,
     okLabel: '<i class="bi bi-arrow-repeat"></i> Nachkalibrierung',
     okClass: haveAll ? 'btn-primary' : 'btn-secondary',
     extraLabel: '<i class="bi bi-plus-circle"></i> Neukalibrierung',
