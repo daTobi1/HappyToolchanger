@@ -952,10 +952,16 @@ function fetchOffsetStatus() {
 // --------------------------
 // Probe results (Z)
 // --------------------------
-function getProbeResults() {
+// Ein Query, beide Tabellen: probe_results und pid_results stecken im
+// selben [offset]-Objekt.
+function getOffsetSnapshot() {
   return $.get(printerUrl(printerIp, "/printer/objects/query?offset"))
-    .then(data => data?.result?.status?.offset?.probe_results || {})
+    .then(data => data?.result?.status?.offset || {})
     .catch(() => ({}));
+}
+
+function getProbeResults() {
+  return getOffsetSnapshot().then(st => st.probe_results || {});
 }
 
 function updateProbeResults(tool, probeResults) {
@@ -975,7 +981,9 @@ function updateProbeResults(tool, probeResults) {
 }
 
 function updateAllProbeResults() {
-  getProbeResults().then(function(probeResults) {
+  getOffsetSnapshot().then(function(offsetStatus) {
+    var probeResults = offsetStatus.probe_results || {};
+    updatePidResults(offsetStatus);
     $('button.toolchange-btn').each(function(){
       updateProbeResults($(this).data("tool"), probeResults);
     });
@@ -1014,6 +1022,32 @@ function updateAllProbeResults() {
       }
     }
   });
+}
+
+// Ein PID-Lauf ueber mehrere Tools dauert Minuten - deutlich laenger, als
+// die HTTP-Anfrage lebt. Deren .then() feuert also beim Verbindungsabbruch,
+// nicht am Ende des Laufs, und die Tabelle bliebe auf dem Stand von vorher
+// stehen: die fertigen Werte und damit der APPLY-Button erschienen erst nach
+// einem Reload. Deshalb wie bei den Probe-Offsets aus dem Polling nachziehen.
+function updatePidResults(offsetStatus) {
+  var changed = false;
+  var pid = offsetStatus.pid_results || {};
+  if (JSON.stringify(pid) !== JSON.stringify(_pidResults)) {
+    _pidResults = pid;
+    changed = true;
+  }
+  var cur = offsetStatus.tool_pid || {};
+  if (JSON.stringify(cur) !== JSON.stringify(_toolPid)) {
+    _toolPid = cur;
+    changed = true;
+  }
+  if (!changed) return;
+  var $c = $('#pid-results-container');
+  if (!$c.length) return;
+  var tools = Object.keys(_toolPid).map(Number).sort(function (a, b) {
+    return a - b;
+  });
+  $c.html(pidResultsTable(tools));
 }
 
 function startProbeResultsUpdatesOnce() {

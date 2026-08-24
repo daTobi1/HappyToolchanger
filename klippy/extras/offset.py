@@ -138,10 +138,42 @@ class Offset:
                                     self.cmd_CALIBRATE_TOOL_PID,
                                     desc=self.cmd_CALIBRATE_TOOL_PID_help)
 
-    def _get_state_file_path(self):
+    PID_STATE_FILE = '.offset_pid_results.json'
+
+    def _get_state_file_path(self, name='.offset_probe_results.json'):
         config_file = self.printer.get_start_args().get('config_file', '')
         config_dir = os.path.dirname(os.path.abspath(config_file))
-        return os.path.join(config_dir, '.offset_probe_results.json')
+        return os.path.join(config_dir, name)
+
+    def _save_pid_results(self):
+        """A RESTART - which the webapp itself offers a button for - builds
+        every Klipper object anew, so anything kept only in memory is gone.
+        A finished tune takes minutes per tool and cannot be recovered from
+        Klipper afterwards: PID_CALIBRATE stages its values for SAVE_CONFIG,
+        and SAVE_CONFIG cannot write pid_Kp because an included T<n>.cfg
+        already defines it. Without this file the run is simply lost before
+        anyone can apply it."""
+        try:
+            path = self._get_state_file_path(self.PID_STATE_FILE)
+            with open(path, 'w') as f:
+                json.dump(self.pid_results, f, indent=2)
+        except Exception as e:
+            self.gcode.respond_info(
+                "Warning: could not save PID results: %s" % e)
+
+    def _load_pid_results(self):
+        try:
+            path = self._get_state_file_path(self.PID_STATE_FILE)
+            if os.path.exists(path):
+                with open(path, 'r') as f:
+                    self.pid_results = json.load(f)
+                if self.pid_results:
+                    self.gcode.respond_info(
+                        "Loaded PID results for %d tools from %s"
+                        % (len(self.pid_results), os.path.basename(path)))
+        except Exception as e:
+            self.gcode.respond_info(
+                "Warning: could not load PID results: %s" % e)
 
     def _save_probe_results(self):
         try:
@@ -171,6 +203,7 @@ class Offset:
 
     def handle_connect(self):
         self._load_probe_results()
+        self._load_pid_results()
         if self.config_file_path:
             self.config_file_path = os.path.expanduser(self.config_file_path)
             if os.path.exists(self.config_file_path):
@@ -1208,6 +1241,10 @@ class Offset:
         values.update({'temp': temp, 'height': height, 'fan': fan,
                        'extruder': extruder_name})
         self.pid_results[str(tool_nr)] = values
+        # Nach jedem Tool sichern, nicht erst am Ende: ein Lauf ueber sechs
+        # Tools dauert ueber zehn Minuten, und ein Abbruch dazwischen soll
+        # die bereits gemessenen Tools nicht mitnehmen.
+        self._save_pid_results()
         self.gcode.respond_info(
             "T%d PID: pid_Kp=%.3f pid_Ki=%.3f pid_Kd=%.3f"
             % (tool_nr, values['pid_kp'], values['pid_ki'], values['pid_kd']))
