@@ -2361,9 +2361,13 @@ function dockStep(script, title) {
 }
 
 function dockAbort() {
-  return $.get(printerUrl(printerIp,
-    "/printer/gcode/script?script=" + encodeURIComponent("DOCK_CALIBRATE_ABORT")))
-    .always(function () { refreshDockTable(); });
+  // Promise.resolve() drumherum: die Kette darf nicht davon abhaengen, dass
+  // hier ein jqXHR mit .always zurueckkommt.
+  return Promise.resolve(
+    $.get(printerUrl(printerIp,
+      "/printer/gcode/script?script=" + encodeURIComponent("DOCK_CALIBRATE_ABORT")))
+  ).catch(function () { return null; })
+   .then(function () { return refreshDockTable(); });
 }
 
 function refreshDockTable() {
@@ -2501,14 +2505,21 @@ $(document).on("click", "#dock-cal-btn", function () {
                  " TOOLS=" + tools.join(',') +
                  " START_Z=" + opts.startZ + " NEW_Y=" + opts.newY;
     $btn.prop("disabled", true).text("Läuft...");
+    var release = function () {
+      $btn.prop("disabled", false).text("MOUNT KALIBRIERUNG");
+    };
     return dockStep(script, "Dock-Kalibrierung fehlgeschlagen")
       .then(function (r) {
         if (!r.ok) return null;
         return dockToolLoop(tools, 0, opts);
       })
-      .then(function () {
-        $btn.prop("disabled", false).text("MOUNT KALIBRIERUNG");
-      });
+      // Ein gesperrter Button waere sonst nur per Reload zu loesen, und der
+      // Lauf laeuft auf dem Drucker womoeglich noch.
+      .catch(function (e) {
+        console.error("Dock calibration aborted:", e);
+        return dockAbort();
+      })
+      .then(release, release);
   });
 });
 
