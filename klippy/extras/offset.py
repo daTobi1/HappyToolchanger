@@ -572,6 +572,7 @@ class Offset:
 
         self._save_probe_results()
         self.cmd_OFFSET_FINISH_GCODE(gcmd)
+        self._return_to_ref_tool(ref_tool, gcmd)
 
     # ─── Probe offset calibration helpers ───────────────────────────────
 
@@ -688,7 +689,9 @@ class Offset:
         "zero (default: the tool's probe_cal_map entry). "
         "APPLY=1 (default) sets z_offset at runtime only - persist it with "
         "APPLY PROBE OFFSETS in the webapp, not SAVE_CONFIG. Only tools "
-        "measured with their mechanical Tap are applied.")
+        "measured with their mechanical Tap are applied. "
+        "RETURN=0 leaves the last measured tool mounted instead of picking "
+        "the reference tool back up.")
 
     def cmd_CALIBRATE_PROBE_OFFSETS(self, gcmd):
         if not self.is_homed():
@@ -1071,6 +1074,7 @@ class Offset:
                 "OFFSETS in the webapp - not with SAVE_CONFIG, which cannot "
                 "write options that an included file already defines.")
         self._save_probe_results()
+        self._return_to_ref_tool(ref_tool, gcmd)
 
     # ─── Gcode macro hooks ───────────────────────────────────────────────
 
@@ -1170,7 +1174,8 @@ class Offset:
         "TOOL=<n> a single one. TEMP, HEIGHT and FAN default to the "
         "[offset] pid_* settings. Results are kept for the webapp - persist "
         "them with APPLY PID, not SAVE_CONFIG, because pid_Kp lives in the "
-        "included T<n>.cfg.")
+        "included T<n>.cfg. When done, the reference tool of the last "
+        "Z-switch run is picked back up - RETURN=0 skips that.")
 
     def cmd_CALIBRATE_TOOL_PID(self, gcmd):
         if not self.is_homed():
@@ -1219,6 +1224,9 @@ class Offset:
             "webapp. SAVE_CONFIG cannot write pid_Kp: it lives in the "
             "included T<n>.cfg. A Klipper restart discards the runtime "
             "values, so apply them before restarting.")
+        # PID hat kein eigenes REF=; last_ref_tool ist das Referenztool des
+        # letzten Z-/Probe-Laufs und faellt auf default_ref_tool zurueck.
+        self._return_to_ref_tool(self.last_ref_tool, gcmd)
 
     def _pid_tune_tool(self, tool_nr, temp, height, fan, cx, cy, gcmd):
         extruder_name = self._tool_extruder_name(tool_nr)
@@ -1636,6 +1644,42 @@ class Offset:
             raise gcmd.error(
                 "No active tool — mount a tool or pass TOOL=/REF=")
         return at.tool_number
+
+    def _return_to_ref_tool(self, ref_tool, gcmd):
+        """Am Ende einer Kalibrierung wieder das Referenztool aufnehmen.
+
+        Sonst bleibt das zuletzt gemessene Tool im Kopf haengen - bei
+        TOOLS=0,1,2,3 also T3, und der naechste Handgriff passiert mit
+        einem Tool, das niemand bewusst gewaehlt hat. Die Dock-Kalibrierung
+        ruft das absichtlich nicht auf: sie fuehrt selbst durch die Tools
+        und schliesst mit _dock_finish ab.
+
+        Bewusst die letzte Zeile der jeweiligen Routine: bricht eine
+        Kalibrierung ab, fliegt die Exception vorher raus und das zuletzt
+        benutzte Tool bleibt montiert - so, wie der Fehler es hinterlassen
+        hat, zum Nachsehen.
+
+        Liest active_tool direkt statt ueber _active_tool_number(): das
+        wirft ohne montiertes Tool, und ein fertiger Lauf saehe dann
+        nachtraeglich wie ein gescheiterter aus.
+        """
+        if gcmd.get_int('RETURN', 1) == 0:
+            return
+        # Auf einer fremden Config muss es T<default_ref_tool> nicht geben.
+        # Ohne diese Pruefung wuerde ein geglueckter Lauf in der letzten
+        # Zeile an einem unbekannten Kommando scheitern.
+        available = getattr(self.toolchanger, 'tool_numbers', None) or []
+        if available and ref_tool not in available:
+            self.gcode.respond_info(
+                "Referenztool T%d ist nicht konfiguriert - kein "
+                "Rueckwechsel." % ref_tool)
+            return
+        at = getattr(self.toolchanger, 'active_tool', None)
+        if at is not None and at.tool_number == ref_tool:
+            return
+        self.gcode.respond_info(
+            "Zurueck auf das Referenztool T%d" % ref_tool)
+        self.gcode.run_script_from_command("T%d" % ref_tool)
 
     def _tool_home_probe(self, tool_nr):
         """The probe this tool is configured to home with, or None for Tap."""
