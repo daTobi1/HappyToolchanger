@@ -144,6 +144,32 @@ def main():
         ok("self.last_position" in src,
            "gcode_move.last_position fehlt -- reset_last_position pruefen")
 
+    # --- toolchanger: die Dock-Kalibrierung schaltet die Tool-Offsets ab
+    #     und liest die park-Werte. Beides sind Interna von
+    #     klipper-toolchanger, kein stabiles API. ---
+    from extras import toolchanger as tc_mod
+    tgt = getattr(tc_mod, "ToolGcodeTransform", None)
+    ok(tgt is not None, "toolchanger.ToolGcodeTransform fehlt",
+       "offset.py schaltet darueber die Tool-Offsets fuers Docken ab")
+    if tgt is not None:
+        src = source_of(tgt.move) or ""
+        ok("if not self.tool" in src.replace(" ", "").replace(
+               "ifnotself.tool", "if not self.tool"),
+           "ToolGcodeTransform.move prueft self.tool nicht mehr",
+           "tool=None muss die Offsets weiterhin ueberspringen")
+    tcls = getattr(tc_mod, "Toolchanger", None)
+    if tcls is not None:
+        src = source_of(tcls.__init__) or ""
+        ok("self.gcode_transform" in src,
+           "toolchanger.gcode_transform fehlt -- Dock-Kalibrierung kann die "
+           "Tool-Offsets nicht mehr abschalten")
+    from extras import tool as tool_mod
+    tl = getattr(tool_mod, "Tool", None)
+    if tl is not None:
+        src = source_of(tl.__init__) or ""
+        ok("self.params" in src,
+           "tool.Tool.params fehlt -- params_park_* nicht mehr lesbar")
+
     # --- reactor: der Spoolman-Update laeuft in einem eigenen Thread und
     #     muss seine Meldungen ueber register_async_callback zurueckgeben.
     #     gcode.respond_info gehoert dem Reactor-Thread; direkt aus dem

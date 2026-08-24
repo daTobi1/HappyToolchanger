@@ -38,6 +38,18 @@ class Offset:
         # how many values to trim on each side for trimmed mean
         self.z_trim_count = config.getint('z_trim_count', 1, minval=0)
 
+        # Dock calibration defaults - all overridable per run from the UI
+        self.dock_start_z    = config.getfloat('dock_start_z', 100.0, above=0.)
+        self.dock_new_y      = config.getfloat('dock_new_y', 0.0)
+        self.dock_test_depth = config.getfloat('dock_test_depth', 15.0,
+                                               above=0.)
+        self.dock_test_repeats = config.getint('dock_test_repeats', 1,
+                                               minval=1)
+        self.dock_test_speed = config.getfloat('dock_test_speed', 5.0,
+                                               above=0.)
+        self.dock_travel_speed = config.getfloat('dock_travel_speed', 100.0,
+                                                 above=0.)
+
         self.pin              = config.get('pin', None)
         self.config_file_path = config.get('config_file_path', None)
 
@@ -74,6 +86,10 @@ class Offset:
                                            minval=0, maxval=100)
         self.pid_tool = config.getint('pid_tool', None)
         self.pid_results = {}
+        self.dock_results = {}
+        self.dock_state = None
+        self._dock_saved_origin = None
+        self._dock_saved_transform = None
 
         self.gcode_macro = self.printer.load_object(config, 'gcode_macro')
         self.start_gcode = self.gcode_macro.load_template(config, 'start_gcode', '')
@@ -134,6 +150,11 @@ class Offset:
         self.gcode.register_command('BED_MESH_AUTO',
                                     self.cmd_BED_MESH_AUTO,
                                     desc=self.cmd_BED_MESH_AUTO_help)
+        for name in ('START', 'MOUNTED', 'TEST', 'ACCEPT', 'ABORT'):
+            self.gcode.register_command(
+                'DOCK_CALIBRATE_' + name,
+                getattr(self, 'cmd_DOCK_CALIBRATE_' + name),
+                desc=getattr(self, 'cmd_DOCK_CALIBRATE_' + name + '_help'))
         self.gcode.register_command('CALIBRATE_TOOL_PID',
                                     self.cmd_CALIBRATE_TOOL_PID,
                                     desc=self.cmd_CALIBRATE_TOOL_PID_help)
@@ -204,6 +225,7 @@ class Offset:
     def handle_connect(self):
         self._load_probe_results()
         self._load_pid_results()
+        self._load_dock_results()
         if self.config_file_path:
             self.config_file_path = os.path.expanduser(self.config_file_path)
             if os.path.exists(self.config_file_path):
@@ -286,6 +308,10 @@ class Offset:
             'probe_cal_map': pcm,
             'tool_gcode_offsets': tool_gcode_offsets,
             'pid_results': self.pid_results,
+            'dock_results': self.dock_results,
+            'dock_defaults': self._dock_defaults(),
+            'dock_state': (dict(self.dock_state, tool=self._dock_current_tool())
+                           if self.dock_state else None),
             'pid_defaults': {
                 'temp': self.pid_temp,
                 'height': self.pid_height,
@@ -1248,6 +1274,306 @@ class Offset:
         self.gcode.respond_info(
             "T%d PID: pid_Kp=%.3f pid_Ki=%.3f pid_Kd=%.3f"
             % (tool_nr, values['pid_kp'], values['pid_ki'], values['pid_kd']))
+
+    # ------------------------------------------------------------------
+    # Dock calibration
+    #
+    # Finding a tool's dock position is a hand-eye job: the user jogs the
+    # toolhead until the tool sits right, then the position is read back.
+    # That means the printer has to move, stop, and wait for a human
+    # several times per tool - so this is a state machine driven by one
+    # command per step, not a single blocking routine.
+    #
+    # Offsets are the subtle part. Klipper's toolchanger already disables
+    # the per-tool offsets during a change (ToolGcodeTransform.tool = None,
+    # see _set_toolchange_transform) - that is why params_park_* are stored
+    # offset-free. What it does NOT clear is homing_origin, the manual
+    # SET_GCODE_OFFSET: that line is commented out upstream. A leftover
+    # Z babystep from a print would therefore shift every dock move. Both
+    # are cleared here and restored when the run ends or is aborted.
+    # ------------------------------------------------------------------
+
+    DOCK_STATE_FILE = '.offset_dock_results.json'
+
+    def _save_dock_results(self):
+        try:
+            path = self._get_state_file_path(self.DOCK_STATE_FILE)
+            with open(path, 'w') as f:
+                json.dump(self.dock_results, f, indent=2)
+        except Exception as e:
+            self.gcode.respond_info(
+                "Warning: could not save dock results: %s" % e)
+
+    def _load_dock_results(self):
+        try:
+            path = self._get_state_file_path(self.DOCK_STATE_FILE)
+            if os.path.exists(path):
+                with open(path, 'r') as f:
+                    self.dock_results = json.load(f)
+                if self.dock_results:
+                    self.gcode.respond_info(
+                        "Loaded dock positions for %d tools from %s"
+                        % (len(self.dock_results), os.path.basename(path)))
+        except Exception as e:
+            self.gcode.respond_info(
+                "Warning: could not load dock results: %s" % e)
+
+    def _dock_defaults(self):
+        return {
+            'start_z': self.dock_start_z,
+            'new_y': self.dock_new_y,
+            'test_depth': self.dock_test_depth,
+            'test_repeats': self.dock_test_repeats,
+            'test_speed': self.dock_test_speed,
+            'travel_speed': self.dock_travel_speed,
+        }
+
+    def _bed_centre(self):
+        toolhead = self.printer.lookup_object('toolhead')
+        st = toolhead.get_status(self.printer.get_reactor().monotonic())
+        lo, hi = st['axis_minimum'], st['axis_maximum']
+        return ((max(0., lo[0]) + hi[0]) / 2.0,
+                (max(0., lo[1]) + hi[1]) / 2.0)
+
+    def _dock_offsets_off(self):
+        """Take the tool offsets out of the picture and remember them.
+
+        Both layers matter: the per-tool transform and homing_origin. The
+        dock paths are expressed in raw toolhead coordinates, so anything
+        that shifts a G0 would land the tool next to its dock, not in it."""
+        gm = self.gcode_move.get_status(
+            self.printer.get_reactor().monotonic())
+        self._dock_saved_origin = list(gm.get('homing_origin', [0., 0., 0., 0.]))
+        tc = self.toolchanger
+        self._dock_saved_transform = getattr(
+            getattr(tc, 'gcode_transform', None), 'tool', None)
+        if getattr(tc, 'gcode_transform', None) is not None:
+            tc.gcode_transform.tool = None
+            self.gcode_move.reset_last_position()
+        self.gcode.run_script_from_command(
+            "SET_GCODE_OFFSET X=0.0 Y=0.0 Z=0.0")
+
+    def _dock_offsets_restore(self):
+        tc = self.toolchanger
+        if getattr(tc, 'gcode_transform', None) is not None:
+            tc.gcode_transform.tool = self._dock_saved_transform
+            self.gcode_move.reset_last_position()
+        o = self._dock_saved_origin or [0., 0., 0., 0.]
+        self.gcode.run_script_from_command(
+            "SET_GCODE_OFFSET X=%.4f Y=%.4f Z=%.4f" % (o[0], o[1], o[2]))
+        self._dock_saved_origin = None
+        self._dock_saved_transform = None
+
+    def _dock_tool_park(self, tool_nr):
+        """The tool's stored dock position, or None if it has none."""
+        tool = self.printer.lookup_object('tool T%d' % tool_nr, None)
+        if tool is None:
+            return None
+        params = getattr(tool, 'params', None) or {}
+        try:
+            return (float(params['params_park_x']),
+                    float(params['params_park_y']),
+                    float(params['params_park_z']))
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def _dock_move(self, x=None, y=None, z=None, speed=None):
+        toolhead = self.printer.lookup_object('toolhead')
+        toolhead.wait_moves()
+        toolhead.manual_move([x, y, z], speed or self.dock_travel_speed)
+        toolhead.wait_moves()
+        self.gcode_move.reset_last_position()
+
+    def _dock_require_run(self, gcmd):
+        if not self.dock_state:
+            raise gcmd.error(
+                "No dock calibration running - start with "
+                "DOCK_CALIBRATE_START")
+        return self.dock_state
+
+    def _dock_current_tool(self):
+        st = self.dock_state
+        return st['tools'][st['index']]
+
+    def _dock_announce(self, step, msg):
+        self.dock_state['step'] = step
+        self.gcode.respond_info("DOCK: %s" % msg)
+
+    cmd_DOCK_CALIBRATE_START_help = (
+        "Start dock calibration. MODE=NEW|RECAL TOOLS=0,1,2")
+
+    def cmd_DOCK_CALIBRATE_START(self, gcmd):
+        if self.dock_state:
+            raise gcmd.error(
+                "Dock calibration already running - finish it or run "
+                "DOCK_CALIBRATE_ABORT")
+        toolhead = self.printer.lookup_object('toolhead')
+        if 'xyz' not in toolhead.get_status(
+                self.printer.get_reactor().monotonic())['homed_axes']:
+            raise gcmd.error("Must home first")
+
+        mode = (gcmd.get('MODE', 'RECAL') or 'RECAL').strip().upper()
+        if mode not in ('NEW', 'RECAL'):
+            raise gcmd.error("MODE must be NEW or RECAL")
+        tools_raw = gcmd.get('TOOLS', '')
+        try:
+            tools = [int(t) for t in str(tools_raw).split(',') if t.strip()]
+        except ValueError:
+            raise gcmd.error("TOOLS must be a comma separated list, e.g. 0,1")
+        if not tools:
+            raise gcmd.error("No tools selected")
+        known = list(self.toolchanger.tool_numbers)
+        for t in tools:
+            if t not in known:
+                raise gcmd.error("Unknown tool T%d" % t)
+        if mode == 'RECAL':
+            missing = [t for t in tools if self._dock_tool_park(t) is None]
+            if missing:
+                raise gcmd.error(
+                    "No stored dock position for %s - use MODE=NEW"
+                    % ", ".join("T%d" % t for t in missing))
+
+        start_z = gcmd.get_float('START_Z', self.dock_start_z, above=0.)
+        self.dock_state = {
+            'mode': mode,
+            'tools': tools,
+            'index': 0,
+            'step': 'confirm_mounted',
+            'start_z': start_z,
+            'new_y': gcmd.get_float('NEW_Y', self.dock_new_y),
+        }
+        self._dock_offsets_off()
+
+        cx, cy = self._bed_centre()
+        self._dock_move(z=start_z)
+        self._dock_move(x=cx, y=cy)
+        self.gcode.respond_info(
+            "=== Dock calibration (%s): %s ==="
+            % (mode, ", ".join("T%d" % t for t in tools)))
+        self._dock_announce(
+            'confirm_mounted',
+            "at bed centre, Z=%.1f. Mount T%d, then run "
+            "DOCK_CALIBRATE_MOUNTED." % (start_z, tools[0]))
+
+    cmd_DOCK_CALIBRATE_MOUNTED_help = (
+        "Confirm the tool is mounted and approach the dock")
+
+    def cmd_DOCK_CALIBRATE_MOUNTED(self, gcmd):
+        st = self._dock_require_run(gcmd)
+        if st['step'] != 'confirm_mounted':
+            raise gcmd.error("Not waiting for a mount confirmation "
+                             "(step: %s)" % st['step'])
+        tool_nr = self._dock_current_tool()
+        cx, cy = self._bed_centre()
+
+        # Same order as the DOCK_MOUNT macro: Y first, then X, then Z.
+        self._dock_move(y=cy)
+        self._dock_move(x=cx)
+        if st['mode'] == 'RECAL':
+            park = self._dock_tool_park(tool_nr)
+            self._dock_move(z=park[2])
+            self._dock_move(x=park[0])
+            self._dock_move(y=park[1])
+            where = "stored dock position of T%d (%.2f, %.2f, %.2f)" % (
+                tool_nr, park[0], park[1], park[2])
+        else:
+            self._dock_move(z=st['start_z'])
+            self._dock_move(y=st['new_y'])
+            where = "bed centre, Y forward (%.2f, %.2f, %.2f)" % (
+                cx, st['new_y'], st['start_z'])
+
+        self._dock_announce(
+            'jog',
+            "T%d at %s. Jog the toolhead until the tool sits in its dock, "
+            "then DOCK_CALIBRATE_TEST or DOCK_CALIBRATE_ACCEPT."
+            % (tool_nr, where))
+
+    cmd_DOCK_CALIBRATE_TEST_help = (
+        "Test the current dock position: move down and back up")
+
+    def cmd_DOCK_CALIBRATE_TEST(self, gcmd):
+        st = self._dock_require_run(gcmd)
+        if st['step'] not in ('jog', 'tested'):
+            raise gcmd.error("Nothing to test yet (step: %s)" % st['step'])
+        depth = gcmd.get_float('DEPTH', self.dock_test_depth, above=0.)
+        repeats = gcmd.get_int('REPEATS', self.dock_test_repeats, minval=1)
+        speed = gcmd.get_float('SPEED', self.dock_test_speed, above=0.)
+
+        toolhead = self.printer.lookup_object('toolhead')
+        toolhead.wait_moves()
+        z0 = toolhead.get_position()[2]
+        for i in range(repeats):
+            self.gcode.respond_info(
+                "DOCK: test %d/%d - Z %.2f -> %.2f -> %.2f"
+                % (i + 1, repeats, z0, z0 - depth, z0))
+            self._dock_move(z=z0 - depth, speed=speed)
+            self._dock_move(z=z0, speed=speed)
+        self._dock_announce(
+            'tested',
+            "test done. Adjust and test again, or DOCK_CALIBRATE_ACCEPT.")
+
+    cmd_DOCK_CALIBRATE_ACCEPT_help = (
+        "Store the current position as this tool's dock position")
+
+    def cmd_DOCK_CALIBRATE_ACCEPT(self, gcmd):
+        st = self._dock_require_run(gcmd)
+        if st['step'] not in ('jog', 'tested'):
+            raise gcmd.error("Nothing to accept yet (step: %s)" % st['step'])
+        tool_nr = self._dock_current_tool()
+
+        toolhead = self.printer.lookup_object('toolhead')
+        toolhead.wait_moves()
+        pos = toolhead.get_position()
+        self.dock_results[str(tool_nr)] = {
+            'params_park_x': round(pos[0], 3),
+            'params_park_y': round(pos[1], 3),
+            'params_park_z': round(pos[2], 3),
+            'mode': st['mode'],
+        }
+        self._save_dock_results()
+        self.gcode.respond_info(
+            "T%d dock: params_park_x=%.3f params_park_y=%.3f "
+            "params_park_z=%.3f" % (tool_nr, pos[0], pos[1], pos[2]))
+
+        # Leave the tool behind: drop away from it, then back off, so the
+        # user can swap tools by hand. Mirrors the tail of the dropoff path.
+        self._dock_move(z=pos[2] - self.dock_test_depth,
+                        speed=self.dock_test_speed)
+        self._dock_move(y=st['new_y'])
+
+        st['index'] += 1
+        if st['index'] >= len(st['tools']):
+            self._dock_finish()
+            return
+        cx, cy = self._bed_centre()
+        self._dock_move(z=st['start_z'])
+        self._dock_move(x=cx, y=cy)
+        self._dock_announce(
+            'confirm_mounted',
+            "T%d done. Mount T%d, then DOCK_CALIBRATE_MOUNTED."
+            % (tool_nr, self._dock_current_tool()))
+
+    def _dock_finish(self):
+        done = list(self.dock_state['tools'])
+        self.dock_state = None
+        self._dock_offsets_restore()
+        self.gcode.respond_info(
+            "=== Dock calibration complete for %s === Persist with APPLY "
+            "DOCK in the webapp; params_park_* live in the included "
+            "T<n>.cfg, which SAVE_CONFIG cannot write."
+            % ", ".join("T%d" % t for t in done))
+
+    cmd_DOCK_CALIBRATE_ABORT_help = "Abort a running dock calibration"
+
+    def cmd_DOCK_CALIBRATE_ABORT(self, gcmd):
+        if not self.dock_state:
+            self.gcode.respond_info("DOCK: nothing running")
+            return
+        self.dock_state = None
+        self._dock_offsets_restore()
+        self.gcode.respond_info(
+            "DOCK: aborted, gcode offsets restored. Measured positions are "
+            "kept and can still be applied.")
 
     def _read_staged_pid(self, section):
         """The values PID_CALIBRATE just staged for SAVE_CONFIG."""
