@@ -8,6 +8,7 @@ Klippers venv und einen laufenden Moonraker). Keiner davon bewegt etwas.
 scp tests/*.py biqu@<IP>:/tmp/
 ssh biqu@<IP> '~/klippy-env/bin/python /tmp/check_gcode_vocabulary.py'
 ssh biqu@<IP> '~/klippy-env/bin/python /tmp/check_klipper_api.py'
+ssh biqu@<IP> '~/klippy-env/bin/python /tmp/check_qgl_probe_choice.py'
 ```
 
 Exit-Code 0 = sauber, 1 = Befunde.
@@ -112,3 +113,39 @@ console.log('sichtbar:', el.classList.contains('show'));   // muss true sein
 ```
 
 `sichtbar: false` heißt: der Fehlerdialog wird wieder verschluckt.
+
+## `check_qgl_probe_choice.py`
+
+Prüft, welche Probe `QUAD_GANTRY_LEVEL` wählt — ohne den Drucker zu bewegen.
+
+Der Anlass: T0 mit Eddy war montiert, QGL nahm trotzdem den mechanischen Tap
+und heizte dafür die Düse auf. Die Auswahl-Logik war nicht falsch, der
+*Zeitpunkt* war es. Klipper rendert ein `gcode_macro` komplett, bevor die
+erste Zeile läuft — `INITIALIZE_TOOLCHANGER` und `DETECT_ACTIVE_TOOL_PROBE`
+standen im selben Makro und kamen damit zu spät. Im Log an der Reihenfolge
+ablesbar:
+
+```
+02:48:00  // QGL mit T0: coarse=eddy, fine=eddy
+02:48:02  // toolchanger initialized, active tool T0
+```
+
+Nach einem QGL-Abbruch steht `tool_number` auf `-1`, `_T-1_QGL` gibt es nicht,
+also griff der Default `"tap"` — still.
+
+Der Test rendert `_QGL_FOR_ACTIVE_TOOL` gegen den Live-Status, einmal je
+Szenario, und liest aus `M117 QGL coarse (..)` ab, welche Probe gewählt würde:
+
+| Szenario | erwartet |
+|---|---|
+| Eddy-Tool montiert, Toolchanger einig | `eddy` |
+| **Eddy-Tool montiert, Toolchanger auf `-1`** | `eddy` — der Fall aus dem Fehlerbericht |
+| Tap-Tool montiert | `tap` |
+| kein Tool erkennbar | Abbruch mit Fehler, **nicht** stiller Rückfall auf `tap` |
+
+Gegen die alte Fassung gerechnet fällt der Test in Zeile 2 und 4 durch — er
+prüft also wirklich den Fehler und nicht nur sich selbst.
+
+**Deckt nicht ab:** ob die gewählte Probe brauchbare Werte liefert. Ein Eddy
+kann korrekt ausgewählt sein und trotzdem Unsinn messen, wenn er zu weit vom
+Bett weg ist.
