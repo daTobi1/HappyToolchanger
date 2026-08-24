@@ -289,6 +289,11 @@ function sendGcodeWithRecovery(script, title, onSend) {
       extraLabel: rec.label, extraClass: 'btn-warning'
     } : null).then(function (choice) {
       if (choice !== 'extra') return { handled: true };
+      // Sofort sichtbar quittieren: G28 braucht ein paar Sekunden, bis sich
+      // etwas ruehrt, und ohne Rueckmeldung sieht das aus wie ein toter Button.
+      if (typeof showToast === 'function') {
+        showToast(rec.steps.join(" -> ") + " laeuft...", "info");
+      }
       return send(rec.steps.concat([script]).join("\n"), 2).then(function (r2) {
         if (r2.ok) return r2;
         var f2 = fail(r2.err);
