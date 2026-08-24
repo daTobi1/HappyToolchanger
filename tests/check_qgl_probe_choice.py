@@ -8,9 +8,14 @@ Tool-Erkennung stand im selben Makro und kam damit zu spaet. Nach einem
 QGL-Abbruch stand tool_number auf -1, _T-1_QGL gibt es nicht, also griff der
 Default "tap" - still und mit Aufheizen der Duese.
 
+Zweiter Fall: der Eddy liest nur bis rund 2.5mm zuverlaessig. Ist das Gantry
+noch nie geleveled worden, steht es womoeglich mehrere Millimeter schief, der
+Sensor liest an der tiefen Ecke Unsinn (gemessen: -381mm) und QGL bricht ab.
+Der grobe Durchgang faellt dann auf den Tap zurueck, der feine bleibt Eddy.
+
 Der Test rendert _QGL_FOR_ACTIVE_TOOL gegen den Live-Status des Druckers,
-einmal je Szenario, und liest aus der gerenderten Zeile "M117 QGL coarse (..)"
-ab, welche Probe gewaehlt worden waere.
+einmal je Szenario, und liest aus den gerenderten Zeilen "M117 QGL coarse (..)"
+und "M117 QGL fine (..)" ab, welche Proben gewaehlt worden waeren.
 
 Auf dem Drucker laufen lassen (dort gibt es jinja2 und Moonraker):
 
@@ -57,7 +62,7 @@ class Raised(Exception):
     pass
 
 
-def render(body, printer):
+def render(body, printer, params=None):
     import jinja2
 
     def raise_error(msg=""):
@@ -68,7 +73,7 @@ def render(body, printer):
                              extensions=["jinja2.ext.do"])
     ctx = {
         "printer": printer,
-        "params": {},
+        "params": params or {},
         "rawparams": "",
         "action_respond_info": noop,
         "action_raise_error": raise_error,
@@ -79,22 +84,26 @@ def render(body, printer):
     return env.from_string(body).render(ctx)
 
 
-def choice_for(body, status, probe_tool, changer_tool):
-    """Rendert das Makro mit gesetzten Toolnummern und gibt die Coarse-Probe
-    zurueck - oder ('error', <meldung>), wenn das Makro abbricht."""
+def choice_for(body, status, probe_tool, changer_tool,
+               applied=True, params=None):
+    """Rendert das Makro mit gesetztem Tool- und Leveling-Zustand und gibt
+    "<coarse>/<fine>" zurueck - oder ("error", <meldung>) beim Abbruch."""
     st = wrap(json.loads(json.dumps(status)))
     st.setdefault("tool_probe_endstop", Status())
     st.setdefault("toolchanger", Status())
+    st.setdefault("quad_gantry_level", Status())
     st["tool_probe_endstop"]["active_tool_number"] = probe_tool
     st["toolchanger"]["tool_number"] = changer_tool
+    st["quad_gantry_level"]["applied"] = applied
     try:
-        out = render(body, st)
+        out = render(body, st, params)
     except Raised as e:
         return ("error", str(e))
-    m = re.search(r"QGL coarse \(([a-z]+)\)", out)
-    if not m:
+    c = re.search(r"QGL coarse \(([a-z]+)\)", out)
+    f = re.search(r"QGL fine \(([a-z]+)\)", out)
+    if not c or not f:
         return ("kein M117-Treffer", out[:200])
-    return (m.group(1), None)
+    return ("%s/%s" % (c.group(1), f.group(1)), None)
 
 
 def main():
@@ -124,26 +133,36 @@ def main():
             tap_tool = n
     print("  Tools laut _Tn_QGL:  eddy=T%s  tap=T%s" % (eddy_tool, tap_tool))
 
+    E, T = eddy_tool, tap_tool
     cases = []
-    if eddy_tool is not None:
-        cases.append(("Eddy-Tool montiert, Toolchanger einig",
-                      eddy_tool, eddy_tool, "eddy"))
-        # Genau der Fall aus dem Fehlerbericht: nach einem QGL-Abbruch steht
-        # der Toolchanger auf -1, die Probe-Erkennung kennt das Tool aber.
-        cases.append(("Eddy-Tool montiert, Toolchanger auf -1",
-                      eddy_tool, -1, "eddy"))
-    if tap_tool is not None:
-        cases.append(("Tap-Tool montiert", tap_tool, tap_tool, "tap"))
+    if E is not None:
+        cases.append(("Eddy-Tool, Gantry geleveled",
+                      E, E, True, None, "eddy/eddy"))
+        # Der Fall aus dem Fehlerbericht: nach einem QGL-Abbruch steht der
+        # Toolchanger auf -1, die Probe-Erkennung kennt das Tool aber.
+        cases.append(("Eddy-Tool, Toolchanger auf -1",
+                      E, -1, True, None, "eddy/eddy"))
+        # Ungelevelt kann das Gantry mehrere mm schief stehen - dort ist der
+        # Eddy ausser Reichweite, also grob mit Tap, fein mit Eddy.
+        cases.append(("Eddy-Tool, Gantry NICHT geleveled",
+                      E, E, False, None, "tap/eddy"))
+        cases.append(("dito, aber COARSE_PROBE=eddy erzwungen",
+                      E, E, False, {"COARSE_PROBE": "eddy"}, "eddy/eddy"))
+    if T is not None:
+        cases.append(("Tap-Tool montiert", T, T, True, None, "tap/tap"))
+        cases.append(("Tap-Tool, Gantry NICHT geleveled",
+                      T, T, False, None, "tap/tap"))
     # Kein Tool ermittelbar: lieber abbrechen als still tappen.
-    cases.append(("kein Tool erkennbar", -1, -1, "error"))
+    cases.append(("kein Tool erkennbar", -1, -1, True, None, "error"))
 
     bad = 0
-    for name, probe_tool, changer_tool, want in cases:
-        got, extra = choice_for(body, status, probe_tool, changer_tool)
+    for name, probe_tool, changer_tool, applied, params, want in cases:
+        got, extra = choice_for(body, status, probe_tool, changer_tool,
+                                applied, params)
         ok = (got == want)
         if not ok:
             bad += 1
-        print("  %s %-40s erwartet %-6s -> %s%s"
+        print("  %s %-38s erwartet %-10s -> %s%s"
               % ("ok " if ok else "FAIL", name, want, got,
                  "" if ok or not extra else "  (%s)" % extra[:70]))
 

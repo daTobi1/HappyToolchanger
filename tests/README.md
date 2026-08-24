@@ -136,16 +136,20 @@ also griff der Default `"tap"` — still.
 Der Test rendert `_QGL_FOR_ACTIVE_TOOL` gegen den Live-Status, einmal je
 Szenario, und liest aus `M117 QGL coarse (..)` ab, welche Probe gewählt würde:
 
-| Szenario | erwartet |
+| Szenario | erwartet (coarse/fine) |
 |---|---|
-| Eddy-Tool montiert, Toolchanger einig | `eddy` |
-| **Eddy-Tool montiert, Toolchanger auf `-1`** | `eddy` — der Fall aus dem Fehlerbericht |
-| Tap-Tool montiert | `tap` |
+| Eddy-Tool, Gantry geleveled | `eddy/eddy` |
+| **Eddy-Tool, Toolchanger auf `-1`** | `eddy/eddy` — der Fall aus dem Fehlerbericht |
+| **Eddy-Tool, Gantry NICHT geleveled** | `tap/eddy` — Eddy wäre außer Reichweite |
+| dito, aber `COARSE_PROBE=eddy` | `eddy/eddy` — explizite Angabe hat Vorrang |
+| Tap-Tool montiert | `tap/tap` |
+| Tap-Tool, Gantry nicht geleveled | `tap/tap` |
 | kein Tool erkennbar | Abbruch mit Fehler, **nicht** stiller Rückfall auf `tap` |
 
-Gegen die alte Fassung gerechnet fällt der Test in Zeile 2 und 4 durch — er
-prüft also wirklich den Fehler und nicht nur sich selbst.
+Gegen die alte Fassung gerechnet fällt der Test durch — er prüft also wirklich
+den Fehler und nicht nur sich selbst.
 
-**Deckt nicht ab:** ob die gewählte Probe brauchbare Werte liefert. Ein Eddy
-kann korrekt ausgewählt sein und trotzdem Unsinn messen, wenn er zu weit vom
-Bett weg ist.
+**Deckt nicht ab:** ob die gewählte Probe brauchbare Werte liefert. Die
+Reichweiten-Regel hängt an `quad_gantry_level.applied`; ein Gantry, das trotz
+`applied` verstellt wurde (Kollision, von Hand gedreht), fällt nicht auf.
+Dann hilft `QUAD_GANTRY_LEVEL COARSE_PROBE=tap`.
