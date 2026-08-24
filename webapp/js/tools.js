@@ -82,6 +82,33 @@ OffsetDebug.init();
 // --------------------------
 // Shows #confirmModal and resolves true on OK, false on Cancel / dismiss.
 // opts: { title, body (HTML), okLabel, okClass }
+// Bootstrap verwirft show(), solange das Modal noch aus der vorigen Nutzung
+// ausblendet - und meldet das nicht. Genau daran scheiterte der Fehlerdialog:
+// der Bestaetigungsdialog war noch am Zufahren, der HTTP-400 kam sofort
+// danach zurueck, und das Popup verschwand lautlos.
+//
+// Waehrend des Ausblendens ist die Klasse "show" bereits weg (daran haengt
+// die Animation), display steht aber noch auf block. Deshalb beides pruefen.
+function modalIdle(el) {
+  return new Promise(function (resolve) {
+    var busy = el.classList.contains("show") ||
+               window.getComputedStyle(el).display !== "none";
+    if (!busy) { resolve(); return; }
+
+    var done = false;
+    function go() {
+      if (done) return;
+      done = true;
+      // Einen Tick warten, damit Bootstrap seinen Zustand fertig aufraeumt
+      setTimeout(resolve, 20);
+    }
+    $(el).one("hidden.bs.modal", go);
+    // Notausstieg, falls das Event ausbleibt - lieber ein hakeliger Dialog
+    // als gar keiner.
+    setTimeout(go, 800);
+  });
+}
+
 function confirmDialog(opts) {
   opts = opts || {};
   var title = opts.title || "Confirm";
@@ -96,6 +123,10 @@ function confirmDialog(opts) {
       return;
     }
 
+    modalIdle(el).then(function () { open(el, resolve); });
+  });
+
+  function open(el, resolve) {
     $("#confirmModalLabel").text(title);
     $("#confirmModalBody").html(opts.body || "");
 
@@ -141,7 +172,12 @@ function confirmDialog(opts) {
          .on("hidden.bs.modal.confirmDialog", function() { settle(false); });
 
     modal.show();
-  });
+    // Doppelt genaeht: verwirft Bootstrap den Aufruf trotzdem, nachfassen -
+    // ein unsichtbarer Fehlerdialog ist schlimmer als ein spaeter.
+    setTimeout(function () {
+      if (!settled && !el.classList.contains("show")) modal.show();
+    }, 400);
+  }
 }
 
 // Vorbelegung der Temperaturfelder: die Untergrenze, auf die
