@@ -1,7 +1,8 @@
 # Tests
 
-Beide Tests laufen **auf dem Drucker** (sie brauchen `jinja2` aus Klippers venv
-und einen laufenden Moonraker) und **bewegen nichts**.
+`check_webapp_recovery.js` laeuft **lokal** (`node tests/check_webapp_recovery.js`),
+die beiden Python-Tests laufen **auf dem Drucker** (sie brauchen `jinja2` aus
+Klippers venv und einen laufenden Moonraker). Keiner davon bewegt etwas.
 
 ```bash
 scp tests/*.py biqu@<IP>:/tmp/
@@ -60,3 +61,30 @@ bricht statt den Drucker. Abgedeckt sind u.a.:
 
 **Deckt nicht ab:** Verhalten. Dass die Interna existieren heißt nicht, dass
 sie dasselbe *tun*. Ein echter Homing-Lauf bleibt der einzige Beweis.
+
+## `check_webapp_recovery.js`
+
+Prüft die Fehlerbehandlung der Offset-Webapp — ohne Browser, ohne Drucker.
+Die Funktionen werden aus `webapp/js/tools.js` herausgeschnitten und gegen
+gestubbte `$.get`/`confirmDialog` laufen gelassen.
+
+```bash
+node tests/check_webapp_recovery.js
+```
+
+Der Anlass: ein Abbruch wegen fehlendem Homing/QGL erschien nur als Toast und
+sah aus wie „nichts passiert". Jetzt kommt ein Popup mit OK **und** einem
+Button, der die Vorbereitung nachholt und den Lauf fortsetzt. Was der Test
+festnagelt:
+
+| Zusicherung | warum sie zählt |
+|---|---|
+| `Must home first` → `G28` → `QUAD_GANTRY_LEVEL` → `G28 Z` | QGL kippt das Gantry, ohne das abschließende `G28 Z` startet der Lauf mit falschem Z |
+| nur QGL fehlt → **kein** unnötiges `G28` vorweg | ein Re-Home kostet Minuten, wenn der Drucker längst gehomed ist |
+| Vorbereitung + Lauf gehen als **ein** Request raus | zwischen zwei Requests könnte etwas anderes dazwischenlaufen |
+| zweiter Fehlschlag zeigt nur noch die Meldung | sonst bietet der Dialog endlos „nochmal" an |
+| Transportfehler öffnet **keinen** Dialog | da läuft der Job weiter, das ist kein Fehler |
+| unbekannter Fehler → Dialog **ohne** Recovery-Button | nur beheben, was sich wirklich beheben lässt |
+
+**Deckt nicht ab:** das DOM. Dass `confirmDialog` die drei Buttons korrekt
+rendert, zeigt erst der Browser.

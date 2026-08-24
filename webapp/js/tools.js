@@ -106,6 +106,17 @@ function confirmDialog(opts) {
     // Reine Meldung: kein Abbrechen anbieten, es gibt nichts abzubrechen
     $("#confirmModalCancel").toggle(!opts.hideCancel);
 
+    // Optionaler dritter Button, loest mit "extra" statt true/false auf
+    var $extra = $("#confirmModalExtra");
+    if (opts.extraLabel) {
+      $extra.html(opts.extraLabel)
+            .removeClass("btn-primary btn-success btn-warning btn-danger")
+            .addClass(opts.extraClass || "btn-warning")
+            .show();
+    } else {
+      $extra.hide();
+    }
+
     var modal = bootstrap.Modal.getOrCreateInstance(el);
     var settled = false;
 
@@ -113,12 +124,17 @@ function confirmDialog(opts) {
       if (settled) return;
       settled = true;
       $ok.off("click.confirmDialog");
+      $extra.off("click.confirmDialog");
       $(el).off("hidden.bs.modal.confirmDialog");
       resolve(result);
     }
 
     $ok.off("click.confirmDialog").on("click.confirmDialog", function() {
       settle(true);
+      modal.hide();
+    });
+    $extra.off("click.confirmDialog").on("click.confirmDialog", function() {
+      settle("extra");
       modal.hide();
     });
     $(el).off("hidden.bs.modal.confirmDialog")
@@ -178,6 +194,77 @@ function gcodeErrorMessage(err) {
   return null;
 }
 
+// Fehler, die sich direkt beheben lassen: der Drucker ist nicht kaputt,
+// er ist nur nicht vorbereitet. Statt "geht nicht" bietet der Dialog an,
+// das Fehlende nachzuholen und den Lauf danach fortzusetzen.
+function recoveryFor(detail) {
+  var d = String(detail || '').toLowerCase();
+  if (d.indexOf('must home') !== -1 || d.indexOf('not homed') !== -1) {
+    // Nicht gehomed heisst auch: kein gueltiges Leveling. Beides nachholen.
+    return { steps: ['G28', 'QUAD_GANTRY_LEVEL', 'G28 Z'],
+             label: '<i class="bi bi-house-gear"></i> Home + QGL, dann weiter' };
+  }
+  if (d.indexOf('has not been applied') !== -1) {
+    // Gehomed ist er bereits, es fehlt nur das Leveling. QGL kippt das
+    // Gantry, deshalb danach Z neu referenzieren.
+    var lvl = (d.indexOf('z tilt') !== -1) ? 'Z_TILT_ADJUST' : 'QUAD_GANTRY_LEVEL';
+    return { steps: [lvl, 'G28 Z'],
+             label: '<i class="bi bi-rulers"></i> ' + lvl + ', dann weiter' };
+  }
+  return null;
+}
+
+// Schickt ein Skript und bietet bei behebbaren Fehlern die Nachbereitung an.
+// Vorbereitung und Lauf gehen als EIN Request raus: Moonraker arbeitet die
+// Zeilen der Reihe nach ab, so kann dazwischen nichts anderes reinlaufen.
+// Ergebnis: {ok:true} | {transport:true} (Lauf laeuft weiter) | {handled:true}
+function sendGcodeWithRecovery(script, title, onSend) {
+  function send(full, attempt) {
+    if (onSend) onSend(attempt);
+    return Promise.resolve(
+      $.get(printerUrl(printerIp,
+        "/printer/gcode/script?script=" + encodeURIComponent(full)))
+    ).then(function () { return { ok: true }; },
+           function (err) { return { err: err }; });
+  }
+
+  function fail(err) {
+    var detail = gcodeErrorMessage(err);
+    // Kein Payload = Verbindung weg, der Drucker rechnet weiter. Kein Fehler.
+    if (!detail) return { transport: true };
+    return { detail: detail };
+  }
+
+  return send(script, 1).then(function (r) {
+    if (r.ok) return r;
+    var f = fail(r.err);
+    if (!f.detail) return f;
+
+    var rec = recoveryFor(f.detail);
+    var body = '<p class="mb-0">' + escapeHtml(f.detail) + '</p>';
+    if (rec) {
+      body += '<p class="mt-2 mb-0 text-secondary">Der Button fuehrt <code>' +
+              rec.steps.map(escapeHtml).join('</code> &rarr; <code>') +
+              '</code> aus und startet den Lauf danach automatisch neu. ' +
+              'Der Drucker bewegt sich dabei.</p>';
+    }
+
+    return alertDialog(title, body, rec ? {
+      extraLabel: rec.label, extraClass: 'btn-warning'
+    } : null).then(function (choice) {
+      if (choice !== 'extra') return { handled: true };
+      return send(rec.steps.concat([script]).join("\n"), 2).then(function (r2) {
+        if (r2.ok) return r2;
+        var f2 = fail(r2.err);
+        if (!f2.detail) return f2;
+        // Zweiter Versuch gescheitert: nur melden, nicht endlos anbieten.
+        return alertDialog(title, '<p class="mb-0">' + escapeHtml(f2.detail) + '</p>')
+          .then(function () { return { handled: true }; });
+      });
+    });
+  });
+}
+
 // Echte Klipper-Fehler bekommen ein Popup, keinen Toast: der Toast unten
 // rechts ist leicht zu uebersehen, waehrend man auf den Drucker schaut -
 // und diese Fehler bedeuten, dass der Lauf gar nicht erst gestartet ist.
@@ -185,22 +272,25 @@ function gcodeErrorMessage(err) {
 // sonst ueberschreibt die zweite Meldung die erste, bevor man sie liest.
 var _alertQueue = Promise.resolve();
 
-function alertDialog(title, message) {
+function alertDialog(title, message, opts) {
   _alertQueue = _alertQueue.then(function () {
-    return _showAlert(title, message);
+    return _showAlert(title, message, opts);
   }, function () {
-    return _showAlert(title, message);
+    return _showAlert(title, message, opts);
   });
   return _alertQueue;
 }
 
-function _showAlert(title, message) {
+function _showAlert(title, message, opts) {
+  opts = opts || {};
   return confirmDialog({
     title: title,
     body: '<div class="small">' + message + '</div>',
     okLabel: "OK",
     okClass: "btn-danger",
-    hideCancel: true
+    hideCancel: true,
+    extraLabel: opts.extraLabel,
+    extraClass: opts.extraClass
   });
 }
 
@@ -1215,25 +1305,22 @@ $(document).on("click", "#calibrate-all-btn", function() {
     $btn.prop("disabled", true).text("Calibrating...");
     if (typeof showToast === 'function') showToast("Calibration started...", "info");
 
-    $.get(printerUrl(printerIp, `/printer/gcode/script?script=${encodeURIComponent(script)}`))
-      .done(() => {
-        console.log("Calibration started:", script);
-        if (typeof showToast === 'function') showToast("Calibration command sent", "success");
-      })
-      .fail(err => {
-        console.error("Calibration failed:", err);
-        var detail = gcodeErrorMessage(err);
-        if (detail) {
-          // Echter Klipper-Fehler - der Lauf ist gar nicht erst gestartet.
-          // Popup statt Toast, damit es am Drucker nicht uebersehen wird.
-          alertDialog("Calibration failed", escapeHtml(detail));
-        } else if (typeof showToast === 'function') {
+    sendGcodeWithRecovery(script, "Calibration failed", function (attempt) {
+      $btn.text(attempt === 1 ? "Calibrating..." : "Home/QGL...");
+    })
+      .then(function (r) {
+        if (r.ok) console.log("Calibration started:", script);
+        if (typeof showToast !== 'function') return r;
+        if (r.ok) {
+          showToast("Calibration command sent", "success");
+        } else if (r.transport) {
           // Verbindung weg, der Drucker rechnet weiter - kein Fehler
           showToast("Verbindung zum Lauf verloren - er laeuft weiter. "
                     + "Fortschritt in der Konsole.", "warning");
         }
+        return r;
       })
-      .always(() => {
+      .then(function () {
         $btn.prop("disabled", false).text("CALIBRATE Z-OFFSETS");
       });
   });
@@ -1646,25 +1733,22 @@ $(document).on("click", "#probe-cal-btn", function() {
     $btn.prop("disabled", true).text("Calibrating...");
     if (typeof showToast === 'function') showToast("Probe calibration started...", "info");
 
-    $.get(printerUrl(printerIp, "/printer/gcode/script?script=" + encodeURIComponent(script)))
-      .done(function() {
-        console.log("Probe calibration started:", script);
-        if (typeof showToast === 'function') showToast("Probe calibration command sent", "success");
-      })
-      .fail(function(err) {
-        console.error("Probe calibration failed:", err);
-        var detail = gcodeErrorMessage(err);
-        if (detail) {
-          // Echter Klipper-Fehler - der Lauf ist gar nicht erst gestartet.
-          // Popup statt Toast, damit es am Drucker nicht uebersehen wird.
-          alertDialog("Probe calibration failed", escapeHtml(detail));
-        } else if (typeof showToast === 'function') {
+    sendGcodeWithRecovery(script, "Probe calibration failed", function (attempt) {
+      $btn.text(attempt === 1 ? "Calibrating..." : "Home/QGL...");
+    })
+      .then(function (r) {
+        if (r.ok) console.log("Probe calibration started:", script);
+        if (typeof showToast !== 'function') return r;
+        if (r.ok) {
+          showToast("Probe calibration command sent", "success");
+        } else if (r.transport) {
           // Verbindung weg, der Drucker rechnet weiter - kein Fehler
           showToast("Verbindung zum Lauf verloren - er laeuft weiter. "
                     + "Fortschritt in der Konsole.", "warning");
         }
+        return r;
       })
-      .always(function() {
+      .then(function () {
         $btn.prop("disabled", false).text("CALIBRATE PROBE OFFSETS");
       });
   });
@@ -1976,24 +2060,21 @@ $(document).on("click", "#pid-cal-btn", function () {
     $btn.prop("disabled", true).text("Tuning...");
     if (typeof showToast === 'function') showToast("PID tuning started...", "info");
 
-    $.get(printerUrl(printerIp, "/printer/gcode/script?script=" + encodeURIComponent(script)))
-      .done(function () {
-        if (typeof showToast === 'function') showToast("PID tuning done", "success");
-      })
-      .fail(function (err) {
-        console.error("PID tuning failed:", err);
-        var detail = gcodeErrorMessage(err);
-        if (detail) {
-          // Echter Klipper-Fehler - der Lauf ist gar nicht erst gestartet.
-          // Popup statt Toast, damit es am Drucker nicht uebersehen wird.
-          alertDialog("PID tuning failed", escapeHtml(detail));
-        } else if (typeof showToast === 'function') {
+    sendGcodeWithRecovery(script, "PID tuning failed", function (attempt) {
+      $btn.text(attempt === 1 ? "Tuning..." : "Home/QGL...");
+    })
+      .then(function (r) {
+        if (typeof showToast !== 'function') return r;
+        if (r.ok) {
+          showToast("PID tuning done", "success");
+        } else if (r.transport) {
           // Verbindung weg, der Drucker rechnet weiter - kein Fehler
           showToast("Verbindung zum Lauf verloren - er laeuft weiter. "
                     + "Fortschritt in der Konsole.", "warning");
         }
+        return r;
       })
-      .always(function () {
+      .then(function () {
         $btn.prop("disabled", false).text("CALIBRATE PID");
         fetchOffsetStatus().then(function () {
           var $c = $('#pid-results-container');
