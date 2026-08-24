@@ -144,6 +144,24 @@ def main():
         ok("self.last_position" in src,
            "gcode_move.last_position fehlt -- reset_last_position pruefen")
 
+    # --- reactor: der Spoolman-Update laeuft in einem eigenen Thread und
+    #     muss seine Meldungen ueber register_async_callback zurueckgeben.
+    #     gcode.respond_info gehoert dem Reactor-Thread; direkt aus dem
+    #     Worker aufgerufen schreibt es in Klippers Ausgabe, waehrend der
+    #     Reactor sie ebenfalls benutzt. ---
+    import reactor as reactor_mod
+    for cls_name in ("SelectReactor", "PollReactor", "EPollReactor"):
+        cls = getattr(reactor_mod, cls_name, None)
+        if cls is None:
+            continue
+        has_attrs(cls, ["register_async_callback"], "reactor." + cls_name)
+        src = source_of(getattr(cls, "register_async_callback", None)) or ""
+        ok("_async_queue" in src or "async" in src.lower(),
+           "reactor.register_async_callback sieht nicht mehr nach einer "
+           "threadsicheren Queue aus",
+           "happy_toolchanger/core.py loggt darueber aus dem Spoolman-Thread")
+        break
+
     # --- configfile: CALIBRATE_TOOL_PID haengt aus, was PID_CALIBRATE fuer
     #     SAVE_CONFIG vormerkt (pid_Kp liegt in der eingebundenen T<n>.cfg) ---
     import configfile as cfg_mod

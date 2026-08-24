@@ -511,6 +511,20 @@ class HappyToolchanger:
             return
         url = "%s/api/v1/spool/%d" % (self._spoolman_url, spool_id)
         data = json.dumps({"location": location}).encode('utf-8')
+        reactor = self.printer.get_reactor()
+
+        def report(msg, level=1):
+            """Log from the worker thread.
+
+            self.log() ends in gcode.respond_info(), and that belongs to the
+            reactor thread - it appends to Klipper's output while the reactor
+            may be writing there too. register_async_callback is the only
+            thread-safe way back in, so the message is handed over instead of
+            written directly. Matters most when Spoolman is unreachable: that
+            path logs on every failed update.
+            """
+            reactor.register_async_callback(
+                lambda eventtime: self.log(msg, level=level))
 
         def do_request():
             try:
@@ -519,17 +533,17 @@ class HappyToolchanger:
                 resp = urlopen(req, timeout=5)
                 resp.read()
                 resp.close()
-                self.log("Spoolman: spool %d location -> '%s'" %
-                         (spool_id, location), level=2)
+                report("Spoolman: spool %d location -> '%s'" %
+                       (spool_id, location), level=2)
             except HTTPError as e:
                 if e.code == 404:
-                    self.log("Spoolman: spool %d not found (404)" % spool_id)
+                    report("Spoolman: spool %d not found (404)" % spool_id)
                 else:
-                    self.log("Spoolman: HTTP %d updating spool %d" %
-                             (e.code, spool_id))
+                    report("Spoolman: HTTP %d updating spool %d" %
+                           (e.code, spool_id))
             except Exception as e:
-                self.log("Spoolman: failed to update spool %d: %s" %
-                         (spool_id, str(e)))
+                report("Spoolman: failed to update spool %d: %s" %
+                       (spool_id, str(e)))
 
         # Run in background thread to avoid blocking the reactor
         thread = threading.Thread(target=do_request, daemon=True)
