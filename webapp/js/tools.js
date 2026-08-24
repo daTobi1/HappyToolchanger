@@ -235,9 +235,13 @@ function updateToolConfigOffsets(toolOffsets) {
   // Only keys present in each tool's object are updated.
   var tools = Object.keys(toolOffsets);
   var baseUrl = printerUrl(printerIp, "");
+  var missing = [];
 
   function processNext(idx) {
-    if (idx >= tools.length) return Promise.resolve();
+    if (idx >= tools.length) {
+      reportMissingKeys(missing);
+      return Promise.resolve();
+    }
     var t = tools[idx];
     var offsets = toolOffsets[t];
     var filePath = "toolchanger/tools/T" + t + ".cfg";
@@ -258,7 +262,12 @@ function updateToolConfigOffsets(toolOffsets) {
           if (rxZ.test(content)) { content = content.replace(rxZ, "$1" + offsets.z); modified = true; }
         }
         if (!modified) {
-          OffsetDebug.log("No offset lines found in " + filePath);
+          ['x', 'y', 'z'].forEach(function (a) {
+            if (a in offsets) {
+              missing.push({file: filePath, section: 'tool T' + t,
+                            key: 'gcode_' + a + '_offset'});
+            }
+          });
           return processNext(idx + 1);
         }
         var formData = new FormData();
@@ -299,6 +308,23 @@ function replaceInConfigSection(content, sectionName, key, value) {
     }
   }
   return null;
+}
+
+// A key the writers could not find. Case is already ignored when matching,
+// so a miss means the option is genuinely absent from that section - or
+// spelled differently than expected. Reported instead of skipped silently:
+// a write that quietly does nothing looks exactly like a successful one.
+function reportMissingKeys(missing) {
+  if (!missing.length) return;
+  var lines = missing.map(function (m) {
+    return m.file + ' → [' + m.section + '] ' + m.key;
+  });
+  OffsetDebug.error("Config keys not found", missing);
+  if (typeof showToast === 'function') {
+    showToast("Nicht geschrieben, Eintrag fehlt in der Config: " +
+              lines.join(" | ") +
+              " — Schreibweise pruefen und ggf. anlegen.", "danger");
+  }
 }
 
 // Reads a key out of a config file. sectionName null = first match anywhere
@@ -358,9 +384,13 @@ function fetchToolConfigValues(requests) {
 function updateToolProbeOffsets(toolZOffsets) {
   var tools = Object.keys(toolZOffsets);
   var baseUrl = printerUrl(printerIp, "");
+  var missing = [];
 
   function processNext(idx) {
-    if (idx >= tools.length) return Promise.resolve();
+    if (idx >= tools.length) {
+      reportMissingKeys(missing);
+      return Promise.resolve();
+    }
     var t = tools[idx];
     var filePath = "toolchanger/tools/T" + t + ".cfg";
     return fetch(baseUrl + "/server/files/config/" + filePath)
@@ -369,7 +399,8 @@ function updateToolProbeOffsets(toolZOffsets) {
         var updated = replaceInConfigSection(
           content, "tool_probe T" + t, "z_offset", toolZOffsets[t]);
         if (updated === null) {
-          OffsetDebug.log("No [tool_probe T" + t + "] z_offset line in " + filePath);
+          missing.push({file: filePath, section: 'tool_probe T' + t,
+                        key: 'z_offset'});
           return processNext(idx + 1);
         }
         var formData = new FormData();
@@ -1454,9 +1485,13 @@ function pidCalibrationSection(toolNumbers, enabled) {
 function updateToolPidValues(toolValues) {
   var tools = Object.keys(toolValues);
   var baseUrl = printerUrl(printerIp, "");
+  var missing = [];
 
   function processNext(idx) {
-    if (idx >= tools.length) return Promise.resolve();
+    if (idx >= tools.length) {
+      reportMissingKeys(missing);
+      return Promise.resolve();
+    }
     var t = tools[idx];
     var v = toolValues[t];
     var filePath = "toolchanger/tools/T" + t + ".cfg";
@@ -1469,10 +1504,14 @@ function updateToolPidValues(toolValues) {
           .forEach(function (pair) {
             var next = replaceInConfigSection(updated, v.extruder, pair[0],
                                               pair[1].toFixed(3));
-            if (next === null) ok = false; else updated = next;
+            if (next === null) {
+              ok = false;
+              missing.push({file: filePath, section: v.extruder, key: pair[0]});
+            } else {
+              updated = next;
+            }
           });
         if (!ok) {
-          OffsetDebug.log("PID lines not found in " + filePath);
           return processNext(idx + 1);
         }
         var formData = new FormData();
