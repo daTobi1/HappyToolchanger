@@ -103,6 +103,8 @@ function confirmDialog(opts) {
     $ok.text(okLabel)
        .removeClass("btn-primary btn-success btn-warning btn-danger")
        .addClass(okClass);
+    // Reine Meldung: kein Abbrechen anbieten, es gibt nichts abzubrechen
+    $("#confirmModalCancel").toggle(!opts.hideCancel);
 
     var modal = bootstrap.Modal.getOrCreateInstance(el);
     var settled = false;
@@ -174,6 +176,32 @@ function gcodeErrorMessage(err) {
     if ((err.responseJSON || err).message) return String((err.responseJSON || err).message);
   } catch (_) {}
   return null;
+}
+
+// Echte Klipper-Fehler bekommen ein Popup, keinen Toast: der Toast unten
+// rechts ist leicht zu uebersehen, waehrend man auf den Drucker schaut -
+// und diese Fehler bedeuten, dass der Lauf gar nicht erst gestartet ist.
+// Alle Meldungen teilen sich das eine Modal, also nacheinander zeigen -
+// sonst ueberschreibt die zweite Meldung die erste, bevor man sie liest.
+var _alertQueue = Promise.resolve();
+
+function alertDialog(title, message) {
+  _alertQueue = _alertQueue.then(function () {
+    return _showAlert(title, message);
+  }, function () {
+    return _showAlert(title, message);
+  });
+  return _alertQueue;
+}
+
+function _showAlert(title, message) {
+  return confirmDialog({
+    title: title,
+    body: '<div class="small">' + message + '</div>',
+    okLabel: "OK",
+    okClass: "btn-danger",
+    hideCancel: true
+  });
 }
 
 function escapeHtml(s) {
@@ -320,11 +348,15 @@ function reportMissingKeys(missing) {
     return m.file + ' → [' + m.section + '] ' + m.key;
   });
   OffsetDebug.error("Config keys not found", missing);
-  if (typeof showToast === 'function') {
-    showToast("Nicht geschrieben, Eintrag fehlt in der Config: " +
-              lines.join(" | ") +
-              " — Schreibweise pruefen und ggf. anlegen.", "danger");
-  }
+  alertDialog("Nicht geschrieben - Eintrag fehlt in der Config",
+    "<p class=\"mb-2\">Diese Optionen wurden in der Config nicht gefunden, " +
+    "die Werte sind <b>nicht</b> gespeichert:</p>" +
+    "<ul class=\"mb-2\"><li><code>" +
+    lines.map(escapeHtml).join("</code></li><li><code>") +
+    "</code></li></ul>" +
+    "<p class=\"mb-0 text-secondary\">Gross-/Kleinschreibung wird beim Suchen " +
+    "bereits ignoriert - der Eintrag fehlt also wirklich oder heisst anders. " +
+    "Bitte in der Config pruefen und ggf. anlegen.</p>");
 }
 
 // Reads a key out of a config file. sectionName null = first match anywhere
@@ -1191,14 +1223,14 @@ $(document).on("click", "#calibrate-all-btn", function() {
       .fail(err => {
         console.error("Calibration failed:", err);
         var detail = gcodeErrorMessage(err);
-        if (typeof showToast === 'function') {
-          if (detail) {
-            showToast("Calibration failed: " + detail, "danger");
-          } else {
-            // Verbindung weg, der Drucker rechnet weiter - kein Fehler
-            showToast("Verbindung zum Lauf verloren - er laeuft weiter. "
-                      + "Fortschritt in der Konsole.", "warning");
-          }
+        if (detail) {
+          // Echter Klipper-Fehler - der Lauf ist gar nicht erst gestartet.
+          // Popup statt Toast, damit es am Drucker nicht uebersehen wird.
+          alertDialog("Calibration failed", escapeHtml(detail));
+        } else if (typeof showToast === 'function') {
+          // Verbindung weg, der Drucker rechnet weiter - kein Fehler
+          showToast("Verbindung zum Lauf verloren - er laeuft weiter. "
+                    + "Fortschritt in der Konsole.", "warning");
         }
       })
       .always(() => {
@@ -1622,14 +1654,14 @@ $(document).on("click", "#probe-cal-btn", function() {
       .fail(function(err) {
         console.error("Probe calibration failed:", err);
         var detail = gcodeErrorMessage(err);
-        if (typeof showToast === 'function') {
-          if (detail) {
-            showToast("Probe calibration failed: " + detail, "danger");
-          } else {
-            // Verbindung weg, der Drucker rechnet weiter - kein Fehler
-            showToast("Verbindung zum Lauf verloren - er laeuft weiter. "
-                      + "Fortschritt in der Konsole.", "warning");
-          }
+        if (detail) {
+          // Echter Klipper-Fehler - der Lauf ist gar nicht erst gestartet.
+          // Popup statt Toast, damit es am Drucker nicht uebersehen wird.
+          alertDialog("Probe calibration failed", escapeHtml(detail));
+        } else if (typeof showToast === 'function') {
+          // Verbindung weg, der Drucker rechnet weiter - kein Fehler
+          showToast("Verbindung zum Lauf verloren - er laeuft weiter. "
+                    + "Fortschritt in der Konsole.", "warning");
         }
       })
       .always(function() {
@@ -1707,9 +1739,10 @@ $(document).on("click", "#apply-xy-btn", function() {
         if (typeof showToast === 'function') showToast("XY offsets applied and saved to config", "success");
       })
       .catch(function(err) {
-        var msg = "Apply XY offsets failed";
-        try { msg += ": " + (err.responseJSON || err).message; } catch(_){}
-        if (typeof showToast === 'function') showToast(msg, "danger");
+        var detail = "";
+        try { detail = (err.responseJSON || err).message || ""; } catch (_) {}
+        // Eine fehlgeschlagene Uebernahme sieht sonst aus wie eine erfolgreiche.
+        alertDialog("Apply XY offsets failed", escapeHtml(detail || "Unbekannter Fehler"));
       })
       .finally(function() {
         $btn.prop("disabled", false).html(btnHtml);
@@ -1780,9 +1813,10 @@ $(document).on("click", "#apply-z-btn", function() {
         if (typeof showToast === 'function') showToast("Z offsets applied and saved to config", "success");
       })
       .catch(function(err) {
-        var msg = "Apply Z offsets failed";
-        try { msg += ": " + (err.responseJSON || err).message; } catch(_){}
-        if (typeof showToast === 'function') showToast(msg, "danger");
+        var detail = "";
+        try { detail = (err.responseJSON || err).message || ""; } catch (_) {}
+        // Eine fehlgeschlagene Uebernahme sieht sonst aus wie eine erfolgreiche.
+        alertDialog("Apply Z offsets failed", escapeHtml(detail || "Unbekannter Fehler"));
       })
       .finally(function() {
         $btn.prop("disabled", false).html(btnHtml);
@@ -1855,9 +1889,10 @@ $(document).on("click", "#apply-probe-btn", function() {
         });
       })
       .catch(function(err) {
-        var msg = "Apply probe offsets failed";
-        try { msg += ": " + (err.responseJSON || err).message; } catch(_){}
-        if (typeof showToast === 'function') showToast(msg, "danger");
+        var detail = "";
+        try { detail = (err.responseJSON || err).message || ""; } catch (_) {}
+        // Eine fehlgeschlagene Uebernahme sieht sonst aus wie eine erfolgreiche.
+        alertDialog("Apply probe offsets failed", escapeHtml(detail || "Unbekannter Fehler"));
       })
       .finally(function() {
         $btn.prop("disabled", false).html(btnHtml);
@@ -1948,13 +1983,14 @@ $(document).on("click", "#pid-cal-btn", function () {
       .fail(function (err) {
         console.error("PID tuning failed:", err);
         var detail = gcodeErrorMessage(err);
-        if (typeof showToast === 'function') {
-          if (detail) {
-            showToast("PID tuning failed: " + detail, "danger");
-          } else {
-            showToast("Verbindung zum Lauf verloren - er laeuft weiter. "
-                      + "Fortschritt in der Konsole.", "warning");
-          }
+        if (detail) {
+          // Echter Klipper-Fehler - der Lauf ist gar nicht erst gestartet.
+          // Popup statt Toast, damit es am Drucker nicht uebersehen wird.
+          alertDialog("PID tuning failed", escapeHtml(detail));
+        } else if (typeof showToast === 'function') {
+          // Verbindung weg, der Drucker rechnet weiter - kein Fehler
+          showToast("Verbindung zum Lauf verloren - er laeuft weiter. "
+                    + "Fortschritt in der Konsole.", "warning");
         }
       })
       .always(function () {
@@ -2044,9 +2080,10 @@ $(document).on("click", "#apply-pid-btn", function () {
         if (typeof showToast === 'function') showToast("PID values saved to config", "success");
       })
       .catch(function (err) {
-        var msg = "Apply PID failed";
-        try { msg += ": " + (err.responseJSON || err).message; } catch (_) {}
-        if (typeof showToast === 'function') showToast(msg, "danger");
+        var detail = "";
+        try { detail = (err.responseJSON || err).message || ""; } catch (_) {}
+        // Eine fehlgeschlagene Uebernahme sieht sonst aus wie eine erfolgreiche.
+        alertDialog("Apply PID failed", escapeHtml(detail || "Unbekannter Fehler"));
       })
       .finally(function () {
         $btn.prop("disabled", false).html(btnHtml);
