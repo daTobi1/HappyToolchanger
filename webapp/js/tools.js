@@ -345,8 +345,24 @@ function escapeHtml(s) {
 // entries: [{ tool, file, section, changes: [{key, from, to}] }]
 // from/to are strings (or null/undefined for "unknown"); a numeric diff is
 // shown whenever both sides parse as numbers.
+// Moonraker liefert Config-Dateien mit Last-Modified, aber ohne
+// Cache-Control. Browser wenden darauf heuristisches Caching an und
+// beantworten ein fetch() minutenlang aus dem Cache, ohne nachzufragen.
+//
+// Die Schreiber hier lesen die Datei, ersetzen einzelne Zeilen und laden
+// die GANZE Datei zurueck. Mit einer veralteten Kopie faellt damit alles
+// zurueck, was seit dem Cache-Stand geschrieben wurde - beobachtet am
+// 250er: eine APPLY-XY-Uebernahme setzte nebenbei die PID-Werte auf den
+// Stand von vorher zurueck und loeschte deactivate_on_each_sample.
+//
+// Betrifft auch die Bestaetigungsdialoge: deren "Current"-Spalte kommt aus
+// derselben Datei. Eine gecachte Kopie zeigt also womoeglich Werte, die auf
+// dem Drucker laengst anders sind.
+var NO_CACHE = { cache: 'no-store' };
+
 function offsetChangeListHtml(entries, note) {
   var html = "";
+  var zeroCount = 0;
 
   entries.forEach(function(e) {
     var rows = e.changes.map(function(c) {
@@ -360,11 +376,20 @@ function offsetChangeListHtml(entries, note) {
         var d = toNum - fromNum;
         diffTxt = (d >= 0 ? "+" : "") + d.toFixed(3);
       }
-      return '<tr>' +
+      // Einen kalibrierten Wert auf 0 zu setzen ist fast immer ein
+      // Versehen - typisch, wenn in dieser Sitzung nie gemessen wurde und
+      // die Felder auf 0.000 stehen. Passiert ist das auf dem 250er
+      // bereits zweimal, deshalb faellt es hier optisch heraus.
+      var zeroing = !Number.isNaN(fromNum) && !Number.isNaN(toNum)
+                    && fromNum !== 0 && toNum === 0;
+      if (zeroing) zeroCount++;
+      return '<tr' + (zeroing ? ' class="table-warning"' : '') + '>' +
         '<td class="px-1 py-0 text-nowrap"><code>' + escapeHtml(c.key) + '</code></td>' +
         '<td class="px-1 py-0 text-end text-secondary">' + escapeHtml(fromTxt) + '</td>' +
         '<td class="px-1 py-0 text-center text-secondary">&rarr;</td>' +
-        '<td class="px-1 py-0 text-end text-success fw-bold">' + escapeHtml(toTxt) + '</td>' +
+        '<td class="px-1 py-0 text-end fw-bold ' +
+          (zeroing ? 'text-warning' : 'text-success') + '">' +
+          escapeHtml(toTxt) + '</td>' +
         '<td class="px-1 py-0 text-end text-info">' + escapeHtml(diffTxt) + '</td>' +
       '</tr>';
     }).join("");
@@ -380,6 +405,14 @@ function offsetChangeListHtml(entries, note) {
     '</div>';
   });
 
+  if (zeroCount) {
+    html += '<div class="alert alert-warning py-2 px-3 small mb-2">' +
+      '<i class="bi bi-exclamation-triangle"></i> <strong>' + zeroCount +
+      ' kalibrierte' + (zeroCount === 1 ? 'r Wert wird' : ' Werte werden') +
+      ' auf 0 gesetzt.</strong> Wurde in dieser Sitzung nichts gemessen, ' +
+      'stehen die Eingabefelder auf 0.000 und die vorhandene Kalibrierung ' +
+      'geht verloren.</div>';
+  }
   if (note) html += '<div class="small text-secondary">' + note + '</div>';
   return html;
 }
@@ -404,7 +437,7 @@ function updateToolConfigOffsets(toolOffsets) {
     var t = tools[idx];
     var offsets = toolOffsets[t];
     var filePath = "toolchanger/tools/T" + t + ".cfg";
-    return fetch(baseUrl + "/server/files/config/" + filePath)
+    return fetch(baseUrl + "/server/files/config/" + filePath, NO_CACHE)
       .then(function(r) { return r.text(); })
       .then(function(content) {
         var modified = false;
@@ -528,7 +561,8 @@ function fetchToolConfigValues(requests) {
   var out = {};
   return Promise.all(tools.map(function(t) {
     var mine = requests.filter(function(r) { return String(r.tool) === t; });
-    return fetch(baseUrl + "/server/files/config/toolchanger/tools/T" + t + ".cfg")
+    return fetch(baseUrl + "/server/files/config/toolchanger/tools/T" + t + ".cfg",
+                 NO_CACHE)
       .then(function(r) { return r.ok ? r.text() : null; })
       .then(function(content) {
         mine.forEach(function(r) {
@@ -556,7 +590,7 @@ function updateToolProbeOffsets(toolZOffsets) {
     }
     var t = tools[idx];
     var filePath = "toolchanger/tools/T" + t + ".cfg";
-    return fetch(baseUrl + "/server/files/config/" + filePath)
+    return fetch(baseUrl + "/server/files/config/" + filePath, NO_CACHE)
       .then(function(r) { return r.text(); })
       .then(function(content) {
         var updated = replaceInConfigSection(
@@ -1689,7 +1723,7 @@ function updateToolPidValues(toolValues) {
     var t = tools[idx];
     var v = toolValues[t];
     var filePath = "toolchanger/tools/T" + t + ".cfg";
-    return fetch(baseUrl + "/server/files/config/" + filePath)
+    return fetch(baseUrl + "/server/files/config/" + filePath, NO_CACHE)
       .then(function (r) { return r.text(); })
       .then(function (content) {
         var updated = content;
