@@ -136,9 +136,10 @@ function confirmDialog(opts) {
     var $ok = $("#confirmModalOk");
     // .html() wie beim Extra-Button: die Beschriftungen enthalten Icons.
     // Die Texte kommen aus dem Code, nicht vom Nutzer.
-    $ok.html(okLabel)
-       .removeClass("btn-primary btn-secondary btn-success btn-warning btn-danger")
-       .addClass(okClass);
+    // class komplett neu setzen statt einzelne zu entfernen - die
+    // Entfernliste war schon einmal unvollstaendig und ein Button trug
+    // zwei Farbklassen aus zwei Dialogen gleichzeitig.
+    $ok.html(okLabel).attr("class", "btn py-2 " + okClass);
     // Reine Meldung: kein Abbrechen anbieten, es gibt nichts abzubrechen
     $("#confirmModalCancel").text(opts.cancelLabel || "Cancel")
                             .toggle(!opts.hideCancel);
@@ -147,11 +148,21 @@ function confirmDialog(opts) {
     var $extra = $("#confirmModalExtra");
     if (opts.extraLabel) {
       $extra.html(opts.extraLabel)
-            .removeClass("btn-primary btn-secondary btn-success btn-warning btn-danger")
-            .addClass(opts.extraClass || "btn-warning")
+            .attr("class", "btn py-2 " + (opts.extraClass || "btn-warning"))
             .show();
     } else {
       $extra.hide();
+    }
+
+    // Zweiter optionaler Button, loest mit "extra2" auf. Das Dock braucht
+    // vier Aktionen: Testfahrt, Uebernehmen, Uebernehmen+schreiben, Abbrechen.
+    var $extra2 = $("#confirmModalExtra2");
+    if (opts.extra2Label) {
+      $extra2.html(opts.extra2Label)
+             .attr("class", "btn py-2 " + (opts.extra2Class || "btn-success"))
+             .show();
+    } else {
+      $extra2.hide();
     }
 
     var modal = bootstrap.Modal.getOrCreateInstance(el);
@@ -162,6 +173,7 @@ function confirmDialog(opts) {
       settled = true;
       $ok.off("click.confirmDialog");
       $extra.off("click.confirmDialog");
+      $extra2.off("click.confirmDialog");
       $(el).off("hidden.bs.modal.confirmDialog");
       resolve(result);
     }
@@ -172,6 +184,10 @@ function confirmDialog(opts) {
     });
     $extra.off("click.confirmDialog").on("click.confirmDialog", function() {
       settle("extra");
+      modal.hide();
+    });
+    $extra2.off("click.confirmDialog").on("click.confirmDialog", function() {
+      settle("extra2");
       modal.hide();
     });
     $(el).off("hidden.bs.modal.confirmDialog")
@@ -347,7 +363,9 @@ function _showAlert(title, message, opts) {
     hideCancel: !opts.showCancel,
     cancelLabel: opts.cancelLabel,
     extraLabel: opts.extraLabel,
-    extraClass: opts.extraClass
+    extraClass: opts.extraClass,
+    extra2Label: opts.extra2Label,
+    extra2Class: opts.extra2Class
   });
 }
 
@@ -2355,13 +2373,6 @@ function dockCalibrationSection(toolNumbers, enabled) {
           '<span class="text-secondary"> — alle Fenster durchklicken, ' +
           'ohne dass ein Kommando an den Drucker geht</span></label>' +
       '</div>' +
-      '<div class="form-check form-switch mt-1 mb-0">' +
-        '<input class="form-check-input" type="checkbox" id="dock-write-each">' +
-        '<label class="form-check-label small" for="dock-write-each">' +
-          '<span class="text-success">Nach jedem Tool schreiben</span>' +
-          '<span class="text-secondary"> — statt erst am Ende alle auf ' +
-          'einmal. Der Bestätigungsdialog kommt trotzdem.</span></label>' +
-      '</div>' +
     '</div>' +
     '<button class="btn ' + btnClass + ' w-100 mb-2" id="dock-cal-btn" ' + disabledAttr + '>' +
       'MOUNT KALIBRIERUNG' +
@@ -2491,13 +2502,19 @@ function dockJogLoop(tools, idx, opts) {
       escapeHtml(opts.depth) + 'mm nach unten und zurück, ' +
       escapeHtml(opts.repeats) + '&times;, mit ' + escapeHtml(opts.speed) +
       'mm/s.</p>' +
-    '<p class="mb-0 text-secondary"><strong>Übernehmen</strong> liest die ' +
-      'aktuelle Position als <code>params_park_x/y/z</code>, fährt vom Tool ' +
-      'weg und geht zum nächsten. Geschrieben wird erst mit APPLY DOCK.</p>',
+    '<p class="mb-2 text-secondary"><strong>Übernehmen</strong> liest die ' +
+      'aktuelle Position als <code>params_park_x/y/z</code> und geht zum ' +
+      'nächsten Tool. Geschrieben wird erst am Ende mit APPLY DOCK.</p>' +
+    '<p class="mb-0 text-secondary"><strong>Übernehmen + schreiben</strong> ' +
+      'schreibt die Position von T' + escapeHtml(t) + ' sofort in die Config — ' +
+      'nach einem Bestätigungsfenster mit Vorher/Nachher. Nützlich bei vielen ' +
+      'Tools: ein Abbruch später kostet dann nicht den ganzen Lauf.</p>',
     { extraLabel: '<i class="bi bi-arrow-down-up"></i> Testfahrt',
       extraClass: 'btn-warning',
+      extra2Label: '<i class="bi bi-save"></i> Übernehmen + schreiben',
+      extra2Class: 'btn-success',
       okLabel: '<i class="bi bi-check-circle"></i> Übernehmen',
-      okClass: 'btn-success',
+      okClass: 'btn-outline-success',
       showCancel: true,
       cancelLabel: 'Abbrechen' }
   ).then(function (choice) {
@@ -2509,17 +2526,17 @@ function dockJogLoop(tools, idx, opts) {
         return dockJogLoop(tools, idx, opts);
       });
     }
-    if (choice !== true) return dockAbort();
+    if (choice !== true && choice !== 'extra2') return dockAbort();
+    var writeNow = (choice === 'extra2');
     return dockStep("DOCK_CALIBRATE_ACCEPT", "Übernehmen fehlgeschlagen")
       .then(function (r) {
         if (!r.ok) return dockAbort();
         return refreshDockTable().then(function () {
-          // Sofort schreiben, wenn gewuenscht - sonst sammelt sich alles
-          // bis zum Schluss und ein Abbruch danach kostet den ganzen Lauf.
-          // Im Trockenlauf gibt es nichts zu schreiben.
-          if (!$("#dock-write-each").is(":checked") || dockIsDryRun()) {
-            return null;
-          }
+          // "Uebernehmen + schreiben" gilt nur fuer dieses Tool. Sonst
+          // sammeln sich die Werte bis zum Schluss, und ein Abbruch danach
+          // kostet den ganzen Lauf. Im Trockenlauf gibt es nichts zu
+          // schreiben.
+          if (!writeNow || dockIsDryRun()) return null;
           return applyDockValues([String(t)]);
         }).then(function () {
           return dockToolLoop(tools, idx + 1, opts);
