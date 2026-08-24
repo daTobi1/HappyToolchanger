@@ -26,6 +26,9 @@ let _eddyTapDeviations = {};   // { "0": { deviation: 0.01, probe: "..." } } —
 let _pidResults = {};        // { "0": {pid_kp, pid_ki, pid_kd, temp, height, fan} }
 let _pidDefaults = null;     // [offset] pid_temp / pid_height / pid_fan_speed / pid_tool
 let _toolPid = {};           // aktuell in Klipper aktive PID-Werte je Tool
+let _dockResults = {};       // { "0": {params_park_x, params_park_y, params_park_z} }
+let _dockDefaults = null;    // [offset] dock_*
+let _toolParkPositions = {}; // aktuell konfigurierte Dock-Positionen je Tool
 let _tapMinTemp = null;        // _TAP_PROBE_ACTIVATE variable_min_temp — Untergrenze, auf die der Tap heizt
 let _toolGcodeOffsets = {};    // { "0": {x:0, y:0, z:0}, ... } current tool gcode offsets
 let _zSwitchResults = {};      // { "0": { z_offset: 0.0, z_trigger: 1.23 }, ... }
@@ -327,9 +330,10 @@ function _showAlert(title, message, opts) {
   return confirmDialog({
     title: title,
     body: '<div class="small">' + message + '</div>',
-    okLabel: "OK",
-    okClass: "btn-danger",
-    hideCancel: true,
+    okLabel: opts.okLabel || "OK",
+    okClass: opts.okClass || "btn-danger",
+    // Reine Meldungen haben nichts abzubrechen; mehrstufige Ablaeufe schon.
+    hideCancel: !opts.showCancel,
     extraLabel: opts.extraLabel,
     extraClass: opts.extraClass
   });
@@ -942,6 +946,9 @@ function fetchOffsetStatus() {
       _pidResults = (st?.pid_results || {});
       _pidDefaults = (st?.pid_defaults || null);
       _toolPid = (st?.tool_pid || {});
+      _dockResults = (st?.dock_results || {});
+      _dockDefaults = (st?.dock_defaults || null);
+      _toolParkPositions = (st?.tool_park_positions || {});
       var tapMacro = ax?.result?.status?.["gcode_macro _TAP_PROBE_ACTIVATE"];
       if (typeof tapMacro?.min_temp === 'number') _tapMinTemp = tapMacro.min_temp;
       _toolProbeOffsets = (st?.tool_probe_offsets || {});
@@ -979,6 +986,8 @@ function fetchOffsetStatus() {
       _zSwitchResults = {};
       _pidResults = {};
       _toolPid = {};
+      _dockResults = {};
+      _toolParkPositions = {};
       return null;
     });
 }
@@ -1018,6 +1027,7 @@ function updateAllProbeResults() {
   getOffsetSnapshot().then(function(offsetStatus) {
     var probeResults = offsetStatus.probe_results || {};
     updatePidResults(offsetStatus);
+    updateDockResults(offsetStatus);
     $('button.toolchange-btn').each(function(){
       updateProbeResults($(this).data("tool"), probeResults);
     });
@@ -1063,6 +1073,24 @@ function updateAllProbeResults() {
 // nicht am Ende des Laufs, und die Tabelle bliebe auf dem Stand von vorher
 // stehen: die fertigen Werte und damit der APPLY-Button erschienen erst nach
 // einem Reload. Deshalb wie bei den Probe-Offsets aus dem Polling nachziehen.
+function updateDockResults(offsetStatus) {
+  var changed = false;
+  var res = offsetStatus.dock_results || {};
+  if (JSON.stringify(res) !== JSON.stringify(_dockResults)) {
+    _dockResults = res; changed = true;
+  }
+  var park = offsetStatus.tool_park_positions || {};
+  if (JSON.stringify(park) !== JSON.stringify(_toolParkPositions)) {
+    _toolParkPositions = park; changed = true;
+  }
+  if (!changed) return;
+  var $c = $('#dock-results-container');
+  if (!$c.length) return;
+  var tools = Object.keys(_toolParkPositions).map(Number)
+                .sort(function (a, b) { return a - b; });
+  $c.html(dockResultsTable(tools));
+}
+
 function updatePidResults(offsetStatus) {
   var changed = false;
   var pid = offsetStatus.pid_results || {};
@@ -2196,6 +2224,396 @@ $(document).on("click", "#pid-cal-btn", function () {
   });
 });
 
+// --------------------------
+// Dock Calibration
+//
+// Ein Lauf besteht aus vielen kurzen Kommandos mit Wartezeiten fuer den
+// Menschen dazwischen. Der Ablauf wird deshalb hier gesteuert, nicht per
+// Polling auf dock_state: jede Antwort fuehrt zum naechsten Dialog. Das
+// ist deterministisch und bricht nicht, wenn eine Statusabfrage ausfaellt.
+// --------------------------
+function dockDefault(key, fallback) {
+  var v = _dockDefaults ? _dockDefaults[key] : null;
+  return (typeof v === 'number') ? v : fallback;
+}
+
+function dockParkOf(t) {
+  var o = _toolParkPositions[String(t)];
+  return o || null;
+}
+
+function dockResultsTable(sortedTools) {
+  var rows = sortedTools.map(function (t) {
+    var cur = dockParkOf(t);
+    var neu = _dockResults[String(t)];
+    if (!cur && !neu) return '';
+    var cell = function (key) {
+      var c = cur && typeof cur[key] === 'number' ? cur[key].toFixed(3) : '-';
+      if (!neu) return '<td class="px-2 py-1 text-end text-secondary">' + c + '</td>';
+      return '<td class="px-2 py-1 text-end">' +
+        '<span class="text-secondary">' + c + '</span> &rarr; ' +
+        '<span class="text-success">' + neu[key].toFixed(3) + '</span></td>';
+    };
+    return '<tr><td class="px-2 py-1 fw-bold">T' + t + '</td>' +
+      cell('params_park_x') + cell('params_park_y') + cell('params_park_z') +
+    '</tr>';
+  }).join('');
+  if (!rows) return '';
+
+  var hasNew = sortedTools.some(function (t) { return !!_dockResults[String(t)]; });
+  var applyBtn = hasNew
+    ? '<div class="pt-2"><button class="btn btn-success w-100" id="apply-dock-btn">' +
+      '<i class="bi bi-check-circle"></i> APPLY DOCK TO CONFIG</button></div>'
+    : '';
+
+  return '<div class="border border-secondary-subtle rounded p-2 bg-dark">' +
+    '<span class="fs-6 fw-bold d-block mb-1">Dock-Positionen</span>' +
+    '<table class="table table-sm table-borderless mb-0" style="font-size:0.85rem;">' +
+      '<thead><tr><th class="px-2 py-1 text-secondary">Tool</th>' +
+        '<th class="px-2 py-1 text-end text-secondary">park_x</th>' +
+        '<th class="px-2 py-1 text-end text-secondary">park_y</th>' +
+        '<th class="px-2 py-1 text-end text-secondary">park_z</th></tr></thead>' +
+      '<tbody>' + rows + '</tbody></table>' + applyBtn +
+  '</div>';
+}
+
+function dockCalibrationSection(toolNumbers, enabled) {
+  var sortedTools = toolNumbers.slice().sort(function (a, b) { return a - b; });
+  var btnClass = enabled ? 'btn-primary' : 'btn-secondary';
+  var disabledAttr = enabled ? '' : 'disabled';
+
+  var toolsMarkup = sortedTools.map(function (t) {
+    return '<div class="form-check form-check-inline me-3 mb-1">' +
+      '<input class="form-check-input dock-tool-checkbox" type="checkbox" ' +
+        'id="dock-tool-' + t + '" value="' + t + '">' +
+      '<label class="form-check-label" for="dock-tool-' + t + '">T' + t + '</label>' +
+    '</div>';
+  }).join('');
+
+  var num = function (id, value, min, max, step, unit) {
+    return '<div class="input-group input-group-sm">' +
+      '<input type="number" id="' + id + '" class="form-control form-control-sm" ' +
+        'min="' + min + '" max="' + max + '" step="' + step + '" value="' + value + '">' +
+      '<span class="input-group-text">' + unit + '</span></div>';
+  };
+
+  return '<div class="container p-0">' +
+    '<div class="border border-secondary-subtle rounded p-2 bg-dark mb-2">' +
+      '<div class="row g-2">' +
+        '<div class="col-12">' +
+          '<div class="d-flex justify-content-between align-items-center mb-1">' +
+            '<span class="small text-secondary">Tools zu kalibrieren</span>' +
+            '<div class="form-check mb-0">' +
+              '<input class="form-check-input" type="checkbox" id="dock-select-all">' +
+              '<label class="form-check-label" for="dock-select-all">' +
+                '<small class="text-secondary">Alle</small></label></div>' +
+          '</div>' +
+          '<div>' + toolsMarkup + '</div>' +
+        '</div>' +
+        '<div class="col-6">' +
+          '<label class="form-label small text-secondary mb-1">Anfahrhöhe Z</label>' +
+          num('dock-start-z', dockDefault('start_z', 100), 1, 400, 1, 'mm') +
+        '</div>' +
+        '<div class="col-6">' +
+          '<label class="form-label small text-secondary mb-1">Y bei Neukalibrierung</label>' +
+          num('dock-new-y', dockDefault('new_y', 0), -200, 400, 1, 'mm') +
+        '</div>' +
+        '<div class="col-6">' +
+          '<label class="form-label small text-secondary mb-1">Testfahrt Tiefe</label>' +
+          num('dock-test-depth', dockDefault('test_depth', 15), 0.5, 100, 0.5, 'mm') +
+        '</div>' +
+        '<div class="col-6">' +
+          '<label class="form-label small text-secondary mb-1">Testfahrt Wiederholungen</label>' +
+          num('dock-test-repeats', dockDefault('test_repeats', 1), 1, 20, 1, '&times;') +
+        '</div>' +
+        '<div class="col-6">' +
+          '<label class="form-label small text-secondary mb-1">Testfahrt Geschwindigkeit</label>' +
+          num('dock-test-speed', dockDefault('test_speed', 5), 0.5, 50, 0.5, 'mm/s') +
+        '</div>' +
+      '</div>' +
+      '<div class="small text-secondary mt-2">' +
+        'Die Tool-Offsets werden während des Laufs abgeschaltet — sonst läge ' +
+        'die Dockposition um genau diese Offsets daneben. Defaults aus ' +
+        '<code>[offset] dock_*</code>.' +
+      '</div>' +
+    '</div>' +
+    '<button class="btn ' + btnClass + ' w-100 mb-2" id="dock-cal-btn" ' + disabledAttr + '>' +
+      'MOUNT KALIBRIERUNG' +
+    '</button>' +
+    '<div id="dock-results-container">' + dockResultsTable(sortedTools) + '</div>' +
+  '</div>';
+}
+
+function syncDockSelectAllState() {
+  var $all = $(".dock-tool-checkbox");
+  var $checked = $(".dock-tool-checkbox:checked");
+  $("#dock-select-all").prop("checked", $all.length > 0 && $all.length === $checked.length);
+}
+
+$(document).on("change", "#dock-select-all", function () {
+  $(".dock-tool-checkbox").prop("checked", $(this).is(":checked"));
+});
+$(document).on("change", ".dock-tool-checkbox", syncDockSelectAllState);
+
+// Ein Schritt der Prozedur. Liefert das Ergebnis von sendGcodeWithRecovery.
+function dockStep(script, title) {
+  return sendGcodeWithRecovery(script, title);
+}
+
+function dockAbort() {
+  return $.get(printerUrl(printerIp,
+    "/printer/gcode/script?script=" + encodeURIComponent("DOCK_CALIBRATE_ABORT")))
+    .always(function () { refreshDockTable(); });
+}
+
+function refreshDockTable() {
+  return fetchOffsetStatus().then(function () {
+    var $c = $('#dock-results-container');
+    if (!$c.length) return;
+    var tools = Object.keys(_toolParkPositions).map(Number)
+                  .sort(function (a, b) { return a - b; });
+    $c.html(dockResultsTable(tools));
+  });
+}
+
+// Schritt 2/3: Tool mounten lassen, dann anfahren, dann joggen + testen.
+function dockToolLoop(tools, idx, opts) {
+  if (idx >= tools.length) {
+    if (typeof showToast === 'function') {
+      showToast("Dock-Kalibrierung fertig - mit APPLY DOCK schreiben", "success");
+    }
+    return refreshDockTable();
+  }
+  var t = tools[idx];
+
+  return alertDialog(
+    "T" + t + " montieren",
+    '<p class="mb-2">Der Kopf steht auf Bettmitte, Z=' +
+      escapeHtml(opts.startZ) + 'mm.</p>' +
+    '<p class="mb-0"><strong>Ist T' + escapeHtml(t) + ' montiert?</strong> ' +
+    'Nach dem Bestätigen fährt der Kopf den Dock-Weg an. Der Drucker ' +
+    'bewegt sich dabei.</p>',
+    { extraLabel: '<i class="bi bi-check2"></i> T' + t + ' ist montiert - anfahren',
+      extraClass: 'btn-primary' }
+  ).then(function (choice) {
+    if (choice !== 'extra') return dockAbort();
+    return dockStep("DOCK_CALIBRATE_MOUNTED", "Dock-Anfahrt fehlgeschlagen")
+      .then(function (r) {
+        if (!r.ok) return dockAbort();
+        return dockJogLoop(tools, idx, opts);
+      });
+  });
+}
+
+function dockJogLoop(tools, idx, opts) {
+  var t = tools[idx];
+  return alertDialog(
+    "T" + t + ": Dockposition einstellen",
+    '<p class="mb-2">Fahre den Kopf per Jogging (Offset-UI oder Mainsail), ' +
+      'bis T' + escapeHtml(t) + ' sauber in seinem Dock sitzt.</p>' +
+    '<p class="mb-2 text-secondary"><strong>Testfahrt</strong> fährt ' +
+      escapeHtml(opts.depth) + 'mm nach unten und zurück, ' +
+      escapeHtml(opts.repeats) + '&times;, mit ' + escapeHtml(opts.speed) +
+      'mm/s.</p>' +
+    '<p class="mb-0 text-secondary"><strong>Übernehmen</strong> liest die ' +
+      'aktuelle Position als <code>params_park_x/y/z</code>, fährt vom Tool ' +
+      'weg und geht zum nächsten. Geschrieben wird erst mit APPLY DOCK.</p>',
+    { extraLabel: '<i class="bi bi-arrow-down-up"></i> Testfahrt',
+      extraClass: 'btn-warning',
+      okLabel: '<i class="bi bi-check-circle"></i> Übernehmen',
+      okClass: 'btn-success',
+      showCancel: true }
+  ).then(function (choice) {
+    if (choice === 'extra') {
+      var script = "DOCK_CALIBRATE_TEST DEPTH=" + opts.depth +
+                   " REPEATS=" + opts.repeats + " SPEED=" + opts.speed;
+      return dockStep(script, "Testfahrt fehlgeschlagen").then(function (r) {
+        if (!r.ok && !r.transport) return dockAbort();
+        return dockJogLoop(tools, idx, opts);
+      });
+    }
+    if (choice !== true) return dockAbort();
+    return dockStep("DOCK_CALIBRATE_ACCEPT", "Übernehmen fehlgeschlagen")
+      .then(function (r) {
+        if (!r.ok) return dockAbort();
+        return refreshDockTable().then(function () {
+          return dockToolLoop(tools, idx + 1, opts);
+        });
+      });
+  });
+}
+
+$(document).on("click", "#dock-cal-btn", function () {
+  var $btn = $(this);
+  var tools = $(".dock-tool-checkbox:checked").map(function () {
+    return parseInt($(this).val(), 10);
+  }).get().sort(function (a, b) { return a - b; });
+
+  if (!tools.length) {
+    if (typeof showToast === 'function') showToast("Kein Tool ausgewählt", "warning");
+    return;
+  }
+
+  var opts = {
+    startZ: parseFloat($("#dock-start-z").val()) || dockDefault('start_z', 100),
+    newY: parseFloat($("#dock-new-y").val()) || dockDefault('new_y', 0),
+    depth: parseFloat($("#dock-test-depth").val()) || dockDefault('test_depth', 15),
+    repeats: parseInt($("#dock-test-repeats").val(), 10) || dockDefault('test_repeats', 1),
+    speed: parseFloat($("#dock-test-speed").val()) || dockDefault('test_speed', 5)
+  };
+
+  var haveAll = tools.every(function (t) { return !!dockParkOf(t); });
+  var body =
+    '<div class="border border-secondary-subtle rounded p-2 mb-2 bg-dark">' +
+      '<table class="table table-sm table-borderless mb-0" style="font-size:0.85rem;"><tbody>' +
+        '<tr><td class="px-1 py-0 text-secondary">Tools</td><td class="px-1 py-0 fw-bold">' +
+          tools.map(function (t) { return 'T' + t; }).join(', ') + '</td></tr>' +
+        '<tr><td class="px-1 py-0 text-secondary">Anfahrhöhe</td><td class="px-1 py-0">' +
+          escapeHtml(opts.startZ) + ' mm über Bettmitte</td></tr>' +
+        '<tr><td class="px-1 py-0 text-secondary">Testfahrt</td><td class="px-1 py-0">' +
+          escapeHtml(opts.depth) + ' mm, ' + escapeHtml(opts.repeats) + '&times;, ' +
+          escapeHtml(opts.speed) + ' mm/s</td></tr>' +
+      '</tbody></table></div>' +
+    '<div class="small text-secondary mb-2">' +
+      '<strong>Neukalibrierung</strong> startet auf Bettmitte mit Y=' +
+      escapeHtml(opts.newY) + 'mm — für Docks ohne brauchbare Werte.<br>' +
+      '<strong>Nachkalibrierung</strong> fährt die gespeicherte Dockposition ' +
+      'an und korrigiert von dort' +
+      (haveAll ? '.' : ' — <span class="text-warning">nicht für alle ' +
+        'gewählten Tools vorhanden</span>.') +
+    '</div>' +
+    '<div class="small text-warning">' +
+      '<i class="bi bi-exclamation-triangle"></i> Der Drucker bewegt sich. ' +
+      'Die Tool-Offsets werden für die Dauer des Laufs abgeschaltet.' +
+    '</div>';
+
+  confirmDialog({
+    title: "Dock-Kalibrierung starten",
+    body: body,
+    okLabel: '<i class="bi bi-arrow-repeat"></i> Nachkalibrierung',
+    okClass: haveAll ? 'btn-primary' : 'btn-secondary',
+    extraLabel: '<i class="bi bi-plus-circle"></i> Neukalibrierung',
+    extraClass: 'btn-warning'
+  }).then(function (choice) {
+    if (choice !== true && choice !== 'extra') return;
+    var mode = (choice === 'extra') ? 'NEW' : 'RECAL';
+    var script = "DOCK_CALIBRATE_START MODE=" + mode +
+                 " TOOLS=" + tools.join(',') +
+                 " START_Z=" + opts.startZ + " NEW_Y=" + opts.newY;
+    $btn.prop("disabled", true).text("Läuft...");
+    return dockStep(script, "Dock-Kalibrierung fehlgeschlagen")
+      .then(function (r) {
+        if (!r.ok) return null;
+        return dockToolLoop(tools, 0, opts);
+      })
+      .then(function () {
+        $btn.prop("disabled", false).text("MOUNT KALIBRIERUNG");
+      });
+  });
+});
+
+// Schreibt params_park_x/y/z in die [tool Tn]-Sektion der Tool-Configs.
+function updateToolDockValues(toolValues) {
+  var tools = Object.keys(toolValues);
+  var baseUrl = printerUrl(printerIp, "");
+  var missing = [];
+
+  function processNext(idx) {
+    if (idx >= tools.length) {
+      reportMissingKeys(missing);
+      return Promise.resolve();
+    }
+    var t = tools[idx];
+    var v = toolValues[t];
+    var filePath = "toolchanger/tools/T" + t + ".cfg";
+    var section = "tool T" + t;
+    return fetch(baseUrl + "/server/files/config/" + filePath, NO_CACHE)
+      .then(function (r) { return r.text(); })
+      .then(function (content) {
+        var updated = content;
+        var ok = true;
+        ['params_park_x', 'params_park_y', 'params_park_z'].forEach(function (key) {
+          var next = replaceInConfigSection(updated, section, key,
+                                            v[key].toFixed(3));
+          if (next === null) {
+            ok = false;
+            missing.push({file: filePath, section: section, key: key});
+          } else {
+            updated = next;
+          }
+        });
+        if (!ok) return processNext(idx + 1);
+        var formData = new FormData();
+        formData.append('file', new Blob([updated], {type: 'text/plain'}), filePath);
+        formData.append('root', 'config');
+        return fetch(baseUrl + "/server/files/upload", {method: 'POST', body: formData})
+          .then(function () { return processNext(idx + 1); });
+      });
+  }
+  return processNext(0);
+}
+
+$(document).on("click", "#apply-dock-btn", function () {
+  var $btn = $(this);
+  var btnHtml = '<i class="bi bi-check-circle"></i> APPLY DOCK TO CONFIG';
+  var toolValues = {};
+  var requests = [];
+  Object.keys(_dockResults).sort(function (a, b) { return a - b; }).forEach(function (k) {
+    var v = _dockResults[k];
+    if (!v || typeof v.params_park_x !== 'number') return;
+    toolValues[k] = v;
+    ['params_park_x', 'params_park_y', 'params_park_z'].forEach(function (key) {
+      requests.push({ tool: k, key: key, section: "tool T" + k });
+    });
+  });
+  if (!Object.keys(toolValues).length) {
+    if (typeof showToast === 'function') showToast("Keine Dock-Werte zu übernehmen", "warning");
+    return;
+  }
+
+  $btn.prop("disabled", true).text("Lade...");
+  fetchToolConfigValues(requests).then(function (cur) {
+    $btn.prop("disabled", false).html(btnHtml);
+    var entries = Object.keys(toolValues).sort(function (a, b) { return a - b; })
+      .map(function (k) {
+        var v = toolValues[k];
+        return {
+          tool: k,
+          file: "toolchanger/tools/T" + k + ".cfg",
+          section: "tool T" + k,
+          changes: ['params_park_x', 'params_park_y', 'params_park_z'].map(function (key) {
+            return { key: key, from: cur[k + "|" + key], to: v[key].toFixed(3) };
+          })
+        };
+      });
+    return confirmDialog({
+      title: "Dock-Positionen übernehmen?",
+      body: offsetChangeListHtml(entries,
+        '"Current" kommt aus der Config-Datei. Ein falscher Wert lässt das ' +
+        'Tool beim nächsten Wechsel neben dem Dock landen — die Zahlen bitte ' +
+        'gegen den Testlauf prüfen.'),
+      okLabel: "OK — übernehmen",
+      okClass: "btn-success"
+    });
+  }).then(function (ok) {
+    if (!ok) return;
+    $btn.prop("disabled", true).text("Schreibe...");
+    updateToolDockValues(toolValues)
+      .then(function () {
+        if (typeof showToast === 'function') {
+          showToast("Dock-Positionen in die Config geschrieben", "success");
+        }
+      })
+      .catch(function (err) {
+        var detail = "";
+        try { detail = (err.responseJSON || err).message || ""; } catch (_) {}
+        alertDialog("Dock-Positionen übernehmen fehlgeschlagen",
+                    escapeHtml(detail || "Unbekannter Fehler"));
+      })
+      .finally(function () { $btn.prop("disabled", false).html(btnHtml); });
+  });
+});
+
 function syncPidSelectAllState() {
   var $all = $(".pid-tool-checkbox");
   var $checked = $(".pid-tool-checkbox:checked");
@@ -2492,11 +2910,28 @@ function getTools() {
               false
             ));
 
+            var dockContent = dockCalibrationSection(tool_numbers, _offsetPresent);
+            var dockStatus = _offsetPresent
+              ? (Object.keys(_dockResults).length
+                  ? '<span class="text-success">Neu: ' +
+                    Object.keys(_dockResults).map(function(k){ return 'T'+k; }).join(', ') +
+                    '</span>'
+                  : '<span class="text-secondary">Bereit</span>')
+              : '<span class="text-warning">offset module not found</span>';
+
             $acc.append(accordionSection(
               'accordion-pid',
               'Extruder PID Calibration',
               pidStatus,
               pidContent,
+              false
+            ));
+
+            $acc.append(accordionSection(
+              'accordion-dock',
+              'Dock Calibration',
+              dockStatus,
+              dockContent,
               false
             ));
 

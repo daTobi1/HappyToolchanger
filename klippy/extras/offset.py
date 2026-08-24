@@ -309,6 +309,7 @@ class Offset:
             'tool_gcode_offsets': tool_gcode_offsets,
             'pid_results': self.pid_results,
             'dock_results': self.dock_results,
+            'tool_park_positions': self._tool_park_positions(),
             'dock_defaults': self._dock_defaults(),
             'dock_state': (dict(self.dock_state, tool=self._dock_current_tool())
                            if self.dock_state else None),
@@ -1317,6 +1318,17 @@ class Offset:
         except Exception as e:
             self.gcode.respond_info(
                 "Warning: could not load dock results: %s" % e)
+
+    def _tool_park_positions(self):
+        """Each tool's stored dock position, for the UI's "current" column."""
+        out = {}
+        for tn in self.toolchanger.tool_numbers:
+            park = self._dock_tool_park(tn)
+            if park is not None:
+                out[str(tn)] = {'params_park_x': park[0],
+                                'params_park_y': park[1],
+                                'params_park_z': park[2]}
+        return out
 
     def _dock_defaults(self):
         return {
