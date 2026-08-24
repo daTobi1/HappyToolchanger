@@ -1407,11 +1407,8 @@ class Offset:
             raise gcmd.error(
                 "Dock calibration already running - finish it or run "
                 "DOCK_CALIBRATE_ABORT")
-        toolhead = self.printer.lookup_object('toolhead')
-        if 'xyz' not in toolhead.get_status(
-                self.printer.get_reactor().monotonic())['homed_axes']:
-            raise gcmd.error("Must home first")
-
+        # Argumente zuerst: ein Tippfehler in MODE oder TOOLS soll auch am
+        # ungehomten Drucker auffallen, nicht erst nach dem Homing.
         mode = (gcmd.get('MODE', 'RECAL') or 'RECAL').strip().upper()
         if mode not in ('NEW', 'RECAL'):
             raise gcmd.error("MODE must be NEW or RECAL")
@@ -1432,6 +1429,11 @@ class Offset:
                 raise gcmd.error(
                     "No stored dock position for %s - use MODE=NEW"
                     % ", ".join("T%d" % t for t in missing))
+
+        toolhead = self.printer.lookup_object('toolhead')
+        if 'xyz' not in toolhead.get_status(
+                self.printer.get_reactor().monotonic())['homed_axes']:
+            raise gcmd.error("Must home first")
 
         start_z = gcmd.get_float('START_Z', self.dock_start_z, above=0.)
         self.dock_state = {
