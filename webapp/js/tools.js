@@ -134,17 +134,20 @@ function confirmDialog(opts) {
     $("#confirmModalBody").html(opts.body || "");
 
     var $ok = $("#confirmModalOk");
-    $ok.text(okLabel)
-       .removeClass("btn-primary btn-success btn-warning btn-danger")
+    // .html() wie beim Extra-Button: die Beschriftungen enthalten Icons.
+    // Die Texte kommen aus dem Code, nicht vom Nutzer.
+    $ok.html(okLabel)
+       .removeClass("btn-primary btn-secondary btn-success btn-warning btn-danger")
        .addClass(okClass);
     // Reine Meldung: kein Abbrechen anbieten, es gibt nichts abzubrechen
-    $("#confirmModalCancel").toggle(!opts.hideCancel);
+    $("#confirmModalCancel").text(opts.cancelLabel || "Cancel")
+                            .toggle(!opts.hideCancel);
 
     // Optionaler dritter Button, loest mit "extra" statt true/false auf
     var $extra = $("#confirmModalExtra");
     if (opts.extraLabel) {
       $extra.html(opts.extraLabel)
-            .removeClass("btn-primary btn-success btn-warning btn-danger")
+            .removeClass("btn-primary btn-secondary btn-success btn-warning btn-danger")
             .addClass(opts.extraClass || "btn-warning")
             .show();
     } else {
@@ -342,6 +345,7 @@ function _showAlert(title, message, opts) {
     okClass: opts.okClass || "btn-danger",
     // Reine Meldungen haben nichts abzubrechen; mehrstufige Ablaeufe schon.
     hideCancel: !opts.showCancel,
+    cancelLabel: opts.cancelLabel,
     extraLabel: opts.extraLabel,
     extraClass: opts.extraClass
   });
@@ -2453,8 +2457,12 @@ function dockToolLoop(tools, idx, opts) {
     '<p class="mb-0"><strong>Ist T' + escapeHtml(t) + ' montiert?</strong> ' +
     'Nach dem Bestätigen fährt der Kopf den Dock-Weg an. Der Drucker ' +
     'bewegt sich dabei.</p>',
+    // Der zweite Button bricht ab. Ein rotes "OK" daneben laedt zum
+    // genau falschen Klick ein, deshalb heisst er, was er tut.
     { extraLabel: '<i class="bi bi-check2"></i> T' + t + ' ist montiert - anfahren',
-      extraClass: 'btn-primary' }
+      extraClass: 'btn-primary',
+      okLabel: 'Abbrechen',
+      okClass: 'btn-secondary' }
   ).then(function (choice) {
     if (choice !== 'extra') return dockAbort();
     return dockStep("DOCK_CALIBRATE_MOUNTED", "Dock-Anfahrt fehlgeschlagen")
@@ -2483,7 +2491,8 @@ function dockJogLoop(tools, idx, opts) {
       extraClass: 'btn-warning',
       okLabel: '<i class="bi bi-check-circle"></i> Übernehmen',
       okClass: 'btn-success',
-      showCancel: true }
+      showCancel: true,
+      cancelLabel: 'Abbrechen' }
   ).then(function (choice) {
     if (choice === 'extra') {
       var script = "DOCK_CALIBRATE_TEST DEPTH=" + opts.depth +
@@ -2554,7 +2563,8 @@ $(document).on("click", "#dock-cal-btn", function () {
     okLabel: '<i class="bi bi-arrow-repeat"></i> Nachkalibrierung',
     okClass: haveAll ? 'btn-primary' : 'btn-secondary',
     extraLabel: '<i class="bi bi-plus-circle"></i> Neukalibrierung',
-    extraClass: 'btn-warning'
+    extraClass: 'btn-warning',
+    cancelLabel: 'Abbrechen'
   }).then(function (choice) {
     if (choice !== true && choice !== 'extra') return;
     var mode = (choice === 'extra') ? 'NEW' : 'RECAL';
