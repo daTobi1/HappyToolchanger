@@ -1918,7 +1918,7 @@ function xyWizard() {
           "Kollisionsrisiko.",
     okLabel: "Homen"
   })
-  .then(function () { return ensureHomed(); })
+  .then(function () { return ensureHomedBeforeSetup(); })
   .then(function () {
     return confirmDialog({
       title: "XY-Sonde: Aufsetzen",
@@ -1952,7 +1952,7 @@ function xyWizard() {
   .then(function () {
     return sendGcodeWithRecovery("CALIBRATE_XY_OFFSETS", "XY-Messlauf");
   })
-  .then(function () { return refreshOffsetStatus(); })
+  .then(function () { return updateAllProbeResults(); })
   .then(function () {
     return confirmDialog({
       title: "Abschließen",
@@ -1994,10 +1994,51 @@ function xyProbeCheckPresent() {
 }
 ```
 
-`readXyProbeUuid()` liest die `canbus_uuid`-Zeile aus
-`xy_probe.cfg.disabled`. `ensureHomed()` und `refreshOffsetStatus()` sind
-die bereits vorhandenen Helfer der Offset-UI — deren tatsächliche Namen aus
-`tools.js` übernehmen, nicht aus diesem Entwurf raten.
+### Die Helfer, aufgelöst
+
+Der Entwurf oben nannte drei Helfer, deren Namen geraten waren. Gegen
+`tools.js` geprüft:
+
+| im Entwurf | tatsächlich |
+|---|---|
+| `refreshOffsetStatus()` | **`getOffsetSnapshot()`** (`tools.js:1039`) holt `printer.objects/query?offset`; `updateAllProbeResults()` (`:1065`) ist der periodische Aktualisierer, der alle 2 s über `_probeInterval` (`:1167`) läuft. Für den XY-Block gibt es seit Task 7 `updateXyResults(offsetStatus)` (`:1138`). |
+| `currentToolNumber()` | Für den Assistenten irrelevant. Das **Referenztool** kommt aus `getSelectedReferenceTool(fallback)` (`:721`) bzw. `computeDefaultRef(toolNumbers)` (`:714`). Das **montierte** Tool steht in der Druckerstatus-Abfrage unter `toolchanger.tool_number` (verifiziert am 250er). |
+| `ensureHomed()` | **Existiert nicht — und darf hier auch nicht durch die vorhandene Recovery ersetzt werden.** Siehe unten. |
+
+`readXyProbeUuid()` ist selbst zu schreiben: liest die `canbus_uuid`-Zeile aus
+`xy_probe.cfg.disabled` über `getConfigFile`/`fetch` mit `NO_CACHE`.
+
+### ACHTUNG: die vorhandene Homing-Recovery ist hier gefährlich
+
+`recoveryFor(detail)` (`tools.js:262`) fängt „Must home first" ab und fährt
+dann `G28` → `QUAD_GANTRY_LEVEL` → `G28 Z`. Für jede andere Kalibrierung ist
+das genau richtig. **Für diesen Ablauf ist es ein Kollisionsrisiko:** die
+Recovery greift erst, wenn der Messlauf schon gestartet ist — also wenn die
+Halterung längst auf dem Bett steht. Und `homing.cfg:35` setzt bei unhomed Z
+ein `SET_KINEMATIC_POSITION Z=0`, hebt nur 10 mm und fährt danach Y quer über
+die Bettmitte.
+
+Der Assistent muss deshalb in Schritt 1 **selbst** prüfen und homen, bevor er
+zum Aufsetzen der Halterung auffordert, und darf sich nicht auf die Recovery
+verlassen:
+
+```javascript
+// Prueft und homet VOR dem Aufsetzen der Halterung. Bewusst nicht ueber
+// sendGcodeWithRecovery: dessen "Must home first"-Pfad greift erst mitten
+// im Messlauf, also wenn der Aufbau schon auf dem Bett steht -- und ein
+// G28 mit Aufbau auf dem Bett hebt nur 10mm und faehrt dann Y quer
+// darueber (homing.cfg:35).
+function ensureHomedBeforeSetup() {
+  return $.get(printerUrl(printerIp, "/printer/objects/query?toolhead"))
+    .then(function (data) {
+      var homed = (data?.result?.status?.toolhead?.homed_axes) || "";
+      if (homed.includes("x") && homed.includes("y") && homed.includes("z")) {
+        return null;
+      }
+      return sendGcodeWithRecovery("G28", "Homen vor dem Aufsetzen");
+    });
+}
+```
 
 **Der `catch`-Zweig ist der wichtigste Teil.** Bricht irgendein Schritt
 nach dem Aktivieren ab, muss der Nutzer die Sonde deaktivieren können, ohne
@@ -2101,13 +2142,33 @@ und in `camera.js` bei der bestehenden Verdrahtung der Zoom-Steuerung
   var captureBtn = document.getElementById('camera-capture-btn');
   if (captureBtn) {
     captureBtn.addEventListener('click', function () {
-      captureCameraPosition(currentToolNumber());
+      captureMountedToolPosition();
     });
   }
 ```
 
-`currentToolNumber()` ist der vorhandene Helfer der Offset-UI — den
-tatsächlichen Namen aus `tools.js` übernehmen.
+**Welches Tool ist gemeint?** Nicht das in der UI ausgewählte Referenztool,
+sondern das **gerade montierte** — der Nutzer hat es aufgenommen und zentriert
+es jetzt über dem Fadenkreuz. Das steht im Druckerstatus unter
+`toolchanger.tool_number` (Feldname am 250er verifiziert; daneben gibt es
+`detected_tool_number` und `tool_numbers`). Also:
+
+```javascript
+// Das MONTIERTE Tool, nicht das in der UI angehakte Referenztool: der
+// Nutzer hat es aufgenommen und zentriert es gerade ueber dem Fadenkreuz.
+function captureMountedToolPosition() {
+  return $.get(printerUrl(printerIp, "/printer/objects/query?toolchanger"))
+    .then(function (data) {
+      var t = data?.result?.status?.toolchanger?.tool_number;
+      if (t === undefined || t === null || t < 0) {
+        return alertDialog("Kein Tool montiert",
+          "Es ist kein Werkzeug aufgenommen. Erst ein Tool waehlen, dann "
+          + "die Duese ueber dem Fadenkreuz zentrieren.");
+      }
+      return captureCameraPosition(t);
+    });
+}
+```
 
 - [ ] **Step 3: Im Browser prüfen**
 

@@ -91,9 +91,21 @@ Die UI liest `printer.offset.xy_results` in einer Form, die bisher nur auf dem P
 
 Ohne Messdaten konnte nur der Leerzustand geprüft werden. Ungeprüft sind: gefüllte Tabelle, Spaltenformatierung, Vorzeichen der Δ-Anzeige, die Live-Kurve (Sparkline) mit echten Punkten, und ob die Sparkline bei laufendem Sweep überhaupt mitwächst.
 
-### 4.3 Geratene Namen bestehender Helfer
+### 4.3 Geratene Helfernamen — aufgelöst, mit einem Sicherheitsfund
 
-Im Assistenten (Task 8) werden Helfer der Offset-UI aufgerufen, deren echte Namen ich nicht verifiziert habe: `ensureHomed()`, `refreshOffsetStatus()`, `currentToolNumber()`. Ebenso ist `readXyProbeUuid()` beschrieben, aber nicht ausgeschrieben — es soll die `canbus_uuid`-Zeile aus `xy_probe.cfg.disabled` lesen. **Vor dem ersten Öffnen der UI gegen `tools.js` abgleichen**, sonst scheitert der Assistent an einem `ReferenceError` statt an der Sache.
+Der Plan rief drei Helfer auf, deren Namen geraten waren. Inzwischen gegen `tools.js` geprüft:
+
+| geraten | tatsächlich |
+|---|---|
+| `refreshOffsetStatus()` | `getOffsetSnapshot()` (`tools.js:1039`), periodisch über `updateAllProbeResults()` (`:1065`, alle 2 s via `_probeInterval` `:1167`) |
+| `currentToolNumber()` | Referenztool: `getSelectedReferenceTool()` (`:721`). Montiertes Tool: `toolchanger.tool_number` im Druckerstatus (am 250er verifiziert) |
+| `ensureHomed()` | **existiert nicht** — und die naheliegende Ersatzlösung wäre gefährlich gewesen |
+
+**Der Sicherheitsfund:** `recoveryFor(detail)` (`tools.js:262`) fängt „Must home first" ab und fährt `G28` → `QUAD_GANTRY_LEVEL` → `G28 Z`. Für jede andere Kalibrierung genau richtig. Hier nicht: die Recovery greift erst, wenn der Messlauf schon läuft — also wenn die Halterung längst auf dem Bett steht. Zusammen mit `homing.cfg:35` (`SET_KINEMATIC_POSITION Z=0`, nur 10 mm anheben, dann Y quer über die Bettmitte) ist das genau der Crash, den die Schrittreihenfolge in Abschnitt 5.1 verhindern soll.
+
+Der Assistent homet deshalb in Schritt 1 **selbst und vorher**, über eine eigene kleine Funktion `ensureHomedBeforeSetup()`, und verlässt sich ausdrücklich nicht auf die Recovery. Steht so im Plan.
+
+`readXyProbeUuid()` ist weiterhin selbst zu schreiben (liest die `canbus_uuid`-Zeile aus `xy_probe.cfg.disabled`).
 
 ### 4.4 Moonrakers CAN-Endpunkt
 
