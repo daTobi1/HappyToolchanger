@@ -454,13 +454,31 @@ function offsetChangeListHtml(entries, note) {
 // --------------------------
 // Config file update via Moonraker File API
 // --------------------------
+// Liest eine Config-Datei, laesst sie vom mutator veraendern und laedt sie
+// wieder hoch. Ungecacht lesen ist Pflicht -- ein gecachter Lesevorgang hat
+// hier schon einmal Uebernahmen verschluckt (e489c494).
+// Liefert der mutator null, wird nicht hochgeladen.
+function updateConfigFile(filePath, mutator) {
+  var baseUrl = printerUrl(printerIp, "");
+  return fetch(baseUrl + "/server/files/config/" + filePath, NO_CACHE)
+    .then(function (r) { return r.text(); })
+    .then(function (content) {
+      var updated = mutator(content);
+      if (updated === null || updated === undefined) return null;
+      var formData = new FormData();
+      var blob = new Blob([updated], { type: 'text/plain' });
+      formData.append('file', blob, filePath);
+      formData.append('root', 'config');
+      return fetch(baseUrl + "/server/files/upload", { method: 'POST', body: formData });
+    });
+}
+
 // Updates gcode offsets directly in tool config files (avoids SAVE_CONFIG conflicts with included files)
 // Uploads sequentially to avoid Moonraker 500 errors from concurrent writes.
 function updateToolConfigOffsets(toolOffsets) {
   // toolOffsets: { "0": {x: "0.000", y: "0.000", z: "0.000"}, "1": {x: "0.53", z: "0.640"}, ... }
   // Only keys present in each tool's object are updated.
   var tools = Object.keys(toolOffsets);
-  var baseUrl = printerUrl(printerIp, "");
   var missing = [];
 
   function processNext(idx) {
@@ -471,38 +489,31 @@ function updateToolConfigOffsets(toolOffsets) {
     var t = tools[idx];
     var offsets = toolOffsets[t];
     var filePath = "toolchanger/tools/T" + t + ".cfg";
-    return fetch(baseUrl + "/server/files/config/" + filePath, NO_CACHE)
-      .then(function(r) { return r.text(); })
-      .then(function(content) {
-        var modified = false;
-        if ('x' in offsets) {
-          var rxX = /^(gcode_x_offset\s*[:=]\s*).*$/m;
-          if (rxX.test(content)) { content = content.replace(rxX, "$1" + offsets.x); modified = true; }
-        }
-        if ('y' in offsets) {
-          var rxY = /^(gcode_y_offset\s*[:=]\s*).*$/m;
-          if (rxY.test(content)) { content = content.replace(rxY, "$1" + offsets.y); modified = true; }
-        }
-        if ('z' in offsets) {
-          var rxZ = /^(gcode_z_offset\s*[:=]\s*).*$/m;
-          if (rxZ.test(content)) { content = content.replace(rxZ, "$1" + offsets.z); modified = true; }
-        }
-        if (!modified) {
-          ['x', 'y', 'z'].forEach(function (a) {
-            if (a in offsets) {
-              missing.push({file: filePath, section: 'tool T' + t,
-                            key: 'gcode_' + a + '_offset'});
-            }
-          });
-          return processNext(idx + 1);
-        }
-        var formData = new FormData();
-        var blob = new Blob([content], {type: 'text/plain'});
-        formData.append('file', blob, filePath);
-        formData.append('root', 'config');
-        return fetch(baseUrl + "/server/files/upload", { method: 'POST', body: formData })
-          .then(function() { return processNext(idx + 1); });
-      });
+    return updateConfigFile(filePath, function (content) {
+      var modified = false;
+      if ('x' in offsets) {
+        var rxX = /^(gcode_x_offset\s*[:=]\s*).*$/m;
+        if (rxX.test(content)) { content = content.replace(rxX, "$1" + offsets.x); modified = true; }
+      }
+      if ('y' in offsets) {
+        var rxY = /^(gcode_y_offset\s*[:=]\s*).*$/m;
+        if (rxY.test(content)) { content = content.replace(rxY, "$1" + offsets.y); modified = true; }
+      }
+      if ('z' in offsets) {
+        var rxZ = /^(gcode_z_offset\s*[:=]\s*).*$/m;
+        if (rxZ.test(content)) { content = content.replace(rxZ, "$1" + offsets.z); modified = true; }
+      }
+      if (!modified) {
+        ['x', 'y', 'z'].forEach(function (a) {
+          if (a in offsets) {
+            missing.push({file: filePath, section: 'tool T' + t,
+                          key: 'gcode_' + a + '_offset'});
+          }
+        });
+        return null;
+      }
+      return content;
+    }).then(function () { return processNext(idx + 1); });
   }
   return processNext(0);
 }
@@ -614,7 +625,6 @@ function fetchToolConfigValues(requests) {
 // toolZOffsets: { "0": "-0.812", "1": "-0.831", ... }
 function updateToolProbeOffsets(toolZOffsets) {
   var tools = Object.keys(toolZOffsets);
-  var baseUrl = printerUrl(printerIp, "");
   var missing = [];
 
   function processNext(idx) {
@@ -624,23 +634,16 @@ function updateToolProbeOffsets(toolZOffsets) {
     }
     var t = tools[idx];
     var filePath = "toolchanger/tools/T" + t + ".cfg";
-    return fetch(baseUrl + "/server/files/config/" + filePath, NO_CACHE)
-      .then(function(r) { return r.text(); })
-      .then(function(content) {
-        var updated = replaceInConfigSection(
-          content, "tool_probe T" + t, "z_offset", toolZOffsets[t]);
-        if (updated === null) {
-          missing.push({file: filePath, section: 'tool_probe T' + t,
-                        key: 'z_offset'});
-          return processNext(idx + 1);
-        }
-        var formData = new FormData();
-        var blob = new Blob([updated], {type: 'text/plain'});
-        formData.append('file', blob, filePath);
-        formData.append('root', 'config');
-        return fetch(baseUrl + "/server/files/upload", { method: 'POST', body: formData })
-          .then(function() { return processNext(idx + 1); });
-      });
+    return updateConfigFile(filePath, function (content) {
+      var updated = replaceInConfigSection(
+        content, "tool_probe T" + t, "z_offset", toolZOffsets[t]);
+      if (updated === null) {
+        missing.push({file: filePath, section: 'tool_probe T' + t,
+                      key: 'z_offset'});
+        return null;
+      }
+      return updated;
+    }).then(function () { return processNext(idx + 1); });
   }
   return processNext(0);
 }
@@ -1770,7 +1773,6 @@ function pidCalibrationSection(toolNumbers, enabled) {
 // file is written here instead.
 function updateToolPidValues(toolValues) {
   var tools = Object.keys(toolValues);
-  var baseUrl = printerUrl(printerIp, "");
   var missing = [];
 
   function processNext(idx) {
@@ -1781,31 +1783,23 @@ function updateToolPidValues(toolValues) {
     var t = tools[idx];
     var v = toolValues[t];
     var filePath = "toolchanger/tools/T" + t + ".cfg";
-    return fetch(baseUrl + "/server/files/config/" + filePath, NO_CACHE)
-      .then(function (r) { return r.text(); })
-      .then(function (content) {
-        var updated = content;
-        var ok = true;
-        [['pid_Kp', v.pid_kp], ['pid_Ki', v.pid_ki], ['pid_Kd', v.pid_kd]]
-          .forEach(function (pair) {
-            var next = replaceInConfigSection(updated, v.extruder, pair[0],
-                                              pair[1].toFixed(3));
-            if (next === null) {
-              ok = false;
-              missing.push({file: filePath, section: v.extruder, key: pair[0]});
-            } else {
-              updated = next;
-            }
-          });
-        if (!ok) {
-          return processNext(idx + 1);
-        }
-        var formData = new FormData();
-        formData.append('file', new Blob([updated], {type: 'text/plain'}), filePath);
-        formData.append('root', 'config');
-        return fetch(baseUrl + "/server/files/upload", {method: 'POST', body: formData})
-          .then(function () { return processNext(idx + 1); });
-      });
+    return updateConfigFile(filePath, function (content) {
+      var updated = content;
+      var ok = true;
+      [['pid_Kp', v.pid_kp], ['pid_Ki', v.pid_ki], ['pid_Kd', v.pid_kd]]
+        .forEach(function (pair) {
+          var next = replaceInConfigSection(updated, v.extruder, pair[0],
+                                            pair[1].toFixed(3));
+          if (next === null) {
+            ok = false;
+            missing.push({file: filePath, section: v.extruder, key: pair[0]});
+          } else {
+            updated = next;
+          }
+        });
+      if (!ok) return null;
+      return updated;
+    }).then(function () { return processNext(idx + 1); });
   }
   return processNext(0);
 }
@@ -2625,7 +2619,6 @@ $(document).on("click", "#dock-cal-btn", function () {
 // Schreibt params_park_x/y/z in die [tool Tn]-Sektion der Tool-Configs.
 function updateToolDockValues(toolValues) {
   var tools = Object.keys(toolValues);
-  var baseUrl = printerUrl(printerIp, "");
   var missing = [];
 
   function processNext(idx) {
@@ -2637,28 +2630,22 @@ function updateToolDockValues(toolValues) {
     var v = toolValues[t];
     var filePath = "toolchanger/tools/T" + t + ".cfg";
     var section = "tool T" + t;
-    return fetch(baseUrl + "/server/files/config/" + filePath, NO_CACHE)
-      .then(function (r) { return r.text(); })
-      .then(function (content) {
-        var updated = content;
-        var ok = true;
-        ['params_park_x', 'params_park_y', 'params_park_z'].forEach(function (key) {
-          var next = replaceInConfigSection(updated, section, key,
-                                            v[key].toFixed(3));
-          if (next === null) {
-            ok = false;
-            missing.push({file: filePath, section: section, key: key});
-          } else {
-            updated = next;
-          }
-        });
-        if (!ok) return processNext(idx + 1);
-        var formData = new FormData();
-        formData.append('file', new Blob([updated], {type: 'text/plain'}), filePath);
-        formData.append('root', 'config');
-        return fetch(baseUrl + "/server/files/upload", {method: 'POST', body: formData})
-          .then(function () { return processNext(idx + 1); });
+    return updateConfigFile(filePath, function (content) {
+      var updated = content;
+      var ok = true;
+      ['params_park_x', 'params_park_y', 'params_park_z'].forEach(function (key) {
+        var next = replaceInConfigSection(updated, section, key,
+                                          v[key].toFixed(3));
+        if (next === null) {
+          ok = false;
+          missing.push({file: filePath, section: section, key: key});
+        } else {
+          updated = next;
+        }
       });
+      if (!ok) return null;
+      return updated;
+    }).then(function () { return processNext(idx + 1); });
   }
   return processNext(0);
 }
