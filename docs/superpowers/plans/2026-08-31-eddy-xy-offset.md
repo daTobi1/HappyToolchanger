@@ -1877,18 +1877,28 @@ function restartKlipperAndWait(timeoutMs) {
 - [ ] **Step 2: Präsenzprüfung**
 
 ```javascript
-// Ist der CAN-Knoten da? Fehlt der Endpunkt in dieser Moonraker-Version,
-// faellt die Pruefung auf eine Rueckfrage zurueck statt zu scheitern.
-function xyProbeOnBus(uuid) {
-  return fetch(baseUrl + "/machine/peripherals/canbus?interface=can0",
-               NO_CACHE)
+// Haengt die USB-Sonde dran? Moonrakers serial-Endpunkt listet alle
+// seriellen Geraete samt path_by_id; wir suchen den Pfad, der in
+// xy_probe.cfg.disabled als serial: eingetragen ist.
+//
+// Bewusst ueber /machine/peripherals/serial und nicht ueber den
+// canbus-Endpunkt: der listet nur Knoten, die noch KEIN laufender Klipper
+// beansprucht, und liefert im Normalbetrieb eine leere Liste (am 250er
+// nachgemessen: can_uuids ist leer, obwohl zwei CAN-MCUs laufen). Fuer USB
+// ist die Auskunft dagegen eindeutig und unabhaengig davon, ob Klipper das
+// Geraet gerade haelt.
+function xyProbeConnected(serialPath) {
+  return fetch(baseUrl + "/machine/peripherals/serial", NO_CACHE)
     .then(function (r) {
       if (!r.ok) return null;               // Endpunkt gibt es nicht
       return r.json();
     })
     .then(function (j) {
-      if (!j || !j.result || !j.result.can_uuids) return null;
-      return j.result.can_uuids.some(function (d) { return d.uuid === uuid; });
+      var devs = j && j.result && j.result.serial_devices;
+      if (!devs) return null;
+      return devs.some(function (d) {
+        return d.path_by_id === serialPath || d.device_path === serialPath;
+      });
     })
     .catch(function () { return null; });
 }
