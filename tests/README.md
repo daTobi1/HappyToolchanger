@@ -116,6 +116,40 @@ console.log('sichtbar:', el.classList.contains('show'));   // muss true sein
 
 `sichtbar: false` heißt: der Fehlerdialog wird wieder verschluckt.
 
+## `check_xy_offset_ui.js`
+
+Prüft `_cameraOffsetFor()` aus der Offset-Webapp — ohne Browser, ohne
+Drucker. Wie `check_webapp_recovery.js` wird die Funktion aus
+`webapp/js/tools.js` herausgeschnitten und gegen gestubbte globale
+Zustandsvariablen (`_xyResults`, `_cameraPositions`) laufen gelassen.
+
+```bash
+node tests/check_xy_offset_ui.js
+```
+
+Der Anlass: `_cameraOffsetFor()` ist die einzige Funktion des
+XY-Offset-Blocks mit echter Logik statt nur Darstellung — der Rest ist
+Tabellenaufbau. Sie macht die Kameramethode mit dem Eddy-Sweep
+vergleichbar, indem sie denselben Trick anwendet: der Offset ist die
+Differenz zur zuletzt festgehaltenen Position des Referenztools, nicht ein
+absoluter Wert.
+
+| Zusicherung | warum sie zählt |
+|---|---|
+| Referenz- und Zieltool erfasst → Offset ist die Differenz | Grundfunktion |
+| Zieltool nicht erfasst → `null` | die Tabelle zeigt „nicht gemessen" statt `NaN` |
+| Referenztool nicht erfasst → `null` | dieselbe Falle von der anderen Seite |
+| keine Position erfasst → `null` für jedes Tool | der einzige heute erreichbare Zustand — die zweite Eddy-Spule und das Kamera-„Position übernehmen" (Task 9) existieren noch nicht |
+| `_xyResults.ref_tool` fehlt → T0 gilt als Referenz | Fallback für den Fall, dass noch nie ein Referenztool gewählt wurde |
+| `ref_tool` explizit gesetzt → wird respektiert | Referenztool ist frei wählbar, nicht immer T0 |
+
+**Deckt nicht ab:** die Darstellung selbst. Ob die Tabelle korrekt rendert,
+ob der Methodenwechsel (Kamera/Eddy-Sweep) die Zeilen tatsächlich neu
+aufbaut, und ob die Sparkline mitwächst, bleibt unverifiziert, bis ein
+Browser-Test möglich ist — heute existieren weder die zweite Eddy-Spule
+noch das Klipper-seitige `nozzle_locator`-Objekt, das die Messwerte liefern
+würde.
+
 ## `check_nozzle_locator_fit.py`
 
 Prüft die Fit-Mathematik der XY-Offset-Ortung. Braucht **keine

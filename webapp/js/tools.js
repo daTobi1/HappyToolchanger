@@ -32,6 +32,10 @@ let _toolParkPositions = {}; // aktuell konfigurierte Dock-Positionen je Tool
 let _tapMinTemp = null;        // _TAP_PROBE_ACTIVATE variable_min_temp — Untergrenze, auf die der Tap heizt
 let _toolGcodeOffsets = {};    // { "0": {x:0, y:0, z:0}, ... } current tool gcode offsets
 let _zSwitchResults = {};      // { "0": { z_offset: 0.0, z_trigger: 1.23 }, ... }
+let _xyResults = {};        // { ref_tool: 0, "0": {x, y, z_compare, x_fwd, x_rev, ...} }
+let _xyMethod = "eddy";     // "eddy" | "camera"
+let _xyProbeActive = null;  // null = unbekannt, true/false = Config-Zustand (Task 8)
+let _cameraPositions = {};  // { "0": {x, y} } aus "Position uebernehmen" (Task 9)
 
 // --------------------------
 // Helpers
@@ -982,6 +986,7 @@ function fetchOffsetStatus() {
       _dockResults = (st?.dock_results || {});
       _dockDefaults = (st?.dock_defaults || null);
       _toolParkPositions = (st?.tool_park_positions || {});
+      _xyResults = (st?.xy_results || {});
       var tapMacro = ax?.result?.status?.["gcode_macro _TAP_PROBE_ACTIVATE"];
       if (typeof tapMacro?.min_temp === 'number') _tapMinTemp = tapMacro.min_temp;
       _toolProbeOffsets = (st?.tool_probe_offsets || {});
@@ -1021,6 +1026,7 @@ function fetchOffsetStatus() {
       _toolPid = {};
       _dockResults = {};
       _toolParkPositions = {};
+      _xyResults = {};
       return null;
     });
 }
@@ -1061,6 +1067,8 @@ function updateAllProbeResults() {
     var probeResults = offsetStatus.probe_results || {};
     updatePidResults(offsetStatus);
     updateDockResults(offsetStatus);
+    updateXyResults(offsetStatus);
+    pollXySparkline();
     $('button.toolchange-btn').each(function(){
       updateProbeResults($(this).data("tool"), probeResults);
     });
@@ -1122,6 +1130,16 @@ function updateDockResults(offsetStatus) {
   var tools = Object.keys(_toolParkPositions).map(Number)
                 .sort(function (a, b) { return a - b; });
   $c.html(dockResultsTable(tools));
+}
+
+// Wie updateDockResults/updatePidResults: patcht xy_results aus dem
+// laufenden Poll nach, damit ein Messlauf nicht erst nach einem Reload in
+// der Tabelle auftaucht.
+function updateXyResults(offsetStatus) {
+  var res = offsetStatus.xy_results || {};
+  if (JSON.stringify(res) === JSON.stringify(_xyResults)) return;
+  _xyResults = res;
+  renderXyBlock();
 }
 
 function updatePidResults(offsetStatus) {
@@ -2732,6 +2750,276 @@ $(document).on("click", "#apply-dock-btn", function () {
   });
 });
 
+// --------------------------
+// XY-Offset Vergleich (Eddy-Sweep vs. Kamera)
+// --------------------------
+// Stellt beide Messverfahren fuer den XY-Offset nebeneinander: die neue
+// automatische Eddy-Messung (Klipper-seitig noch nicht gebaut, Task 2/3/5)
+// und die bisherige manuelle Kameramethode (Erfassen kommt erst mit
+// Task 9 dazu). Ohne Messwerte zeigt jede Zeile "nicht gemessen" - das ist
+// heute der einzige erreichbare Zustand, da weder die zweite Eddy-Spule
+// noch das Locator-Modul existieren.
+
+// Offset der Kameramethode = Differenz zum Referenztool, genau wie beim
+// Eddy-Verfahren. Nur so sind beide Verfahren vergleichbar.
+function _cameraOffsetFor(toolNr) {
+  var ref = _xyResults.ref_tool;
+  if (ref === undefined) ref = 0;
+  var here = _cameraPositions[String(toolNr)];
+  var base = _cameraPositions[String(ref)];
+  if (!here || !base) return null;
+  return {x: here.x - base.x, y: here.y - base.y};
+}
+
+// Bootstrap-Accordion statt statischer Card in index.html - alle anderen
+// Offset-Bereiche (Dock, PID, Z-Switch, Probe) werden ebenfalls hier
+// dynamisch gebaut und in #offset-accordion eingehaengt. Die Kopfzeile des
+// Accordion-Buttons selbst ist ein <button>; Radio-Gruppe und
+// Assistent-Knopf koennen deshalb nicht dort hinein (verschachtelte
+// interaktive Elemente sind ungueltiges HTML) und stehen stattdessen oben
+// im Body.
+function xyOffsetSection() {
+  var checkedAttr = function (m) { return (_xyMethod === m) ? ' checked' : ''; };
+  return '<div class="container p-0">' +
+    '<div class="d-flex align-items-center justify-content-between mb-2">' +
+      '<div class="btn-group btn-group-sm" role="group" id="xy-method">' +
+        '<input type="radio" class="btn-check" name="xy-method" ' +
+          'id="xy-method-camera" value="camera"' + checkedAttr('camera') + '>' +
+        '<label class="btn btn-outline-secondary" for="xy-method-camera">' +
+          'Kamera (manuell)</label>' +
+        '<input type="radio" class="btn-check" name="xy-method" ' +
+          'id="xy-method-eddy" value="eddy"' + checkedAttr('eddy') + '>' +
+        '<label class="btn btn-outline-secondary" for="xy-method-eddy">' +
+          'Eddy-Sweep</label>' +
+      '</div>' +
+      '<button class="btn btn-sm btn-primary" id="xy-wizard-btn">Assistent&hellip;</button>' +
+    '</div>' +
+    '<div id="xy-sparkline" class="mb-2"></div>' +
+    '<div id="xy-offset-body"></div>' +
+  '</div>';
+}
+
+$(document).on("change", 'input[name="xy-method"]', function () {
+  _xyMethod = this.value;
+  renderXyBlock();
+});
+
+// Baut die Vergleichstabelle in #xy-offset-body neu auf. Wird nach dem
+// Einhaengen des Accordion-Abschnitts sowie bei jedem Methodenwechsel
+// aufgerufen.
+function renderXyBlock() {
+  var body = document.getElementById('xy-offset-body');
+  if (!body) return;
+  var ref = _xyResults.ref_tool;
+  if (ref === undefined) ref = 0;
+  var rows = Object.keys(_toolGcodeOffsets).sort(function (a, b) {
+    return parseInt(a, 10) - parseInt(b, 10);
+  }).map(function (t) {
+    var cur = _toolGcodeOffsets[t] || {x: 0, y: 0};
+    var res = (_xyMethod === 'eddy') ? _xyResults[t] : _cameraOffsetFor(t);
+    var isRef = (String(ref) === String(t));
+    if (isRef) {
+      return '<tr><td>T' + t + '</td>' +
+             '<td>' + cur.x.toFixed(3) + ' / ' + cur.y.toFixed(3) + '</td>' +
+             '<td colspan="4" class="text-muted">Referenztool</td></tr>';
+    }
+    if (!res) {
+      return '<tr><td>T' + t + '</td>' +
+             '<td>' + cur.x.toFixed(3) + ' / ' + cur.y.toFixed(3) + '</td>' +
+             '<td colspan="4" class="text-muted">nicht gemessen</td></tr>';
+    }
+    var dx = (res.x - cur.x) * 1000, dy = (res.y - cur.y) * 1000;
+    var bias = (res.x_fwd !== undefined)
+      ? ('<span title="Differenz Hin- gegen Ruecksweep = gemessener ' +
+         'Drift-Bias">' + ((res.x_fwd - res.x_rev) * 1000).toFixed(1) +
+         ' / ' + ((res.y_fwd - res.y_rev) * 1000).toFixed(1) + ' &micro;m</span>')
+      : '&mdash;';
+    return '<tr><td>T' + t + '</td>' +
+      '<td>' + cur.x.toFixed(3) + ' / ' + cur.y.toFixed(3) + '</td>' +
+      '<td>' + res.x.toFixed(3) + ' / ' + res.y.toFixed(3) + '</td>' +
+      '<td>' + dx.toFixed(0) + ' / ' + dy.toFixed(0) + ' &micro;m</td>' +
+      '<td>' + (res.z_compare !== undefined
+                ? (res.z_compare * 1000).toFixed(0) + ' &micro;m' : '&mdash;') + '</td>' +
+      '<td>' + bias + '</td>' +
+      '<td><button class="btn btn-sm btn-outline-primary" ' +
+      'onclick="applyXyOffset(\'' + t + '\', false)">&Uuml;bernehmen</button> ' +
+      '<button class="btn btn-sm btn-primary" ' +
+      'onclick="applyXyOffset(\'' + t + '\', true)">+ schreiben</button></td>' +
+      '</tr>';
+  }).join('');
+  body.innerHTML =
+    '<table class="table table-sm align-middle mb-2">' +
+    '<thead><tr><th>Tool</th><th>aktuell X/Y</th><th>gemessen X/Y</th>' +
+    '<th>&Delta;</th><th>Z-Vgl.</th><th>Drift-Bias</th><th></th></tr></thead>' +
+    '<tbody>' + rows + '</tbody></table>' +
+    '<button class="btn btn-sm btn-primary" onclick="applyAllXyOffsets()">' +
+    'Alle &uuml;bernehmen + schreiben</button>';
+}
+
+// Zeichnet die laufende Glocke aus nozzle_locator.points. Zeigt sofort,
+// ob das Ziel sauber im Fenster liegt oder ob die Halterung wackelt.
+function renderXySparkline(status) {
+  var el = document.getElementById('xy-sparkline');
+  if (!el) return;
+  var pts = (status && status.points) || [];
+  if (pts.length < 2) {
+    el.innerHTML = '<span class="text-muted">' +
+      (status && status.state !== 'idle' ? escapeHtml(status.state) : '') +
+      '</span>';
+    return;
+  }
+  var xs = pts.map(function (p) { return p[0]; });
+  var ys = pts.map(function (p) { return p[1]; });
+  var x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs);
+  var y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
+  var W = 240, H = 48;
+  var sx = (x1 > x0) ? (W - 4) / (x1 - x0) : 0;
+  var sy = (y1 > y0) ? (H - 4) / (y1 - y0) : 0;
+  var d = pts.map(function (p, i) {
+    return (i ? 'L' : 'M') + (2 + (p[0] - x0) * sx).toFixed(1) + ' ' +
+           (H - 2 - (p[1] - y0) * sy).toFixed(1);
+  }).join(' ');
+  el.innerHTML =
+    '<svg width="' + W + '" height="' + H + '" role="img" ' +
+    'aria-label="Frequenzverlauf des laufenden Sweeps">' +
+    '<path d="' + d + '" fill="none" stroke="currentColor" ' +
+    'stroke-width="1.5"/></svg> ' +
+    '<small class="text-muted">' + (y1 - y0).toFixed(0) + ' Hz &uuml;ber ' +
+    (x1 - x0).toFixed(1) + ' mm</small>';
+}
+
+// Eigene, tolerante Anfrage fuer die Sparkline: das Objekt "nozzle_locator"
+// existiert erst, wenn Sonde und Klipper-Modul (Task 2/3/5) da sind. Bis
+// dahin bleibt sie leer, ohne die eigentliche Offset-Abfrage zu gefaehrden
+// - deshalb bewusst nicht Teil von fetchOffsetStatus()/getOffsetSnapshot().
+function pollXySparkline() {
+  return $.get(printerUrl(printerIp, "/printer/objects/query?nozzle_locator"))
+    .then(function (data) {
+      renderXySparkline(data && data.result && data.result.status
+                          && data.result.status.nozzle_locator);
+    })
+    .catch(function () { renderXySparkline(null); });
+}
+
+// Schreibt den XY-Offset eines Tools sofort per SET_TOOL_GCODE_OFFSET
+// (Laufzeit). alsoWrite=true schreibt danach zusaetzlich in die
+// Tool-Config - wie bei den anderen APPLY-...-Aktionen erst nach einem
+// Bestaetigungsdialog mit Vorher/Nachher, denn ein falscher XY-Offset laesst
+// die Duese daneben drucken.
+function applyXyOffset(toolNr, alsoWrite) {
+  var res = (_xyMethod === 'eddy') ? _xyResults[String(toolNr)]
+                                   : _cameraOffsetFor(toolNr);
+  if (!res) {
+    if (typeof showToast === 'function') {
+      showToast("T" + toolNr + ": kein Messwert", "warning");
+    }
+    return Promise.resolve(false);
+  }
+  var xTxt = res.x.toFixed(4), yTxt = res.y.toFixed(4);
+  var script = "SET_TOOL_GCODE_OFFSET T=" + toolNr +
+               " X=" + xTxt + " Y=" + yTxt;
+  var filePath = "toolchanger/tools/T" + toolNr + ".cfg";
+  var section = "tool T" + toolNr;
+
+  function writeConfig() {
+    return fetchToolConfigValues([
+      { tool: toolNr, key: "gcode_x_offset", section: section },
+      { tool: toolNr, key: "gcode_y_offset", section: section }
+    ]).then(function (cur) {
+      var entries = [{
+        tool: toolNr,
+        file: filePath,
+        section: section,
+        changes: [
+          { key: "gcode_x_offset", from: cur[toolNr + "|gcode_x_offset"], to: xTxt },
+          { key: "gcode_y_offset", from: cur[toolNr + "|gcode_y_offset"], to: yTxt }
+        ]
+      }];
+      return confirmDialog({
+        title: "XY-Offset T" + toolNr + " in die Config schreiben?",
+        body: offsetChangeListHtml(entries,
+          '"Current" kommt aus der Config-Datei. Der Laufzeitwert wurde ' +
+          'bereits per <code>SET_TOOL_GCODE_OFFSET</code> gesetzt.'),
+        okLabel: "OK — schreiben",
+        okClass: "btn-success",
+        cancelLabel: "Nur Laufzeit"
+      });
+    }).then(function (ok) {
+      if (!ok) return false;
+      var missing = [];
+      return updateConfigFile(filePath, function (content) {
+        var updated = content;
+        var allOk = true;
+        [["gcode_x_offset", xTxt], ["gcode_y_offset", yTxt]].forEach(function (pair) {
+          var next = replaceInConfigSection(updated, section, pair[0], pair[1]);
+          if (next === null) {
+            allOk = false;
+            missing.push({file: filePath, section: section, key: pair[0]});
+          } else {
+            updated = next;
+          }
+        });
+        if (!allOk) return null;
+        return updated;
+      }).then(function () {
+        reportMissingKeys(missing);
+        return true;
+      });
+    });
+  }
+
+  return sendGcodeWithRecovery(script, "XY-Offset T" + toolNr)
+    .then(function (r) {
+      if (!r || !r.ok) return false;
+      if (typeof showToast === 'function') {
+        showToast("T" + toolNr + ": XY-Offset gesetzt (Laufzeit)", "success");
+      }
+      if (!alsoWrite) return true;
+      // Nur Laufzeit-Toast, wenn der Schreibvorgang abgelehnt/abgebrochen
+      // wird - "Nur Laufzeit" im Dialog ist eine gueltige Wahl, kein Fehler.
+      return writeConfig().then(function (wrote) {
+        if (wrote && typeof showToast === 'function') {
+          showToast("T" + toolNr + ": in die Config geschrieben", "success");
+        }
+        return wrote;
+      });
+    })
+    .catch(function (err) {
+      var detail = "";
+      try { detail = (err.responseJSON || err).message || ""; } catch (_) {}
+      return alertDialog("XY-Offset T" + toolNr + " uebernehmen fehlgeschlagen",
+                         escapeHtml(detail || "Unbekannter Fehler"))
+        .then(function () { return false; });
+    });
+}
+
+// "Alle uebernehmen + schreiben": wendet applyXyOffset(t, true) sequentiell
+// auf alle Tools an, die im aktuell gewaehlten Verfahren einen Messwert
+// haben. Jedes Tool bekommt seinen eigenen Bestaetigungsdialog - wie beim
+// Klick auf die einzelnen "+ schreiben"-Knoepfe, nur automatisiert.
+function applyAllXyOffsets() {
+  var ref = _xyResults.ref_tool;
+  if (ref === undefined) ref = 0;
+  var tools = Object.keys(_toolGcodeOffsets).filter(function (t) {
+    if (String(ref) === String(t)) return false;
+    var res = (_xyMethod === 'eddy') ? _xyResults[t] : _cameraOffsetFor(t);
+    return !!res;
+  }).sort(function (a, b) { return parseInt(a, 10) - parseInt(b, 10); });
+
+  if (!tools.length) {
+    if (typeof showToast === 'function') {
+      showToast("Keine XY-Messwerte zum Uebernehmen", "warning");
+    }
+    return Promise.resolve(false);
+  }
+
+  function next(i) {
+    if (i >= tools.length) return Promise.resolve(true);
+    return applyXyOffset(tools[i], true).then(function () { return next(i + 1); });
+  }
+  return next(0);
+}
+
 function syncPidSelectAllState() {
   var $all = $(".pid-tool-checkbox");
   var $checked = $(".pid-tool-checkbox:checked");
@@ -3052,6 +3340,21 @@ function getTools() {
               dockContent,
               false
             ));
+
+            var xyCompareStatus = _offsetPresent
+              ? (Object.keys(_xyResults).filter(function(k){ return k !== 'ref_tool'; }).length
+                  ? '<span class="text-success">Neu</span>'
+                  : '<span class="text-secondary">Bereit</span>')
+              : '<span class="text-warning">offset module not found</span>';
+
+            $acc.append(accordionSection(
+              'accordion-xy-compare',
+              'XY-Offsets: Eddy vs. Kamera',
+              xyCompareStatus,
+              xyOffsetSection(),
+              false
+            ));
+            renderXyBlock();
 
             // Klipper-Neustart-Button
             $acc.after(
