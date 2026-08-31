@@ -384,7 +384,12 @@ Deliverable: Sonde anstecken, aktivieren, `NOZZLE_LOCATOR_READ` liefert Hz.
   - G-Code `NOZZLE_LOCATOR_READ [DURATION=<s>]`
   - `get_status()` mit `{'present': bool, 'last_freq': float, 'errors': int, 'state': str}`
 
-- [ ] **Step 1: Klipper-API-Test erweitern (er muss zuerst fehlschlagen)**
+- [ ] **Step 1: Klipper-API-Test erweitern**
+
+Anders als in Task 1 ist das **kein** TDD-Rot-Test. `check_klipper_api.py`
+prüft Klippers Oberfläche, nicht unseren Code — er muss von Anfang an grün
+sein. Er ist ein Wächter: bricht ein Klipper-Update später eine der hier
+benutzten Internas, bricht der Test statt des Druckers.
 
 In `tests/check_klipper_api.py`, im Importblock von `main()` ergänzen:
 
@@ -1373,6 +1378,25 @@ let _xyProbeActive = null;  // null = unbekannt, true/false = Config-Zustand
 let _cameraPositions = {};  // { "0": {x, y} } aus "Position uebernehmen"
 ```
 
+Dazu die Leseseite der Kameramethode. Sie gehört hierher und nicht in
+Task 9, weil `renderXyBlock()` sie in Step 3 bereits aufruft — Task 9 fügt
+nur das Erfassen und den Knopf hinzu. Solange niemand eine Position
+festgehalten hat, liefert sie `null`, und die Tabelle zeigt „nicht
+gemessen":
+
+```javascript
+// Offset der Kameramethode = Differenz zum Referenztool, genau wie beim
+// Eddy-Verfahren. Nur so sind beide Verfahren vergleichbar.
+function _cameraOffsetFor(toolNr) {
+  var ref = _xyResults.ref_tool;
+  if (ref === undefined) ref = 0;
+  var here = _cameraPositions[String(toolNr)];
+  var base = _cameraPositions[String(ref)];
+  if (!here || !base) return null;
+  return {x: here.x - base.x, y: here.y - base.y};
+}
+```
+
 `xy_results` in die bestehende Status-Abfrage aufnehmen, dort wo
 `dock_results` und `probe_results` schon geholt werden.
 
@@ -1815,15 +1839,10 @@ function captureCameraPosition(toolNr) {
     });
 }
 
-function _cameraOffsetFor(toolNr) {
-  var ref = _xyResults.ref_tool;
-  if (ref === undefined) ref = 0;
-  var here = _cameraPositions[String(toolNr)];
-  var base = _cameraPositions[String(ref)];
-  if (!here || !base) return null;
-  return {x: here.x - base.x, y: here.y - base.y};
-}
 ```
+
+`_cameraOffsetFor()` gibt es bereits aus Task 7 — hier kommt nur das
+Erfassen dazu.
 
 - [ ] **Step 2: Knopf im Kamerabereich**
 
