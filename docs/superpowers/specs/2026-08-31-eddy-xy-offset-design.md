@@ -108,9 +108,10 @@ Offsets**. Beantwortet ausschließlich: "wo über mir liegt Metall?"
 | `sweep(axis, center, span, step)` | ein gerichteter Sweep, Punkt für Punkt |
 | `fit_center(points)` | Symmetrie-/Parabelfit über festen Punktesatz |
 | `locate(axis, runs)` | Hin- und Rücksweep, Scheitel gemittelt |
+| `measure_coupling(cx, cy)` | zwei Diagonal-Sweeps, liefert den Kreuzterm c und rho |
 
 G-Code: `NOZZLE_LOCATOR_READ` (Rohfrequenz, Präsenz- und
-Platzierungsprüfung), `NOZZLE_LOCATE AXIS=X|Y [REPEATS=n]`
+Platzierungsprüfung), `NOZZLE_LOCATE AXIS=X|Y|DIAG [REPEATS=n]`
 (Einzelmessung, Diagnose, Validierungsreihen ohne Webapp).
 
 **`klippy/extras/offset.py` (erweitert, ~250 Zeilen)**
@@ -142,7 +143,7 @@ lesbar.
 ```ini
 # xy_probe.cfg — aktiver Zustand
 [mcu xyprobe]
-canbus_uuid: <vom Nutzer einmalig eingetragen>
+serial: /dev/serial/by-id/<vom Nutzer einmalig eingetragen>
 
 [nozzle_locator]
 # Sensoranbindung: exakte Schlüssel folgen Klippers ldc1612 (i2c_mcu,
@@ -169,7 +170,7 @@ max_offset: 5.0           # Plausibilitätsgrenze des Ergebnisses
 ```
 
 **Woher der aktive Inhalt kommt.** Die vollständige Konfiguration steht
-dauerhaft in `xy_probe.cfg.disabled` — dort trägt der Nutzer die CAN-UUID
+dauerhaft in `xy_probe.cfg.disabled` — dort trägt der Nutzer den serial-Pfad
 und die Halterungsmaße **einmalig** ein. Aktivieren heißt: Inhalt von
 `.disabled` nach `xy_probe.cfg` kopieren. Deaktivieren heißt: `xy_probe.cfg`
 leeren. Damit überlebt die Konfiguration jeden Zyklus, die Webapp muss
@@ -180,7 +181,7 @@ Orchestrierungs-Parameter kommen aus dem bestehenden `[offset]`,
 insbesondere `default_ref_tool`. Kein zweiter Ort für dieselbe Information.
 
 **Kommandoparameter.** `CALIBRATE_XY_OFFSETS` nimmt `REF_TOOL=`,
-`TOOLS=` (Teilmenge, Default alle), `DRY_RUN=1` (Trockenlauf, §6 Schritt 4)
+`TOOLS=` (Teilmenge, Default alle), `DRY_RUN=1` (Trockenlauf, §6 Schritt 7)
 und `TEMP=` (Düsentemperatur, Default 0 = kalt messen, §14). Die Namen
 folgen den bestehenden Kalibrierkommandos in `offset.py`.
 
@@ -223,14 +224,42 @@ Spalt. Die Differenz im kommandierten Z ist dann der Z-Offset-Unterschied.
 
 | # | Schritt | Inhalt |
 |---|---|---|
-| 1 | Vorbereiten | Achsen gehomt? Wenn nicht: **jetzt homen, bevor die Halterung aufs Bett kommt.** Danach zum Aufsetzen und Anstecken auffordern. |
-| 2 | Prüfen | Moonraker-CAN-Abfrage: UUID auf dem Bus? Fehlt sie, Ende — ohne Config-Änderung, ohne Neustart. |
-| 3 | Aktivieren | Inhalt aus `xy_probe.cfg.disabled` nach `xy_probe.cfg` kopieren -> `FIRMWARE_RESTART` -> warten bis ready -> `NOZZLE_LOCATOR_READ` muss plausibel und fehlerfrei antworten. |
-| 4 | Trockenlauf | Ganze Sequenz inkl. Werkzeugwechsel und Verfahrwege auf `safe_z`, **ohne jedes Absenken**. Muster aus der Dock-Kalibrierung (`c5e51157`). |
-| 5 | Messen | Ablauf nach §5. |
-| 6 | Ergebnisse | Anzeige, Vergleich, Übernehmen bzw. Übernehmen + schreiben. |
-| 7 | Abschließen | `xy_probe.cfg` leeren -> `FIRMWARE_RESTART` -> **und erst danach** zum Abstecken auffordern. |
+| 1 | Anstecken | Zum Anstecken der USB-Sonde auffordern — **die Halterung bleibt ausdrücklich noch unten.** |
+| 2 | Prüfen | `/machine/peripherals/serial`: ist der `serial`-Pfad da? Fehlt er, Ende — ohne Config-Änderung, ohne Neustart. |
+| 3 | Aktivieren | Inhalt aus `xy_probe.cfg.disabled` nach `xy_probe.cfg` kopieren -> `FIRMWARE_RESTART` -> warten bis ready. |
+| 4 | Homen | **Jetzt**, direkt nach dem Neustart, bei leerem Bett. Siehe die Begründung unten. |
+| 5 | Sensor prüfen | `NOZZLE_LOCATOR_READ` muss plausibel und fehlerfrei antworten. Bewegt nichts. |
+| 6 | Aufsetzen | **Erst jetzt** kommt die Halterung aufs Bett. Ab hier ist jedes Homing gefährlich. |
+| 7 | Trockenlauf | Ganze Sequenz inkl. Werkzeugwechsel und Verfahrwege auf `safe_z`, **ohne jedes Absenken**. Muster aus der Dock-Kalibrierung (`c5e51157`). |
+| 8 | Messen | Ablauf nach §5. |
+| 9 | Ergebnisse | Anzeige, Vergleich, Übernehmen bzw. Übernehmen + schreiben. |
+| 10 | Abschließen | `xy_probe.cfg` leeren -> `FIRMWARE_RESTART` -> **und erst danach** zum Abstecken und Abnehmen der Halterung auffordern. |
 
+**Warum das Aufsetzen hinter den Neustart gehört.** Die erste Fassung homte
+in Schritt 1 und ließ die Halterung danach aufsetzen. Das war falsch, und der
+Fehler ist erst im Review aufgefallen.
+
+Ein `FIRMWARE_RESTART` **löscht `homed_axes`** — Standardverhalten von
+Klipper, und die Webapp warnt an anderer Stelle selbst wörtlich „Der Drucker
+verliert das Homing" (`tools.js:3536`). In der alten Reihenfolge stand der
+Drucker nach dem Aktivieren also ungehomt da, **mit der Halterung auf dem
+Bett**.
+
+Damit wurde ein vorhandener Komfortmechanismus zur Falle: die folgenden
+Aufrufe liefen über `sendGcodeWithRecovery`, und scheitert einer mit „must
+home", bietet `recoveryFor()` (`tools.js:262-267`) einen Knopf „Home + QGL,
+dann weiter" an, der `G28 -> QUAD_GANTRY_LEVEL -> G28 Z` fährt — genau die
+Sequenz aus §7.1. Läuft sie durch, meldet der Aufruf Erfolg, der Assistent
+macht weiter, und der Crash taucht in keiner Fehlerbehandlung auf.
+
+Mit der neuen Reihenfolge findet **jedes** Homing bei leerem Bett statt.
+
+**Ab Schritt 6 zusätzlich kein G28-Recovery mehr.** Ein Restpfad bliebe sonst:
+der Idle-Timeout kann zuschlagen, während der Nutzer einen Dialog liest, und
+die Motoren abwerfen. Ab dem Aufsetzen laufen die G-Code-Aufrufe deshalb über
+einen wizard-eigenen Sender ohne Reparaturdialog; ein Fehlschlag geht direkt
+in den `catch`, und der sagt ausdrücklich: erst die Halterung abnehmen, dann
+homen.
 **Rettungsnetz.** Ist die Sonde aktiviert, aber abgesteckt, startet Klipper
 nicht. Die Webapp erkennt diese Lage (Config aktiv + Klipper im
 Fehlerzustand) und bietet einen Ein-Klick-Fix. Das funktioniert auch bei
@@ -393,10 +422,21 @@ eines erfundenen Scheitels.
 `NOZZLE_LOCATE`, damit Validierungsreihen (n ≈ 20) mit dem ausgelieferten
 Werkzeug laufen.
 
-**R5 — Moonrakers CAN-Endpoint ungeprüft.** Ob
-`/machine/peripherals/canbus` in der eingesetzten Version existiert, ist
-offen. *Umgang:* erster Verifikationsschritt im Plan; fällt er aus,
-degradiert Assistentenschritt 2 zu "anstecken und bestätigen".
+**R5 — Präsenzerkennung. ERLEDIGT.** War als offene Frage notiert; am 250er
+nachgemessen. `/machine/peripherals/serial` liefert `serial_devices[]` mit
+`path_by_id` und ist damit für die USB-Sonde eindeutig auswertbar. Der
+zunächst geplante `/machine/peripherals/canbus` wäre untauglich gewesen: er
+liefert `can_uuids: []`, obwohl zwei CAN-MCUs laufen — er sieht nur Knoten,
+die kein laufender Klipper beansprucht. Der Rückfall auf eine manuelle
+Rückfrage bleibt für ältere Moonraker-Versionen im Code.
+
+**R6 — Ein FIRMWARE_RESTART löscht das Homing.** Im Review von Task 8
+gefunden: die erste Fassung des Assistenten ließ die Halterung vor dem
+Aktivieren aufsetzen, und der zum Laden der Sonde nötige Neustart hinterließ
+den Drucker ungehomt mit Aufbau auf dem Bett — woraufhin der vorhandene
+Recovery-Dialog ein `G28 → QGL → G28 Z` angeboten hätte. *Umgang:*
+Reihenfolge geändert (§6), Homing findet jetzt ausschließlich bei leerem Bett
+statt; zusätzlich ab Schritt 6 kein G28-Recovery mehr.
 
 ## 14. Nicht im Umfang
 
