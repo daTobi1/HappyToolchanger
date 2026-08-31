@@ -101,6 +101,42 @@ withState(
 );
 
 // --------------------------------------------------------------------
+// Teil 2a: parseXyProbeSerial() (Task 8) - reine Textverarbeitung der
+// serial-Zeile aus der xy_probe.cfg.disabled-Vorlage. Kein Netzwerk-Stub
+// noetig, die Funktion wirft oder liefert rein synchron.
+// --------------------------------------------------------------------
+eval(grab('parseXyProbeSerial'));
+
+// --- 10) Wohlgeformte Vorlage -> liefert den serial-Pfad ---
+(function () {
+  var text = '[mcu xyprobe]\n' +
+             'serial: /dev/serial/by-id/usb-Klipper_rp2040_XY-if00\n' +
+             'canbus_uuid: deadbeef0001\n';
+  var out;
+  try { out = parseXyProbeSerial(text); } catch (e) { out = e; }
+  check('wohlgeformte Vorlage -> serial-Pfad',
+    out === '/dev/serial/by-id/usb-Klipper_rp2040_XY-if00', String(out));
+})();
+
+// --- 11) Platzhalter HIER_EINTRAGEN noch drin -> wird abgelehnt ---
+(function () {
+  var text = '[mcu xyprobe]\nserial: /dev/serial/by-id/HIER_EINTRAGEN\n';
+  var threw = false;
+  try { parseXyProbeSerial(text); }
+  catch (e) { threw = /HIER_EINTRAGEN/.test(e.message); }
+  check('Platzhalter HIER_EINTRAGEN -> Fehler statt falschem Pfad', threw);
+})();
+
+// --- 12) Keine serial-Zeile in der Vorlage -> wird abgelehnt ---
+(function () {
+  var text = '[mcu xyprobe]\ncanbus_uuid: deadbeef0001\n';
+  var threw = false;
+  try { parseXyProbeSerial(text); }
+  catch (e) { threw = /serial-Zeile/.test(e.message); }
+  check('keine serial-Zeile -> Fehler statt undefined-Pfad', threw);
+})();
+
+// --------------------------------------------------------------------
 // Teil 2: writeXyConfigs() - Fix-Runde 1, Befund 1 ("Erfolgsmeldung, obwohl
 // nichts geschrieben wurde"). Braucht gestubbtes fetch()/confirmDialog(),
 // deshalb eigener Abschnitt mit eigenem Netzwerk-Stub.

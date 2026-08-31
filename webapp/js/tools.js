@@ -3099,6 +3099,337 @@ function applyAllXyOffsets() {
   });
 }
 
+// --------------------------
+// XY-Sonde: Aktivieren/Deaktivieren, Assistent, Rettungsnetz (Task 8)
+// --------------------------
+// Die Sonde steckt nur waehrend der Messung am USB - danach wird sie
+// abgezogen. Klipper startet gar nicht erst, wenn die Config eine MCU
+// nennt, die nicht da ist. xy_probe.cfg.disabled ist die Vorlage (bleibt
+// unangetastet, damit UUID/Halterungsmasse jeden Zyklus ueberleben),
+// xy_probe.cfg ist die scharfe Datei, die printer.cfg included - leer
+// heisst deaktiviert, Vorlageninhalt heisst aktiv.
+
+// Aktivieren = Inhalt aus der Vorlage nach xy_probe.cfg kopieren.
+function xyProbeActivate() {
+  var baseUrl = printerUrl(printerIp, "");
+  return fetch(baseUrl + "/server/files/config/xy_probe.cfg.disabled",
+               NO_CACHE)
+    .then(function (r) {
+      if (!r.ok) throw new Error(
+        "xy_probe.cfg.disabled fehlt -- dort muessen serial-Pfad und " +
+        "Halterungsmasse einmalig eingetragen werden.");
+      return r.text();
+    })
+    .then(function (template) {
+      if (template.indexOf("HIER_EINTRAGEN") !== -1) throw new Error(
+        "In xy_probe.cfg.disabled steht noch HIER_EINTRAGEN statt des " +
+        "serial-Pfads der Sonde. Einmal 'ls /dev/serial/by-id/' auf dem " +
+        "Drucker ausfuehren, waehrend die Sonde steckt.");
+      return updateConfigFile("xy_probe.cfg", function () { return template; });
+    })
+    .then(function () { return restartKlipperAndWait(); });
+}
+
+function xyProbeDeactivate() {
+  return updateConfigFile("xy_probe.cfg", function () {
+    return "# XY-Sonde deaktiviert.\n";
+  }).then(function () { return restartKlipperAndWait(); });
+}
+
+// FIRMWARE_RESTART und warten, bis Klipper wieder 'ready' meldet. Ein
+// Config-Include-Wechsel braucht nur FIRMWARE_RESTART -- der volle
+// Service-Neustart ist nur noetig, wenn sich .py-Module geaendert haben
+// (RESTART laedt sys.modules nicht neu, siehe restart-klipper-btn oben).
+function restartKlipperAndWait(timeoutMs) {
+  var baseUrl = printerUrl(printerIp, "");
+  timeoutMs = timeoutMs || 60000;
+  var deadline = Date.now() + timeoutMs;
+  return fetch(baseUrl + "/printer/firmware_restart", {method: 'POST'})
+    .then(function () {
+      function poll() {
+        if (Date.now() > deadline) {
+          throw new Error("Klipper ist nach dem Neustart nicht bereit " +
+                          "geworden. Steckt die Sonde wirklich?");
+        }
+        return new Promise(function (r) { setTimeout(r, 1000); })
+          .then(function () { return fetch(baseUrl + "/printer/info", NO_CACHE); })
+          .then(function (r) { return r.json(); })
+          .then(function (j) {
+            var st = j && j.result && j.result.state;
+            if (st === 'ready') return true;
+            if (st === 'error' || st === 'shutdown') {
+              throw new Error(
+                "Klipper startet nicht: " +
+                ((j.result.state_message || '').split("\n")[0]));
+            }
+            return poll();
+          });
+      }
+      return poll();
+    });
+}
+
+// Haengt die USB-Sonde dran? Moonrakers serial-Endpunkt listet alle
+// seriellen Geraete samt path_by_id; wir suchen den Pfad, der in
+// xy_probe.cfg.disabled als serial: eingetragen ist.
+//
+// Bewusst ueber /machine/peripherals/serial und nicht ueber den
+// canbus-Endpunkt: der listet nur Knoten, die noch KEIN laufender Klipper
+// beansprucht, und liefert im Normalbetrieb eine leere Liste (am 250er
+// nachgemessen: can_uuids ist leer, obwohl zwei CAN-MCUs laufen). Fuer USB
+// ist die Auskunft dagegen eindeutig und unabhaengig davon, ob Klipper das
+// Geraet gerade haelt.
+function xyProbeConnected(serialPath) {
+  var baseUrl = printerUrl(printerIp, "");
+  return fetch(baseUrl + "/machine/peripherals/serial", NO_CACHE)
+    .then(function (r) {
+      if (!r.ok) return null;               // Endpunkt gibt es nicht
+      return r.json();
+    })
+    .then(function (j) {
+      var devs = j && j.result && j.result.serial_devices;
+      if (!devs) return null;
+      return devs.some(function (d) {
+        return d.path_by_id === serialPath || d.device_path === serialPath;
+      });
+    })
+    .catch(function () { return null; });
+}
+
+// Reine Textverarbeitung, absichtlich von readXyProbeSerial() getrennt:
+// so ist die Vorlagen-Auswertung ohne fetch-Stub testbar.
+function parseXyProbeSerial(text) {
+  if (text.indexOf("HIER_EINTRAGEN") !== -1) throw new Error(
+    "In xy_probe.cfg.disabled steht noch HIER_EINTRAGEN statt des " +
+    "serial-Pfads der Sonde. Einmal 'ls /dev/serial/by-id/' auf dem " +
+    "Drucker ausfuehren, waehrend die Sonde steckt.");
+  var m = text.match(/^\s*serial\s*:\s*(\S+)/m);
+  if (!m) throw new Error(
+    "In xy_probe.cfg.disabled steht keine serial-Zeile.");
+  return m[1];
+}
+
+// Liest die serial-Zeile aus der Vorlage. Ungecacht, sonst liefert ein
+// Browser-Cache nach einer Aenderung noch den alten Pfad.
+function readXyProbeSerial() {
+  var baseUrl = printerUrl(printerIp, "");
+  return fetch(baseUrl + "/server/files/config/xy_probe.cfg.disabled",
+               NO_CACHE)
+    .then(function (r) {
+      if (!r.ok) throw new Error("xy_probe.cfg.disabled fehlt");
+      return r.text();
+    })
+    .then(parseXyProbeSerial);
+}
+
+// Praesenzpruefung mit Rueckfall: kennt diese Moonraker-Version den
+// serial-Endpunkt nicht, fragen wir den Nutzer statt zu scheitern. Liefert
+// immer entweder true oder wirft - der Assistent muss den Ausgang nicht
+// selbst auswerten (vgl. dockJogLoop/dockToolLoop, die genau deshalb jeden
+// confirmDialog-Ausgang selbst pruefen, statt blind weiterzulaufen).
+function xyProbeCheckPresent() {
+  return readXyProbeSerial()
+    .then(function (path) { return xyProbeConnected(path); })
+    .then(function (present) {
+      if (present === true) return true;
+      if (present === false) throw new Error(
+        "Die Sonde ist am USB nicht zu sehen. Steckt sie, und stimmt der " +
+        "serial-Pfad in xy_probe.cfg.disabled?");
+      return confirmDialog({
+        title: "Sonde angesteckt?",
+        body: "Diese Moonraker-Version kann die seriellen Geräte nicht " +
+              "auflisten. Bitte selbst prüfen: ist die Sonde angesteckt?",
+        okLabel: "Ja, ist angesteckt"
+      }).then(function (yes) {
+        if (!yes) throw new Error(
+          "Ohne Bestätigung, dass die Sonde angesteckt ist, wird nicht " +
+          "aktiviert.");
+        return true;
+      });
+    });
+}
+
+// sendGcodeWithRecovery schlaegt nie hart fehl (siehe dort) - "handled"
+// heisst aber "lief nicht durch, Nutzer hat den Fehlerdialog schon
+// gesehen". Der Assistent darf danach nicht so weiterlaufen, als waere
+// nichts gewesen (gleiches Muster wie dockJogLoop: "if (!r.ok && !r.transport) return dockAbort();").
+function xyStepOk(r) {
+  return !!(r && (r.ok || r.transport));
+}
+
+// Prueft und homet VOR dem Aufsetzen der Halterung. Bewusst nicht ueber
+// sendGcodeWithRecovery allein: dessen "Must home first"-Pfad greift erst
+// mitten im Messlauf, also wenn der Aufbau schon auf dem Bett steht - und
+// ein G28 mit Aufbau auf dem Bett hebt nur 10mm und faehrt dann Y quer
+// darueber (homing.cfg:35). Nach einem angestossenen G28 wird das Ergebnis
+// geprueft: schlaegt das Homen fehl, darf der Assistent nicht zum
+// "Halterung aufsetzen"-Schritt weitergehen.
+function ensureHomedBeforeSetup() {
+  return $.get(printerUrl(printerIp, "/printer/objects/query?toolhead"))
+    .then(function (data) {
+      var homed = (data && data.result && data.result.status &&
+                   data.result.status.toolhead &&
+                   data.result.status.toolhead.homed_axes) || "";
+      if (homed.indexOf("x") !== -1 && homed.indexOf("y") !== -1 &&
+          homed.indexOf("z") !== -1) {
+        return true;
+      }
+      return sendGcodeWithRecovery("G28", "Homen vor dem Aufsetzen")
+        .then(function (r) { return xyStepOk(r); });
+    })
+    .then(function (ok) {
+      if (!ok) throw new Error(
+        "Homing ist nicht sauber durchgelaufen. Ohne Homing darf die " +
+        "Halterung nicht aufs Bett -- Abbruch.");
+      return true;
+    });
+}
+
+// Der Assistent fuehrt durch An- und Abstecken der XY-Sonde. Zwei
+// Reihenfolgen sind zwingend:
+//   Schritt 1: erst homen, DANN die Halterung aufsetzen -- ein G28 mit
+//              Aufbau auf dem Bett ist ein Kollisionsrisiko (siehe
+//              ensureHomedBeforeSetup).
+//   Schritt 7: erst deaktivieren, DANN abziehen -- sonst startet Klipper
+//              beim naechsten Mal nicht mehr.
+//
+// Jeder confirmDialog-Ausgang wird geprueft, bevor es weitergeht (wie bei
+// dockJogLoop/dockToolLoop) - ein ignorierter Ausgang wuerde einen
+// Abbrechen-Klick wirkungslos machen. Der letzte Schritt vor dem
+// Deaktivieren ist bewusst ein alertDialog statt eines confirmDialog: ab
+// hier ist das Deaktivieren keine Option mehr, nur noch eine Bestaetigung.
+function xyWizard() {
+  return confirmDialog({
+    title: "XY-Sonde: Vorbereiten",
+    body: "Zuerst werden die Achsen gehomt. Die Halterung kommt ERST " +
+          "DANACH aufs Bett -- ein Homing mit Aufbau auf dem Bett ist ein " +
+          "Kollisionsrisiko.",
+    okLabel: "Homen"
+  }).then(function (ok) {
+    if (!ok) return null;
+    return ensureHomedBeforeSetup().then(function () {
+      return confirmDialog({
+        title: "XY-Sonde: Aufsetzen",
+        body: "Halterung jetzt auf das Bett stellen und die Sonde anstecken.",
+        okLabel: "Ist erledigt"
+      });
+    }).then(function (ok2) {
+      if (!ok2) return null;
+      return xyProbeCheckPresent().then(function () {
+        showToast("Sonde wird aktiviert, Klipper startet neu…", "info");
+        return xyProbeActivate();
+      }).then(function () {
+        return sendGcodeWithRecovery("NOZZLE_LOCATOR_READ DURATION=1.0",
+                                     "Sonde prüfen");
+      }).then(function (r) {
+        if (!xyStepOk(r)) throw new Error("Sonde pruefen fehlgeschlagen.");
+        return confirmDialog({
+          title: "Trockenlauf",
+          body: "Beim ersten Mal dringend empfohlen: alle Werkzeugwechsel " +
+                "und Verfahrwege werden abgefahren, aber nie abgesenkt. " +
+                "Damit siehst du gefahrlos, ob der Wechselweg über die " +
+                "Halterung führt.",
+          okLabel: "Trockenlauf fahren",
+          cancelLabel: "Überspringen"
+        });
+      }).then(function (runDry) {
+        if (!runDry) return null;
+        return sendGcodeWithRecovery("CALIBRATE_XY_OFFSETS DRY_RUN=1",
+                                     "Trockenlauf").then(function (r) {
+          if (!xyStepOk(r)) throw new Error("Trockenlauf fehlgeschlagen.");
+        });
+      }).then(function () {
+        return sendGcodeWithRecovery("CALIBRATE_XY_OFFSETS", "XY-Messlauf");
+      }).then(function (r) {
+        if (!xyStepOk(r)) throw new Error("XY-Messlauf fehlgeschlagen.");
+        return updateAllProbeResults();
+      }).then(function () {
+        return alertDialog("Abschließen",
+          "Die Sonde wird jetzt aus der Config entfernt und Klipper neu " +
+          "gestartet. Erst DANACH abziehen.",
+          { okLabel: "Deaktivieren" });
+      }).then(function () {
+        return xyProbeDeactivate();
+      }).then(function () {
+        return alertDialog("Fertig",
+          "Sonde ist deaktiviert. Sie kann jetzt abgezogen und die " +
+          "Halterung vom Bett genommen werden.");
+      });
+    });
+  }).catch(function (err) {
+    var detail = gcodeErrorMessage(err) || (err && err.message) ||
+                 "Unbekannter Fehler";
+    // Der wichtigste Zweig: egal, welcher Schritt scheitert, die Sonde
+    // muss sich von hier aus deaktivieren lassen, ohne den Assistenten
+    // erneut zu durchlaufen - sonst bleibt sie aktiviert stehen und der
+    // naechste Klipper-Start scheitert. extraLabel/extraClass sind die
+    // einzigen Optionen, die confirmDialog/alertDialog kennen; der Choice-
+    // Wert 'extra' wird hier selbst ausgewertet (kein automatischer
+    // extraAction-Callback in der bestehenden Dialog-Implementierung).
+    return alertDialog("XY-Assistent abgebrochen",
+      '<p class="mb-0">' + escapeHtml(detail) + '</p>',
+      { extraLabel: "Sonde deaktivieren", extraClass: "btn-warning" }
+    ).then(function (choice) {
+      if (choice !== 'extra') return null;
+      showToast("Sonde wird deaktiviert, Klipper startet neu…", "info");
+      return xyProbeDeactivate().then(function () {
+        return alertDialog("Sonde deaktiviert",
+          "Die Sonde ist jetzt aus der Config entfernt. Sie kann abgezogen " +
+          "werden.");
+      }).catch(function (err2) {
+        var d2 = gcodeErrorMessage(err2) || (err2 && err2.message) ||
+                 "Unbekannter Fehler";
+        return alertDialog("Deaktivieren fehlgeschlagen",
+          '<p class="mb-0">' + escapeHtml(d2) + '</p>');
+      });
+    });
+  });
+}
+
+$(document).on("click", "#xy-wizard-btn", function () {
+  var $btn = $(this);
+  var btnHtml = $btn.html();
+  $btn.prop("disabled", true).text("Läuft…");
+  xyWizard().then(function () {
+    $btn.prop("disabled", false).html(btnHtml);
+  });
+});
+
+// Aktivierte Sonde + abgesteckter Knoten = Klipper startet nicht. Moonraker
+// laeuft weiter, also koennen wir das genau hier noch reparieren - beim
+// Laden der Offset-UI aufgerufen (siehe getTools()).
+function checkXyProbeStranded() {
+  var baseUrl = printerUrl(printerIp, "");
+  return fetch(baseUrl + "/printer/info", NO_CACHE)
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      var st = j && j.result && j.result.state;
+      if (st !== 'error' && st !== 'shutdown') return;
+      var msg = (j.result.state_message || '');
+      if (msg.indexOf('xyprobe') === -1 && msg.indexOf('mcu') === -1) return;
+      return alertDialog(
+        "XY-Sonde blockiert den Start",
+        "Klipper startet nicht, und in der Config steht noch die XY-Sonde. " +
+        "Wurde sie abgezogen, ohne sie vorher zu deaktivieren?",
+        { extraLabel: "Sonde deaktivieren und neu starten",
+          extraClass: "btn-warning" }
+      ).then(function (choice) {
+        if (choice !== 'extra') return null;
+        return xyProbeDeactivate().then(function () {
+          if (typeof showToast === 'function') {
+            showToast("Sonde deaktiviert, Klipper laeuft wieder", "success");
+          }
+        }).catch(function (err) {
+          var detail = gcodeErrorMessage(err) || (err && err.message) ||
+                       "Unbekannter Fehler";
+          return alertDialog("Deaktivieren fehlgeschlagen",
+            '<p class="mb-0">' + escapeHtml(detail) + '</p>');
+        });
+      });
+    })
+    .catch(function () { return null; }); // Moonraker selbst nicht erreichbar - hier nichts zu melden
+}
+
 function syncPidSelectAllState() {
   var $all = $(".pid-tool-checkbox");
   var $checked = $(".pid-tool-checkbox:checked");
@@ -3284,6 +3615,11 @@ function toolChangeURL(tool) {
 // Tool list loader (called by index.js)
 // --------------------------
 function getTools() {
+  // Beim Laden der Offset-UI: Rettungsnetz pruefen, unabhaengig vom
+  // eigentlichen Toolchanger-Query darunter (der schlaegt fehl, wenn
+  // Klipper wegen der Sonde gar nicht erst startet).
+  checkXyProbeStranded();
+
   $.get(printerUrl(printerIp, "/printer/objects/query?toolchanger"))
     .done(function(data){
 
