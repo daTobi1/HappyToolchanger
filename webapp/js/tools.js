@@ -2776,6 +2776,17 @@ function captureCameraPosition(toolNr) {
         showToast("T" + toolNr + ": Position festgehalten (" +
           p[0].toFixed(3) + " / " + p[1].toFixed(3) + ")", "info");
       }
+    })
+    .catch(function (err) {
+      // Ohne diesen Fang bleibt ein Netzwerkfehler unsichtbar: der Nutzer
+      // hat die Duese gerade muehsam zentriert, klickt "Position
+      // uebernehmen", und ohne Meldung sieht er erst beim naechsten Blick
+      // in die Tabelle, dass nichts festgehalten wurde - ohne zu wissen ob
+      // der Klick verpufft ist oder die Position verrissen war.
+      var detail = "";
+      try { detail = (err.responseJSON || err).message || ""; } catch (_) {}
+      return alertDialog("T" + toolNr + ": Position konnte nicht festgehalten werden",
+                         escapeHtml(detail || "Unbekannter Fehler"));
     });
 }
 
@@ -2789,10 +2800,19 @@ function captureMountedToolPosition() {
               data.result.status.toolchanger.tool_number;
       if (t === undefined || t === null || t < 0) {
         return alertDialog("Kein Tool montiert",
-          "Es ist kein Werkzeug aufgenommen. Erst ein Tool waehlen, dann " +
-          "die Duese ueber dem Fadenkreuz zentrieren.");
+          "Es ist kein Werkzeug aufgenommen. Erst ein Tool wählen, dann " +
+          "die Düse über dem Fadenkreuz zentrieren.");
       }
       return captureCameraPosition(t);
+    })
+    .catch(function (err) {
+      // Eigener Fang fuer die toolchanger-Abfrage selbst (getrennt vom
+      // Fang in captureCameraPosition oben) - z.B. wenn Moonraker gerade
+      // neu startet oder die Abfrage mitten im Werkzeugwechsel kommt.
+      var detail = "";
+      try { detail = (err.responseJSON || err).message || ""; } catch (_) {}
+      return alertDialog("Montiertes Tool konnte nicht ermittelt werden",
+                         escapeHtml(detail || "Unbekannter Fehler"));
     });
 }
 

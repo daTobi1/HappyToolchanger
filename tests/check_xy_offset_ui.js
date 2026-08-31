@@ -327,7 +327,79 @@ function runCaptureMountedToolTest() {
     });
   });
 
+  // --- Befund 1 (Fix-Runde 1): $.get(toolchanger) schlaegt fehl -> Dialog
+  //     statt stillem Reject. captureCameraPosition() darf dabei nicht
+  //     erreicht werden. ---
+  function withRejectedToolchangerGet() {
+    var captured = [];
+    var alerts = [];
+    global.captureCameraPosition = function (t) {
+      captured.push(t);
+      return Promise.resolve();
+    };
+    global.$ = { get: function () {
+      return Promise.reject(new Error('toolchanger-Abfrage fehlgeschlagen'));
+    } };
+    global.printerUrl = function (ip, path) { return 'http://' + ip + ':7125' + path; };
+    global.printerIp = '1.2.3.4';
+
+    eval('var alertDialog = function (title) { alerts.push(title); ' +
+         'return Promise.resolve(); };' +
+         grab('captureMountedToolPosition'));
+    return captureMountedToolPosition().then(function () {
+      return { captured: captured, alerts: alerts };
+    });
+  }
+
+  seq = seq.then(function () {
+    return withRejectedToolchangerGet().then(function (r) {
+      check('$.get(toolchanger) abgelehnt -> Dialog statt Stille',
+        r.alerts.length === 1 &&
+        r.alerts[0] === 'Montiertes Tool konnte nicht ermittelt werden',
+        JSON.stringify(r));
+      check('$.get(toolchanger) abgelehnt -> kein Capture',
+        r.captured.length === 0, JSON.stringify(r));
+    }, function (err) {
+      check('$.get(toolchanger) abgelehnt -> Promise trotzdem NICHT abgelehnt (catch faengt)',
+        false, String(err));
+    });
+  });
+
   return seq;
+}
+
+// --------------------------------------------------------------------
+// Teil 5: captureCameraPosition() eigener Fang (Befund 1, Fix-Runde 1) -
+// schlaegt der gcode_move-fetch fehl (z.B. Moonraker startet gerade neu),
+// darf der Klick nicht stillschweigend verpuffen. Prueft nur den
+// Fehlerpfad; der Erfolgspfad haengt an DOM/renderXyBlock und ist ohne
+// Browser nicht sinnvoll pruefbar (siehe Report).
+// --------------------------------------------------------------------
+function runCaptureCameraPositionCatchTest() {
+  var alerts = [];
+  global.fetch = function () { return Promise.reject(new Error('fetch failed')); };
+  global.printerUrl = function (ip, path) { return 'http://' + ip + ':7125' + path; };
+  global.printerIp = '1.2.3.4';
+
+  // Gleicher Trick wie bei captureMountedToolPosition oben: alertDialog ist
+  // bereits als Modul-Var aus dem writeXyConfigs-Abschnitt gebunden, also
+  // hier im selben eval per "var" naeher binden. NO_CACHE/escapeHtml sind
+  // ebenfalls schon als Modul-Var vorhanden (aus demselben Abschnitt) -
+  // das ist fuer diesen Test unschaedlich, escapeHtml() wird real
+  // ausgefuehrt, ihr Ergebnis aber nicht geprueft.
+  eval('var alertDialog = function (title) { alerts.push(title); ' +
+       'return Promise.resolve(); };' +
+       grab('captureCameraPosition'));
+
+  return captureCameraPosition(3).then(function () {
+    check('fetch(gcode_move) abgelehnt -> Dialog statt Stille',
+      alerts.length === 1 &&
+      alerts[0] === 'T3: Position konnte nicht festgehalten werden',
+      JSON.stringify(alerts));
+  }, function (err) {
+    check('fetch(gcode_move) abgelehnt -> Promise trotzdem NICHT abgelehnt (catch faengt)',
+      false, String(err));
+  });
 }
 
 // --- 7) Beide Schluessel vorhanden -> true, ein Upload, kein Alert ---
@@ -374,6 +446,9 @@ writeXyConfigs({ "0": { x: "0.5300", y: "-0.0200" } }).then(function (ok) {
   // Teil 4 stubbt $ und printerUrl/printerIp neu - erst NACHDEM Teil 2/3
   // ihre eigenen fetch/confirmDialog-Stubs nicht mehr brauchen.
   return runCaptureMountedToolTest();
+}).then(function () {
+  // Teil 5 stubbt global.fetch neu - erst NACHDEM Teil 4 fertig ist.
+  return runCaptureCameraPositionCatchTest();
 }).then(function () {
   console.log(failed ? '\n' + failed + ' TESTS FEHLGESCHLAGEN' : '\nALLE TESTS OK');
   process.exit(failed ? 1 : 0);
