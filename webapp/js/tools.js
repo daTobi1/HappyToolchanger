@@ -2755,10 +2755,46 @@ $(document).on("click", "#apply-dock-btn", function () {
 // --------------------------
 // Stellt beide Messverfahren fuer den XY-Offset nebeneinander: die neue
 // automatische Eddy-Messung (Klipper-seitig noch nicht gebaut, Task 2/3/5)
-// und die bisherige manuelle Kameramethode (Erfassen kommt erst mit
-// Task 9 dazu). Ohne Messwerte zeigt jede Zeile "nicht gemessen" - das ist
-// heute der einzige erreichbare Zustand, da weder die zweite Eddy-Spule
-// noch das Locator-Modul existieren.
+// und die bisherige manuelle Kameramethode (Erfassen ueber
+// captureMountedToolPosition(), Task 9). Ohne Messwerte zeigt jede Zeile
+// "nicht gemessen" - fuer die Eddy-Methode heute noch der einzige
+// erreichbare Zustand, da weder die zweite Eddy-Spule noch das
+// Locator-Modul existieren.
+
+// Haelt bei zentriertem Fadenkreuz die aktuelle Kopfposition fest. Der
+// Offset ist spaeter die Differenz zum Referenztool -- genau wie beim
+// Eddy-Verfahren, damit beide vergleichbar bleiben.
+function captureCameraPosition(toolNr) {
+  var baseUrl = printerUrl(printerIp, "");
+  return fetch(baseUrl + "/printer/objects/query?gcode_move", NO_CACHE)
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      var p = j.result.status.gcode_move.gcode_position;
+      _cameraPositions[String(toolNr)] = {x: p[0], y: p[1]};
+      renderXyBlock();
+      if (typeof showToast === 'function') {
+        showToast("T" + toolNr + ": Position festgehalten (" +
+          p[0].toFixed(3) + " / " + p[1].toFixed(3) + ")", "info");
+      }
+    });
+}
+
+// Das MONTIERTE Tool, nicht das in der UI angehakte Referenztool: der
+// Nutzer hat es aufgenommen und zentriert es gerade ueber dem Fadenkreuz.
+function captureMountedToolPosition() {
+  return $.get(printerUrl(printerIp, "/printer/objects/query?toolchanger"))
+    .then(function (data) {
+      var t = data && data.result && data.result.status &&
+              data.result.status.toolchanger &&
+              data.result.status.toolchanger.tool_number;
+      if (t === undefined || t === null || t < 0) {
+        return alertDialog("Kein Tool montiert",
+          "Es ist kein Werkzeug aufgenommen. Erst ein Tool waehlen, dann " +
+          "die Duese ueber dem Fadenkreuz zentrieren.");
+      }
+      return captureCameraPosition(t);
+    });
+}
 
 // Offset der Kameramethode = Differenz zum Referenztool, genau wie beim
 // Eddy-Verfahren. Nur so sind beide Verfahren vergleichbar.

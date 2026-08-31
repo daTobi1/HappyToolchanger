@@ -78,4 +78,14 @@ $(document).ready(function() {
     }
     slider.addEventListener('input', updateContrast);
     updateContrast();
+
+    // "Position uebernehmen": haelt die Kopfposition des MONTIERTEN Tools
+    // fest, waehrend die Duese ueber dem Fadenkreuz zentriert ist.
+    // captureMountedToolPosition() liegt in tools.js (Task 9).
+    var captureBtn = document.getElementById('camera-capture-btn');
+    if (captureBtn) {
+        captureBtn.addEventListener('click', function () {
+            captureMountedToolPosition();
+        });
+    }
 });

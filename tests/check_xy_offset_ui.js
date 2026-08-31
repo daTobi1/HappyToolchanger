@@ -245,6 +245,91 @@ function runXyWizardAbortTest() {
   });
 }
 
+// --------------------------------------------------------------------
+// Teil 4: captureMountedToolPosition() (Task 9) - reine Entscheidungslogik:
+// welches Tool wird erfasst? Das MONTIERTE (toolchanger.tool_number), NICHT
+// das in der UI angehakte Referenztool. captureCameraPosition() selbst wird
+// gestubbt, damit nur diese Entscheidung geprueft wird, nicht das Erfassen.
+// --------------------------------------------------------------------
+function runCaptureMountedToolTest() {
+  // toolchangerStatus === undefined simuliert eine Antwort ganz ohne
+  // toolchanger-Objekt (z.B. Drucker ohne Toolchanger-Modul konfiguriert -
+  // Generality-Requirement: fremde Configs duerfen kein toolchanger
+  // voraussetzen).
+  function withToolNumber(toolchangerStatus) {
+    var captured = [];
+    var alerts = [];
+    global.captureCameraPosition = function (t) {
+      captured.push(t);
+      return Promise.resolve();
+    };
+    global.$ = { get: function () {
+      return Promise.resolve(
+        { result: { status: { toolchanger: toolchangerStatus } } });
+    } };
+    global.printerUrl = function (ip, path) { return 'http://' + ip + ':7125' + path; };
+    global.printerIp = '1.2.3.4';
+
+    // alertDialog() ist bereits als "var" auf Modulebene aus dem
+    // writeXyConfigs-Abschnitt oben gebunden (eval(grab('alertDialog') +
+    // ...) laeuft dort auf Top-Level) - ein "global.alertDialog = ..." hier
+    // wuerde diese vorhandene Bindung NICHT erreichen. Deshalb per "var"
+    // im selben eval neu binden, naeher an dieser Funktion als die
+    // Modul-Bindung.
+    eval('var alertDialog = function (title) { alerts.push(title); ' +
+         'return Promise.resolve(); };' +
+         grab('captureMountedToolPosition'));
+    return captureMountedToolPosition().then(function () {
+      return { captured: captured, alerts: alerts };
+    });
+  }
+
+  var seq = Promise.resolve();
+
+  // --- montiertes Tool 2 -> wird unter seiner eigenen Nummer erfasst ---
+  seq = seq.then(function () {
+    return withToolNumber({ tool_number: 2 }).then(function (r) {
+      check('montiertes Tool 2 -> captureCameraPosition(2), kein Alert',
+        r.captured.length === 1 && r.captured[0] === 2 && r.alerts.length === 0,
+        JSON.stringify(r));
+    });
+  });
+
+  // --- montiertes Tool 0 -> ebenfalls erfasst (0 ist ein gueltiges Tool,
+  //     nicht mit "kein Tool" verwechseln) ---
+  seq = seq.then(function () {
+    return withToolNumber({ tool_number: 0 }).then(function (r) {
+      check('montiertes Tool 0 -> captureCameraPosition(0), nicht als "keins" behandelt',
+        r.captured.length === 1 && r.captured[0] === 0 && r.alerts.length === 0,
+        JSON.stringify(r));
+    });
+  });
+
+  // --- tool_number < 0 -> kein Tool montiert: kein Capture, Dialog statt ---
+  seq = seq.then(function () {
+    return withToolNumber({ tool_number: -1 }).then(function (r) {
+      check('tool_number < 0 -> kein Capture',
+        r.captured.length === 0, JSON.stringify(r));
+      check('tool_number < 0 -> Dialog "Kein Tool montiert"',
+        r.alerts.length === 1 && r.alerts[0] === 'Kein Tool montiert',
+        JSON.stringify(r));
+    });
+  });
+
+  // --- toolchanger-Objekt fehlt komplett -> wie "kein Tool", kein Crash ---
+  seq = seq.then(function () {
+    return withToolNumber(undefined).then(function (r) {
+      check('kein toolchanger-Objekt -> kein Capture (kein Crash)',
+        r.captured.length === 0, JSON.stringify(r));
+      check('kein toolchanger-Objekt -> Dialog "Kein Tool montiert"',
+        r.alerts.length === 1 && r.alerts[0] === 'Kein Tool montiert',
+        JSON.stringify(r));
+    });
+  });
+
+  return seq;
+}
+
 // --- 7) Beide Schluessel vorhanden -> true, ein Upload, kein Alert ---
 reset({ 'toolchanger/tools/T0.cfg':
   '[tool T0]\ngcode_x_offset: 0.000\ngcode_y_offset: 0.000\n' });
@@ -285,6 +370,10 @@ writeXyConfigs({ "0": { x: "0.5300", y: "-0.0200" } }).then(function (ok) {
   // Als letzter Schritt: braucht eigene confirmDialog-Antwortfolge, deshalb
   // erst NACHDEM Teil 2 mit seinem eigenen confirmDialog-Stub fertig ist.
   return runXyWizardAbortTest();
+}).then(function () {
+  // Teil 4 stubbt $ und printerUrl/printerIp neu - erst NACHDEM Teil 2/3
+  // ihre eigenen fetch/confirmDialog-Stubs nicht mehr brauchen.
+  return runCaptureMountedToolTest();
 }).then(function () {
   console.log(failed ? '\n' + failed + ' TESTS FEHLGESCHLAGEN' : '\nALLE TESTS OK');
   process.exit(failed ? 1 : 0);
