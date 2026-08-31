@@ -17,7 +17,8 @@ Die XY-Offset-Kalibrierung per Eddy-Spule ist entworfen, geplant und zur Hälfte
 | 4 — Extraktion `_resolve_tool_run()` | **gestrichen** (siehe unten) |
 | 5 — `CALIBRATE_XY_OFFSETS` | offen, hängt an Task 3 |
 | 6 — Extraktion `updateConfigFile()` | **fertig**, Test grün |
-| 7–9 — Webapp-UI | **vorgebaut ohne Hardware**, siehe Abschnitt 4 |
+| 7 — XY-Block in der Webapp | **vorgebaut ohne Hardware**, Node-Tests gruen, siehe Abschnitt 4 |
+| 8–9 — Assistent, Kamera-Position | vorgebaut ohne Hardware, siehe Abschnitt 4 |
 
 **Task 4 wurde bewusst gestrichen.** Die Annahme, `CALIBRATE_ALL_Z_OFFSETS` und `CALIBRATE_PROBE_OFFSETS` lösten dieselbe Tool-Auswahl doppelt, war falsch — sie haben absichtlich verschiedene Politiken (u. a. wählt das zweite ohne `TOOLS` nur Tools mit vorhandenen Z-Switch-Daten und erzwingt das Referenztool weder in die Liste noch an deren Anfang). Ein gemeinsamer Helfer hätte das zweite Kommando im Normalfall verändert. Details in Task 4 des Plans.
 
@@ -62,8 +63,8 @@ Die absolute Position der Halterung ist **egal**. Gemessen wird pro Tool der Sch
 Alles im Plan ausgeschrieben, inklusive Code.
 
 - **Task 2** — `nozzle_locator.py`: Sensorbesitz über Klippers `ldc1612`, `read_frequency()`, `NOZZLE_LOCATOR_READ`, die Config-Dateien beider Drucker, Erweiterung von `check_klipper_api.py`.
-- **Task 3** — `approach_z()`, `sweep()`, `locate()`, `NOZZLE_LOCATE`. Enthält den bidirektionalen Sweep, der nicht optional ist.
-- **Task 5** — `CALIBRATE_XY_OFFSETS`: Tool-Durchlauf, Differenzbildung, Persistenz, Trockenlauf.
+- **Task 3** — `approach_z()`, `sweep()`, `locate()`, `NOZZLE_LOCATE`. Enthält den bidirektionalen Sweep, der nicht optional ist, sowie `AXIS=DIAG` zur einmaligen Bestimmung der Kreuzkopplung (siehe 6.4).
+- **Task 5** — `CALIBRATE_XY_OFFSETS`: Tool-Durchlauf, Differenzbildung, Persistenz, Trockenlauf, `XY_ITERATIONS` gegen die Kreuzkopplung (siehe 6.4).
 
 ### 3.1 Eine Änderung gegenüber dem ursprünglichen Plan
 
@@ -141,7 +142,47 @@ Dass ein zeitlinearer Drift den Scheitel um `m/(2a)` verschiebt (~19 µm/K bei d
 
 Bei ferromagnetischen Düsen kann das Vorzeichen drehen oder die Amplitude einbrechen. Der Grobsweep bestimmt das Vorzeichen, und bei zu schwachem Signal greift ein Abbruch statt eines erfundenen Scheitels — getestet ist das aber nur synthetisch.
 
-### 6.4 Die eigentliche Frage ist weiterhin unbeantwortet
+### 6.4 Kreuzkopplung: der Sweep misst nicht ganz das, was er zu messen glaubt
+
+Nahe am Scheitel ist die Glocke eine 2D-Quadrik:
+
+```
+f(x,y) ≈ f₀ − ½[ a(x−x₀)² + 2c(x−x₀)(y−y₀) + b(y−y₀)² ]
+```
+
+Ein X-Sweep bei festem `y = y₁` liefert deshalb **nicht** `x₀`, sondern
+
+```
+x_peak = x₀ − (c/a)·(y₁ − y₀)
+```
+
+Ist der Kreuzterm `c ≠ 0` — die Glocke also eine gegen die Achsen verkippte Ellipse —, misst jeder achsparallele Sweep systematisch daneben, proportional dazu, wie weit seine Linie am wahren Zentrum vorbeiführt.
+
+**Daraus folgt eine Schieflage, die dem Ergebnis nicht anzusehen ist.** Mit ρ = c/√(ab) als Kopplungsmaß und `ey₀` als Restfehler der Grobsuche:
+
+| Schritt | Restfehler |
+|---|---|
+| Fein-X bei der Grob-Y | **ρ·√(b/a)·ey₀** |
+| Fein-Y bei der Fein-X | **ρ²·ey₀** |
+
+Die **zuerst** gemessene Achse ist also um rund 1/ρ schlechter als die zweite. Bei ρ = 0,2 und 75 µm Grobfehler: X ≈ 15 µm, Y ≈ 3 µm. Das liegt in derselben Größenordnung wie der Drift-Bias.
+
+**Zwei Gegenmittel, beide jetzt im Plan:**
+
+1. **`XY_ITERATIONS=2`** — die Sequenz X→Y→X. Eine Fixpunktiteration; der Restfehler schrumpft pro voller Runde um ρ² und beide Achsen landen auf demselben Niveau. Kostet einen Sweep. Config-Default ist `xy_iterations: 1`.
+2. **`NOZZLE_LOCATE AXIS=DIAG`** — Diagnose, kein Teil der Messroutine. X- und Y-Sweeps liefern nur `a` und `b`; `c` ist für sie prinzipiell unsichtbar. Die Diagonalen zeigen ihn:
+
+```
+Krümmung bei  45° = (a + b + 2c)/2
+Krümmung bei 135° = (a + b − 2c)/2
+        Differenz  = 2c
+```
+
+**Vorgehen, sobald die Sonde da ist:** einmal `AXIS=DIAG` fahren. Das Kommando gibt ρ aus und sagt direkt, was daraus folgt — unter 0,1 genügt eine Runde, darüber lohnt `XY_ITERATIONS=2`, und bei starker Kopplung wäre ein 2D-Gitterfit der saubere Weg (25 Punkte statt 2×9, liefert x₀, y₀, a, b, c gleichzeitig und ohne Richtungsbias; der bidirektionale Drift-Trick müsste dann boustrophedon laufen).
+
+**Nicht überbewerten:** dieser Fehler ist real, aber kleiner als Risiko 6.1. Reihenfolge deshalb: erst den Vergleichslauf gegen die Kamera (klärt den Heizblock), dann ρ messen, und erst danach entscheiden, ob die Messroutine überhaupt aufwendiger werden muss.
+
+### 6.5 Die eigentliche Frage ist weiterhin unbeantwortet
 
 **Ob das Verfahren genauer ist als die Kamera von Hand, weiß niemand.** Der Vorversuch lieferte σ = 9,87 µm aus n=5 — das 95-%-Konfidenzintervall reicht von 5,9 bis 28,4 µm, der Test kann „exzellent" und „unbrauchbar" statistisch nicht unterscheiden. Und die Wiederholbarkeit des Kameraverfahrens wurde nie gemessen.
 

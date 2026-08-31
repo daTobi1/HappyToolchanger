@@ -522,6 +522,11 @@ class NozzleLocator:
         self.dwell_time = config.getfloat('dwell_time', 0.5, above=0.)
         self.runs = config.getint('runs', 3, minval=1)
         self.runs_tolerance = config.getfloat('runs_tolerance', 0.05, above=0.)
+        # X->Y-Runden gegen die Kreuzkopplung der 2D-Glocke. 1 genuegt, wenn
+        # die Glocke achsparallel liegt; ob 2 noetig ist, misst
+        # NOZZLE_LOCATE AXIS=DIAG einmalig (siehe Task 3).
+        self.xy_iterations = config.getint('xy_iterations', 1,
+                                           minval=1, maxval=4)
         self.min_amplitude = config.getfloat('min_amplitude', 2000., above=0.)
         self.target_amplitude = config.getfloat('target_amplitude', 6000.,
                                                 above=0.)
@@ -647,6 +652,7 @@ sweep_step: 1
 dwell_time: 0.5
 runs: 3
 runs_tolerance: 0.05
+xy_iterations: 1
 
 min_amplitude: 2000
 target_amplitude: 6000
@@ -744,11 +750,81 @@ Deliverable: `NOZZLE_LOCATE AXIS=X` findet eine Düse und meldet ihre Position.
 **Interfaces:**
 - Consumes: `nozzle_locator_fit.parabola_vertex`, `.bidirectional_center`, `.sweep_quality` (Task 1); `NozzleLocator.read_frequency` (Task 2)
 - Produces:
+  - `nozzle_locator_fit.parabola_fit(points) -> (scheitel, kruemmung)` — neu, siehe Step 0
   - `NozzleLocator.measure_baseline() -> float`
   - `NozzleLocator.approach_z(baseline, target_amplitude) -> float` (erreichtes Z)
   - `NozzleLocator.sweep(axis, center, span, step, descending) -> [(pos, freq), ...]`
-  - `NozzleLocator.locate(axis, center, baseline) -> dict` mit `{'center', 'fwd', 'rev', 'spread', 'runs'}`
-  - G-Code `NOZZLE_LOCATE AXIS=X|Y [REPEATS=n] [SPAN=mm] [STEP=mm]`
+  - `NozzleLocator.locate(axis, center, baseline) -> dict` mit `{'center', 'fwd', 'rev', 'spread', 'runs', 'curvature'}`
+  - `NozzleLocator.measure_coupling(center_x, center_y, baseline) -> dict` mit `{'a', 'b', 'c', 'rho'}`
+  - G-Code `NOZZLE_LOCATE AXIS=X|Y|DIAG [REPEATS=n] [SPAN=mm] [STEP=mm]`
+
+### Warum `DIAG` dazugehört
+
+Nahe am Scheitel ist die Glocke eine 2D-Quadrik:
+
+```
+f(x,y) ≈ f₀ − ½[ a(x−x₀)² + 2c(x−x₀)(y−y₀) + b(y−y₀)² ]
+```
+
+Ein X-Sweep bei festem `y = y₁` liefert **nicht** `x₀`, sondern
+
+```
+x_peak = x₀ − (c/a)·(y₁ − y₀)
+```
+
+Solange der Kreuzterm `c ≠ 0` ist — die Glocke also eine gegen die Achsen
+verkippte Ellipse ist —, misst jeder achsparallele Sweep systematisch daneben,
+proportional dazu, wie weit seine Linie am wahren Zentrum vorbeiführt.
+
+**X- und Y-Sweeps können `c` prinzipiell nicht sehen.** Sie liefern nur `a`
+und `b`. Die beiden Diagonalen dagegen:
+
+```
+Kruemmung bei  45° = (a + b + 2c)/2
+Kruemmung bei 135° = (a + b − 2c)/2
+          Differenz = 2c
+```
+
+Daraus `rho = c / sqrt(a·b)` — das Maß dafür, wie stark die Kopplung ist.
+`DIAG` ist deshalb ein **Diagnosekommando, kein Teil der Messroutine**: einmal
+fahren, `rho` bestimmen, danach entscheiden, ob die Routine überhaupt
+aufwendiger werden muss (siehe Task 5).
+
+- [ ] **Step 0: `parabola_fit()` in der Fit-Mathematik ergänzen**
+
+Für `DIAG` wird die **Krümmung** gebraucht, nicht nur der Scheitel.
+`parabola_vertex` wirft sie heute weg. In `klippy/extras/nozzle_locator_fit.py`
+den Fit einmal aufteilen — `parabola_vertex` bleibt als dünner Wrapper
+erhalten, damit die bestehenden 16 Zusicherungen unverändert weitergelten:
+
+```python
+def parabola_fit(points):
+    """Scheitel UND Kruemmung der Kleinstequadrate-Parabel.
+
+    Rueckgabe: (scheitel, kruemmung), kruemmung positiv fuer einen Hochpunkt
+    (also -a des gefitteten y = a x^2 + b x + c).
+
+    Die Kruemmung braucht der Diagonal-Sweep: aus den Kruemmungen bei 45 und
+    135 Grad faellt der Kreuzterm der 2D-Quadrik heraus, und den koennen
+    achsparallele Sweeps prinzipiell nicht sehen.
+    """
+    # ... derselbe zentrierte Cramer-Solve wie bisher, aber a und b behalten
+    return xbar - b / (2.0 * a), -a
+
+
+def parabola_vertex(points):
+    """Nur der Scheitel. Duenner Wrapper um parabola_fit."""
+    return parabola_fit(points)[0]
+```
+
+Zwei Zusicherungen dazu in `tests/check_nozzle_locator_fit.py`:
+
+- `parabola_fit` liefert für die bekannte Glocke die eingesetzte Krümmung
+  `CURV` zurück (Toleranz 1e-6)
+- `parabola_vertex` und `parabola_fit(...)[0]` sind identisch
+
+Damit steigt die Zahl der Zusicherungen von 16 auf 18. Test wie gehabt auf
+dem Pi laufen lassen; alle bisherigen müssen weiter halten.
 
 - [ ] **Step 1: Implementierung schreiben**
 
@@ -873,7 +949,7 @@ from . import nozzle_locator_fit as fit
         span = self.sweep_span if span is None else span
         step = self.sweep_step if step is None else step
 
-        centers, fwds, revs = [], [], []
+        centers, fwds, revs, curvs = [], [], [], []
         for _ in range(runs):
             fwd = self.sweep(axis, center, span, step, descending=False)
             good, reason = fit.sweep_quality(fwd, baseline, self.min_amplitude)
@@ -885,9 +961,12 @@ from . import nozzle_locator_fit as fit
             if not good:
                 raise self.printer.command_error(
                     "nozzle_locator %s-Ruecksweep: %s" % (axis, reason))
-            centers.append(fit.bidirectional_center(fwd, rev))
-            fwds.append(fit.parabola_vertex(fwd))
-            revs.append(fit.parabola_vertex(rev))
+            v_fwd, k_fwd = fit.parabola_fit(fwd)
+            v_rev, k_rev = fit.parabola_fit(rev)
+            centers.append((v_fwd + v_rev) / 2.0)
+            fwds.append(v_fwd)
+            revs.append(v_rev)
+            curvs.append((k_fwd + k_rev) / 2.0)
 
         spread = max(centers) - min(centers)
         if spread > self.runs_tolerance:
@@ -903,17 +982,95 @@ from . import nozzle_locator_fit as fit
             'fwd': sum(fwds) / len(fwds),
             'rev': sum(revs) / len(revs),
             'spread': spread,
+            'curvature': sum(curvs) / len(curvs),
         }
+
+    def measure_coupling(self, center_x, center_y, baseline, runs=None):
+        """Misst den Kreuzterm der 2D-Quadrik ueber zwei Diagonal-Sweeps.
+
+        Achsparallele Sweeps liefern nur a und b. Der Kreuzterm c ist fuer
+        sie unsichtbar, verschiebt ihren Scheitel aber um (c/a)*(y1-y0).
+        Ueber die Diagonalen faellt er heraus:
+            Kruemmung( 45 Grad) = (a + b + 2c)/2
+            Kruemmung(135 Grad) = (a + b - 2c)/2
+        Rueckgabe: {'a','b','c','rho'} mit rho = c/sqrt(a*b).
+
+        Diagnose, kein Teil der Messroutine: einmal fahren, rho ansehen,
+        danach entscheiden ob die Routine aufwendiger werden muss.
+        """
+        rx = self.locate('X', center_x, baseline, runs=runs)
+        self._move([rx['center'], None, None], self.move_speed)
+        ry = self.locate('Y', center_y, baseline, runs=runs)
+        self._move([None, ry['center'], None], self.move_speed)
+        a, b = rx['curvature'], ry['curvature']
+        k45 = self._diagonal_curvature(rx['center'], ry['center'],
+                                       baseline, +1)
+        k135 = self._diagonal_curvature(rx['center'], ry['center'],
+                                        baseline, -1)
+        c = (k45 - k135)  # (a+b+2c)/2 - (a+b-2c)/2 = 2c, und die
+        c = c / 2.0       # Sweepschrittweite laeuft entlang der Diagonalen
+        denom = (a * b) ** 0.5
+        rho = c / denom if denom > 0 else 0.0
+        return {'a': a, 'b': b, 'c': c, 'rho': rho}
+
+    def _diagonal_curvature(self, cx, cy, baseline, sign):
+        """Ein Sweep entlang (1, sign)/sqrt(2) durch (cx, cy).
+
+        Bewegt X und Y gemeinsam. Die Positionsachse des Fits ist die
+        Bogenlaenge entlang der Diagonalen, nicht x oder y allein -- sonst
+        stimmt die Kruemmung um Faktor 2 nicht.
+        """
+        half = self.sweep_span / 2.0
+        n_steps = int(round(self.sweep_span / self.sweep_step)) + 1
+        root2 = 2.0 ** 0.5
+        pts = []
+        for i in range(n_steps):
+            s = -half + i * self.sweep_step          # Bogenlaenge
+            dx = s / root2
+            dy = sign * s / root2
+            self._move([cx + dx, cy + dy, None], self.move_speed)
+            mean, sd, n, errors = self.read_frequency()
+            pts.append((s, mean))
+        good, reason = fit.sweep_quality(pts, baseline, self.min_amplitude)
+        if not good:
+            raise self.printer.command_error(
+                "nozzle_locator Diagonale (%s45): %s"
+                % ("+" if sign > 0 else "-", reason))
+        return fit.parabola_fit(pts)[1]
+
+    def _coupling_advice(self, rho):
+        """Sagt, was der gemessene rho-Wert fuer die Messroutine bedeutet.
+
+        Der Restfehler einer X->Y-Sequenz schrumpft pro voller Runde um
+        rho^2. Die ZUERST gemessene Achse erbt dagegen rho*sqrt(b/a) mal den
+        Fehler der Grobsuche -- sie ist also um etwa 1/rho schlechter als die
+        zweite. Genau das behebt XY_ITERATIONS=2.
+        """
+        r = abs(rho)
+        if r < 0.1:
+            return ("Kopplung vernachlaessigbar. Eine X->Y-Sequenz genuegt, "
+                    "XY_ITERATIONS=1 ist richtig.")
+        if r < 0.35:
+            return ("Kopplung merklich. Die zuerst gemessene Achse ist rund "
+                    "%.0fx schlechter als die zweite -- XY_ITERATIONS=2 "
+                    "verwenden, das kostet einen Sweep und gleicht beide an."
+                    % (1.0 / r))
+        return ("Kopplung stark (rho=%.2f). Die Glocke ist deutlich gegen "
+                "die Achsen verkippt. XY_ITERATIONS=2 reicht hier "
+                "moeglicherweise nicht; ein 2D-Gitterfit waere der saubere "
+                "Weg. Ergebnis im Issue festhalten." % r)
 
     cmd_LOCATE_help = (
         "Locate a nozzle laterally over the XY probe coil. Parameters: "
-        "AXIS (X or Y), REPEATS (runs, default from config), SPAN, STEP. "
-        "Requires homed axes and the coil holder in place.")
+        "AXIS (X, Y or DIAG), REPEATS (runs, default from config), SPAN, "
+        "STEP. AXIS=DIAG runs both diagonals and reports the cross-term of "
+        "the 2D peak (diagnostic only). Requires homed axes and the coil "
+        "holder in place.")
 
     def cmd_LOCATE(self, gcmd):
         axis = gcmd.get('AXIS', 'X').upper()
-        if axis not in ('X', 'Y'):
-            raise gcmd.error("AXIS muss X oder Y sein")
+        if axis not in ('X', 'Y', 'DIAG'):
+            raise gcmd.error("AXIS muss X, Y oder DIAG sein")
         runs = gcmd.get_int('REPEATS', self.runs, minval=1)
         span = gcmd.get_float('SPAN', self.sweep_span, above=0.)
         step = gcmd.get_float('STEP', self.sweep_step, above=0.)
@@ -931,6 +1088,14 @@ from . import nozzle_locator_fit as fit
         baseline = self.measure_baseline()
         self._move([here[0], here[1], None], self.move_speed)
         self._move([None, None, here[2]], self.approach_speed)
+
+        if axis == 'DIAG':
+            r = self.measure_coupling(here[0], here[1], baseline, runs=runs)
+            gcmd.respond_info(
+                "nozzle_locator Kopplung: a=%.1f b=%.1f c=%.1f Hz/mm^2, "
+                "rho=%.3f" % (r['a'], r['b'], r['c'], r['rho']))
+            gcmd.respond_info(self._coupling_advice(r['rho']))
+            return
 
         result = self.locate(axis, center, baseline, runs=runs,
                              span=span, step=step)
@@ -1107,8 +1272,10 @@ Die Politik für die XY-Messung:
     cmd_CALIBRATE_XY_OFFSETS_help = (
         "Measure X/Y tool offsets with the XY probe coil. Parameters: "
         "REF_TOOL, TOOLS (subset), DRY_RUN (1 = travel only, never descend), "
-        "TEMP (nozzle temperature, 0 = cold). Requires homed axes and the "
-        "coil holder placed on the bed.")
+        "TEMP (nozzle temperature, 0 = cold), XY_ITERATIONS (X-Y rounds "
+        "against cross-coupling, default from config; run NOZZLE_LOCATE "
+        "AXIS=DIAG once to find out whether 2 is needed). Requires homed "
+        "axes and the coil holder placed on the bed.")
 
     def cmd_CALIBRATE_XY_OFFSETS(self, gcmd):
         locator = self.printer.lookup_object('nozzle_locator', None)
@@ -1117,7 +1284,9 @@ Die Politik für die XY-Messung:
                 "Keine XY-Sonde konfiguriert. In der Offset-Webapp ueber den "
                 "Assistenten aktivieren -- xy_probe.cfg ist derzeit leer.")
         dry_run = gcmd.get_int('DRY_RUN', 0)
-        temp = gcmd.get_float('TEMP', 0., minval=0.)
+        temp = gcmd.get_float("TEMP", 0., minval=0.)
+        iterations = gcmd.get_int("XY_ITERATIONS", locator.xy_iterations,
+                                  minval=1, maxval=4)
         ref_tool, ordered_tools = self._xy_tool_run(gcmd)
         self._require_leveled(gcmd)
         locator._require_homed()
@@ -1127,7 +1296,8 @@ Die Politik für die XY-Messung:
         results = {}
         try:
             results = self._run_xy_calibration(
-                gcmd, locator, ref_tool, ordered_tools, dry_run, temp)
+                gcmd, locator, ref_tool, ordered_tools, dry_run, temp,
+                iterations)
         finally:
             self.gcode.run_script_from_command(
                 "SET_IDLE_TIMEOUT TIMEOUT=%d" % prev_timeout)
@@ -1143,7 +1313,7 @@ Die Politik für die XY-Messung:
         self._report_xy_results(gcmd, results, ref_tool)
 
     def _run_xy_calibration(self, gcmd, locator, ref_tool, ordered_tools,
-                            dry_run, temp):
+                            dry_run, temp, iterations):
         results = {}
         ref_pos = None
         measure_z = None
@@ -1191,9 +1361,20 @@ Die Politik für die XY-Messung:
             cx, cy = self._xy_window
             locator._move([cx, cy, None], locator.move_speed)
 
-            rx = locator.locate('X', cx, baseline)
-            locator._move([rx['center'], None, None], locator.move_speed)
-            ry = locator.locate('Y', cy, baseline)
+            # X -> Y -> X: Fixpunktiteration gegen die Kreuzkopplung.
+            # Ein X-Sweep bei festem y liefert x0 - (c/a)*(y - y0); der
+            # Restfehler schrumpft pro voller Runde um rho^2. Ohne die
+            # zweite Runde ist die ZUERST gemessene Achse um rund 1/rho
+            # schlechter als die zweite -- ein Ungleichgewicht, das man der
+            # Ergebnistabelle nicht ansieht.
+            rx = ry = None
+            for it in range(iterations):
+                rx = locator.locate('X', cx if rx is None else rx['center'],
+                                    baseline)
+                locator._move([rx['center'], None, None], locator.move_speed)
+                ry = locator.locate('Y', cy if ry is None else ry['center'],
+                                    baseline)
+                locator._move([None, ry['center'], None], locator.move_speed)
 
             entry = {
                 'x_peak': rx['center'], 'y_peak': ry['center'],
