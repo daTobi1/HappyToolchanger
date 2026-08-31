@@ -70,9 +70,15 @@ Der Grundstein. Läuft komplett ohne Drucker und ohne Klipper.
 #!/usr/bin/env python3
 """Prueft die Fit-Mathematik der XY-Offset-Ortung.
 
-Laeuft LOKAL, ohne Drucker und ohne Klipper:
+Braucht KEINE Druckerhardware und kein Klipper -- nur einen
+Python-Interpreter. Im Repo:
 
     python3 tests/check_nozzle_locator_fit.py
+
+Auf dem Drucker (dort liegt ohnehin ein Python; Test und Modul duerfen
+dabei nebeneinander in einem Verzeichnis liegen):
+
+    python3 check_nozzle_locator_fit.py
 
 Der Kern ist Test 2 und 3. Sie halten den Befund fest, der das ganze
 Verfahren traegt: ein einzelner gerichteter Sweep misst bei driftender
@@ -83,8 +89,11 @@ Exit-Code 0 = sauber, 1 = Befunde.
 import os
 import sys
 
-sys.path.insert(0, os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "klippy", "extras"))
+# Findet das Modul im Repo-Layout und auch dann, wenn Test und Modul
+# nebeneinander liegen (etwa nach einem scp in ein Verzeichnis).
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.join(_HERE, "..", "klippy", "extras"))
 
 import nozzle_locator_fit as fit  # noqa: E402
 
@@ -202,10 +211,22 @@ if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
-- [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
+- [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen (RED)**
 
-Run: `python3 tests/check_nozzle_locator_fit.py`
+**Auf dem Entwicklungsrechner ist kein Python installiert** (nur die
+Microsoft-Store-Platzhalter unter `WindowsApps`). Der Test braucht zwar
+keine Druckerhardware, aber einen Interpreter — und der liegt auf dem Pi.
+Also dort ausführen. Der Drucker wird dabei **nicht bewegt**, es läuft nur
+Rechnerei:
+
+```bash
+scp tests/check_nozzle_locator_fit.py biqu@192.168.178.60:/tmp/
+sshpass -p biqu ssh biqu@192.168.178.60 'cd /tmp && python3 check_nozzle_locator_fit.py'
+```
+
 Expected: `ModuleNotFoundError: No module named 'nozzle_locator_fit'`
+
+Das ist der RED-Schritt: der Test existiert, das Modul noch nicht.
 
 - [ ] **Step 3: Fit-Modul implementieren**
 
@@ -307,10 +328,22 @@ def sweep_quality(points, baseline, min_amplitude):
     return True, ""
 ```
 
-- [ ] **Step 4: Test laufen lassen, grün bestätigen**
+- [ ] **Step 4: Test laufen lassen, grün bestätigen (GREEN)**
 
-Run: `python3 tests/check_nozzle_locator_fit.py`
-Expected: `N Zusicherungen geprueft` / `sauber`, Exit-Code 0
+Beide Dateien in dasselbe Verzeichnis, damit der Fallback aus dem
+`sys.path`-Block greift:
+
+```bash
+scp tests/check_nozzle_locator_fit.py klippy/extras/nozzle_locator_fit.py \
+    biqu@192.168.178.60:/tmp/
+sshpass -p biqu ssh biqu@192.168.178.60 'cd /tmp && python3 check_nozzle_locator_fit.py; echo "exit=$?"'
+```
+
+Expected: `N Zusicherungen geprueft` / `sauber` / `exit=0`
+
+**Die Zahl der Zusicherungen in der Ausgabe im Report festhalten** — sie ist
+der Beleg, dass wirklich alle Testfälle gelaufen sind und nicht ein Teil
+still übersprungen wurde.
 
 - [ ] **Step 5: `tests/README.md` ergänzen**
 
@@ -319,11 +352,19 @@ Nach dem Abschnitt zu `check_webapp_recovery.js` einfügen:
 ```markdown
 ## `check_nozzle_locator_fit.py`
 
-Prüft die Fit-Mathematik der XY-Offset-Ortung. Läuft **lokal**, ohne
-Drucker und ohne Klipper:
+Prüft die Fit-Mathematik der XY-Offset-Ortung. Braucht **keine
+Druckerhardware und kein Klipper** — nur einen Python-Interpreter:
 
 ```bash
 python3 tests/check_nozzle_locator_fit.py
+```
+
+Auf dem Windows-Entwicklungsrechner ist keiner installiert, dort also über
+den Pi (der Drucker bewegt sich dabei nicht):
+
+```bash
+scp tests/check_nozzle_locator_fit.py klippy/extras/nozzle_locator_fit.py biqu@<IP>:/tmp/
+ssh biqu@<IP> 'cd /tmp && python3 check_nozzle_locator_fit.py'
 ```
 
 Der Anlass ist ein Denkfehler, der beinahe ins Verfahren eingebaut worden
