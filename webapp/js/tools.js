@@ -33,7 +33,11 @@ let _tapMinTemp = null;        // _TAP_PROBE_ACTIVATE variable_min_temp — Unte
 let _toolGcodeOffsets = {};    // { "0": {x:0, y:0, z:0}, ... } current tool gcode offsets
 let _zSwitchResults = {};      // { "0": { z_offset: 0.0, z_trigger: 1.23 }, ... }
 let _xyResults = {};        // { ref_tool: 0, "0": {x, y, z_compare, x_fwd, x_rev, ...} }
-let _xyMethod = "eddy";     // "eddy" | "camera"
+// Kamera zuerst: das Eddy-Verfahren kann erst Werte liefern, wenn die
+// zweite Spule und das Klipper-seitige nozzle_locator-Modul existieren.
+// Bis dahin waere "eddy" als Vorauswahl ein Block, der garantiert nur
+// "nicht gemessen" zeigt.
+let _xyMethod = "camera";   // "eddy" | "camera"
 let _xyProbeActive = null;  // null = unbekannt, true/false = Config-Zustand (Task 8)
 let _cameraPositions = {};  // { "0": {x, y} } aus "Position uebernehmen" (Task 9)
 
@@ -1062,8 +1066,12 @@ function updateProbeResults(tool, probeResults) {
   }
 }
 
+// Diese eine Kette bedient Dock-, PID-, Probe- UND XY-Tabelle. Wirft
+// irgendein Renderer darin (Fix-Runde 3: renderXyBlock auf einem Eintrag
+// ohne x/y), bleiben ohne diesen Fang ALLE vier auf dem Stand von vorher
+// stehen - alle 2s aufs Neue, sichtbar nur als Stack-Trace in der Konsole.
 function updateAllProbeResults() {
-  getOffsetSnapshot().then(function(offsetStatus) {
+  return getOffsetSnapshot().then(function(offsetStatus) {
     var probeResults = offsetStatus.probe_results || {};
     updatePidResults(offsetStatus);
     updateDockResults(offsetStatus);
@@ -1106,6 +1114,8 @@ function updateAllProbeResults() {
         $container.html(probeCalResultsTable(tools));
       }
     }
+  }).catch(function (err) {
+    OffsetDebug.error("updateAllProbeResults failed", err);
   });
 }
 
@@ -1962,7 +1972,14 @@ $(document).on("click", "#apply-xy-btn", function() {
     return;
   }
 
-  var note = 'Reference tool <strong>T' + escapeHtml(master) + '</strong> is not changed.<br>' +
+  // Es gibt inzwischen zwei unabhaengige Wege, die dieselben zwei
+  // Config-Schluessel schreiben (dieser hier und applyXyOffset/
+  // applyAllXyOffsets im XY-Block). Beide nennen deshalb ausdruecklich,
+  // GEGEN WELCHES Referenztool gerechnet wurde - sonst uebernimmt man
+  // Werte, deren Bezugspunkt man gar nicht kennt und dem man widersprechen
+  // koennte.
+  var note = 'Values are computed against reference tool <strong>T' +
+    escapeHtml(master) + '</strong>, which is not changed.<br>' +
     '"Current" is read from the config file. The new values are also set at runtime ' +
     'via <code>SET_TOOL_GCODE_OFFSET</code>.';
 
@@ -2816,11 +2833,29 @@ function captureMountedToolPosition() {
     });
 }
 
+// Referenztool des XY-Blocks. Erste Quelle ist das, wogegen Klipper
+// tatsaechlich gemessen hat (_xyResults.ref_tool); solange es das nicht
+// gibt, gilt dieselbe Auswahl wie im Kalibrier-Abschnitt darueber.
+//
+// Vorher stand hier dreimal ein hart verdrahtetes 0. Das war auf zwei Arten
+// falsch: waehlt der Nutzer T2 als Referenz, beschriftete der Block
+// trotzdem T0 als "Referenztool" - und auf einer fremden Config ganz ohne
+// T0 war die Kameramethode unbenutzbar, weil die Referenzposition unter
+// einer Toolnummer gesucht wurde, die es nicht gibt (jede Zeile "nicht
+// gemessen", ohne Erklaerung).
+function xyRefTool() {
+  var ref = _xyResults.ref_tool;
+  if (ref !== undefined && ref !== null) return ref;
+  var tools = Object.keys(_toolGcodeOffsets).map(function (t) {
+    return parseInt(t, 10);
+  }).filter(function (n) { return !isNaN(n); });
+  return getSelectedReferenceTool(computeDefaultRef(tools));
+}
+
 // Offset der Kameramethode = Differenz zum Referenztool, genau wie beim
 // Eddy-Verfahren. Nur so sind beide Verfahren vergleichbar.
 function _cameraOffsetFor(toolNr) {
-  var ref = _xyResults.ref_tool;
-  if (ref === undefined) ref = 0;
+  var ref = xyRefTool();
   var here = _cameraPositions[String(toolNr)];
   var base = _cameraPositions[String(ref)];
   if (!here || !base) return null;
@@ -2863,11 +2898,22 @@ $(document).on("change", 'input[name="xy-method"]', function () {
 // Baut die Vergleichstabelle in #xy-offset-body neu auf. Wird nach dem
 // Einhaengen des Accordion-Abschnitts sowie bei jedem Methodenwechsel
 // aufgerufen.
+// Ein Eintrag zaehlt erst als Messwert, wenn BEIDE Achsen als Zahl da
+// sind. Eine blosse Wahrheitspruefung reichte nicht: das noch zu
+// schreibende Klipper-Modul legt fuer ein Tool auch dann einen Eintrag an,
+// wenn der Fit fehlschlaegt - dann fehlt x/y, und res.x.toFixed(3) wirft
+// mitten in updateAllProbeResults(). Das lief bis Fix-Runde 3 in einer
+// ungefangenen Promise-Kette: der Wurf haette Dock-, PID- und
+// Probe-Tabelle gleich mit eingefroren, alle 2s neu, sichtbar nur in der
+// Konsole.
+function xyMeasured(res) {
+  return !!(res && typeof res.x === 'number' && typeof res.y === 'number');
+}
+
 function renderXyBlock() {
   var body = document.getElementById('xy-offset-body');
   if (!body) return;
-  var ref = _xyResults.ref_tool;
-  if (ref === undefined) ref = 0;
+  var ref = xyRefTool();
   var rows = Object.keys(_toolGcodeOffsets).sort(function (a, b) {
     return parseInt(a, 10) - parseInt(b, 10);
   }).map(function (t) {
@@ -2879,7 +2925,7 @@ function renderXyBlock() {
              '<td>' + cur.x.toFixed(3) + ' / ' + cur.y.toFixed(3) + '</td>' +
              '<td colspan="4" class="text-muted">Referenztool</td></tr>';
     }
-    if (!res) {
+    if (!xyMeasured(res)) {
       return '<tr><td>T' + t + '</td>' +
              '<td>' + cur.x.toFixed(3) + ' / ' + cur.y.toFixed(3) + '</td>' +
              '<td colspan="4" class="text-muted">nicht gemessen</td></tr>';
@@ -2948,13 +2994,41 @@ function renderXySparkline(status) {
 // existiert erst, wenn Sonde und Klipper-Modul (Task 2/3/5) da sind. Bis
 // dahin bleibt sie leer, ohne die eigentliche Offset-Abfrage zu gefaehrden
 // - deshalb bewusst nicht Teil von fetchOffsetStatus()/getOffsetSnapshot().
+// Einmal nachsehen, ob es das Objekt ueberhaupt gibt, und das Ergebnis
+// merken. Ohne diese Sperre setzte der 2s-Poll dauerhaft eine Anfrage ab,
+// die auf JEDER heutigen Config mit HTTP 400 endet - das .catch() versteckt
+// das nur vor dem Nutzer, nicht vor Konsole und Netzwerk-Log, und
+// verdoppelte nebenbei die Requests des Polls.
+//
+// Ein Fehlschlag der Abfrage selbst (Moonraker startet gerade neu) setzt
+// die Sperre bewusst zurueck, statt "gibt es nicht" fuer den Rest der
+// Sitzung festzuschreiben.
+var _xyLocatorProbe = null;
+function xyLocatorAvailable() {
+  if (_xyLocatorProbe === null) {
+    _xyLocatorProbe = Promise.resolve(
+      $.get(printerUrl(printerIp, "/printer/objects/list"))
+    ).then(function (data) {
+      var objs = (data && data.result && data.result.objects) || [];
+      return objs.indexOf('nozzle_locator') !== -1;
+    }, function () {
+      _xyLocatorProbe = null;
+      return false;
+    });
+  }
+  return _xyLocatorProbe;
+}
+
 function pollXySparkline() {
-  return $.get(printerUrl(printerIp, "/printer/objects/query?nozzle_locator"))
-    .then(function (data) {
+  return xyLocatorAvailable().then(function (have) {
+    if (!have) { renderXySparkline(null); return null; }
+    return Promise.resolve(
+      $.get(printerUrl(printerIp, "/printer/objects/query?nozzle_locator"))
+    ).then(function (data) {
       renderXySparkline(data && data.result && data.result.status
                           && data.result.status.nozzle_locator);
-    })
-    .catch(function () { renderXySparkline(null); });
+    }, function () { renderXySparkline(null); });
+  });
 }
 
 // Schreibt gcode_x_offset/gcode_y_offset fuer die genannten Tools in die
@@ -3004,7 +3078,7 @@ function writeXyConfigs(toolValues) {
 function applyXyOffset(toolNr, alsoWrite) {
   var res = (_xyMethod === 'eddy') ? _xyResults[String(toolNr)]
                                    : _cameraOffsetFor(toolNr);
-  if (!res) {
+  if (!xyMeasured(res)) {
     if (typeof showToast === 'function') {
       showToast("T" + toolNr + ": kein Messwert", "warning");
     }
@@ -3033,6 +3107,10 @@ function applyXyOffset(toolNr, alsoWrite) {
       return confirmDialog({
         title: "XY-Offset T" + toolNr + " in die Config schreiben?",
         body: offsetChangeListHtml(entries,
+          'Gerechnet gegen Referenztool <strong>T' + escapeHtml(xyRefTool()) +
+          '</strong> (Verfahren: ' +
+          escapeHtml(_xyMethod === 'eddy' ? 'Eddy-Sweep' : 'Kamera') +
+          ').<br>' +
           '"Current" kommt aus der Config-Datei. Der Laufzeitwert wurde ' +
           'bereits per <code>SET_TOOL_GCODE_OFFSET</code> gesetzt.'),
         okLabel: "OK — schreiben",
@@ -3080,15 +3158,14 @@ function applyXyOffset(toolNr, alsoWrite) {
 // Erst nach der einen Bestaetigung werden alle Laufzeitwerte in einem
 // GCode-Request gesetzt und die Configs geschrieben.
 function applyAllXyOffsets() {
-  var ref = _xyResults.ref_tool;
-  if (ref === undefined) ref = 0;
+  var ref = xyRefTool();
 
   var toolValues = {};
   var requests = [];
   Object.keys(_toolGcodeOffsets).forEach(function (t) {
     if (String(ref) === String(t)) return;
     var res = (_xyMethod === 'eddy') ? _xyResults[t] : _cameraOffsetFor(t);
-    if (!res) return;
+    if (!xyMeasured(res)) return;
     toolValues[t] = { x: res.x.toFixed(4), y: res.y.toFixed(4) };
     requests.push({ tool: t, key: "gcode_x_offset", section: "tool T" + t });
     requests.push({ tool: t, key: "gcode_y_offset", section: "tool T" + t });
@@ -3122,6 +3199,9 @@ function applyAllXyOffsets() {
         ? "XY-Offset von T" + names[0] + " uebernehmen?"
         : "XY-Offsets uebernehmen?",
       body: offsetChangeListHtml(entries,
+        'Gerechnet gegen Referenztool <strong>T' + escapeHtml(ref) +
+        '</strong> (Verfahren: ' +
+        escapeHtml(_xyMethod === 'eddy' ? 'Eddy-Sweep' : 'Kamera') + ').<br>' +
         '"Current" kommt aus der Config-Datei. Die Werte werden auch zur ' +
         'Laufzeit per <code>SET_TOOL_GCODE_OFFSET</code> gesetzt.'),
       okLabel: "OK — uebernehmen",
@@ -3305,12 +3385,72 @@ function xyProbeCheckPresent() {
     });
 }
 
-// sendGcodeWithRecovery schlaegt nie hart fehl (siehe dort) - "handled"
-// heisst aber "lief nicht durch, Nutzer hat den Fehlerdialog schon
-// gesehen". Der Assistent darf danach nicht so weiterlaufen, als waere
-// nichts gewesen (gleiches Muster wie dockJogLoop: "if (!r.ok && !r.transport) return dockAbort();").
+// sendGcodeWithRecovery schlaegt nie hart fehl (siehe dort). Nur {ok:true}
+// heisst "durchgelaufen".
+//
+// Fix-Runde 3: {transport:true} zaehlt NICHT mehr als Erfolg.
+// /printer/gcode/script bleibt offen, bis das Skript fertig ist - ein
+// Verbindungsabbruch heisst also "der Drucker arbeitet noch", nicht
+// "fertig". Genau so behandeln es der PID- und der Z-Lauf: Hinweis
+// anzeigen und STEHENBLEIBEN. Der Assistent war der einzige Ablauf, der
+// darauf einen maschinenbewegenden Folgeschritt gekettet hat.
 function xyStepOk(r) {
-  return !!(r && (r.ok || r.transport));
+  return !!(r && r.ok);
+}
+
+// Laeuft auf dem Drucker gerade noch etwas? idle_timeout.state ist
+// "Printing", solange Kommandos abgearbeitet werden - auch ohne Druckjob.
+// Liefert true/false, oder null, wenn die Auskunft selbst nicht zu holen
+// war (dann ist "fertig" gerade NICHT bewiesen).
+function xyPrinterIdle() {
+  return Promise.resolve(
+    $.get(printerUrl(printerIp,
+      "/printer/objects/query?idle_timeout&print_stats"))
+  ).then(function (data) {
+    var st = data && data.result && data.result.status;
+    if (!st) return null;
+    var it = st.idle_timeout, ps = st.print_stats;
+    if (it && it.state === 'Printing') return false;
+    if (ps && (ps.state === 'printing' || ps.state === 'paused')) return false;
+    if (!it && !ps) return null;
+    return true;
+  }, function () { return null; });
+}
+
+// Wartet, bis der Drucker keine Kommandos mehr abarbeitet. Das ist die
+// einzige Auskunft, die einen laufenden Messlauf ueberdauert - anders als
+// das Aufloesen des HTTP-Requests, das schon beim Verbindungsabbruch
+// feuert. Liefert false, wenn die Frist ablaeuft; der Aufrufer bricht dann
+// ab, statt in eine laufende Bewegung hinein weiterzumachen.
+function waitForPrinterIdle(timeoutMs) {
+  var deadline = Date.now() + (timeoutMs || 1800000);
+  function step() {
+    return xyPrinterIdle().then(function (idle) {
+      if (idle === true) return true;
+      if (Date.now() > deadline) return false;
+      return new Promise(function (r) { setTimeout(r, 2000); }).then(step);
+    });
+  }
+  // Kurz warten, bevor zum ersten Mal gefragt wird: idle_timeout schaltet
+  // erst mit dem ersten bewegenden Kommando auf "Printing", eine sofortige
+  // Frage koennte also faelschlich "steht schon" melden.
+  return new Promise(function (r) { setTimeout(r, 1500); }).then(step);
+}
+
+function xyHomedAxes() {
+  return Promise.resolve(
+    $.get(printerUrl(printerIp, "/printer/objects/query?toolhead"))
+  ).then(function (data) {
+    return (data && data.result && data.result.status &&
+            data.result.status.toolhead &&
+            data.result.status.toolhead.homed_axes) || "";
+  });
+}
+
+function xyIsHomed(axes) {
+  axes = String(axes || "");
+  return axes.indexOf("x") !== -1 && axes.indexOf("y") !== -1 &&
+         axes.indexOf("z") !== -1;
 }
 
 // Fix-Runde 1: sendGcodeWithRecovery() ist ab dem Aufsetzen der Halterung
@@ -3335,11 +3475,15 @@ function xySendMounted(script, title) {
                                      function (err) { return { err: err }; });
   }
   return send().then(function (r) {
-    if (r.ok) return true;
+    if (r.ok) return { ok: true };
     var detail = gcodeErrorMessage(r.err);
-    // Kein Payload = Verbindung weg, der Drucker rechnet weiter (wie bei
-    // sendGcodeWithRecovery) - kein Grund, den Assistenten abzubrechen.
-    if (!detail) return true;
+    // Kein Payload = Verbindung weg, der Drucker rechnet WEITER (wie bei
+    // sendGcodeWithRecovery). Fix-Runde 3: das ist kein Erfolg, sondern
+    // "unbekannt, laeuft noch" - deshalb als eigenes Ergebnis nach oben
+    // gereicht statt wie zuvor als schlichtes true. Ein Messlauf ueber
+    // sechs Tools mit Hin- und Ruecksweep dauert viele Minuten, transport
+    // ist hier der REGELFALL und nicht der Sonderfall.
+    if (!detail) return { transport: true };
     var e = new Error(title + " fehlgeschlagen: " + detail);
     e.xyHolderMounted = true;
     throw e;
@@ -3355,22 +3499,37 @@ function xySendMounted(script, title) {
 // hier gefahrlos, weil auf dem Bett noch nichts steht. Nach dem Homen wird
 // das Ergebnis geprueft - schlaegt es fehl, darf der Assistent nicht zum
 // "Halterung aufsetzen"-Schritt weitergehen.
+//
+// Fix-Runde 3: das Ergebnis des Sendens beweist hier GAR NICHTS. Weder
+// {ok:true} noch {transport:true} sagen, dass gehomt ist - transport
+// heisst "Verbindung weg, laeuft weiter", und der Recovery-Knopf faehrt
+// G28 -> QUAD_GANTRY_LEVEL -> G28 Z, also minutenlange Bewegung. Der
+// naechste Dialog fordert dazu auf, die Halterung AUF DAS BETT zu stellen;
+// diese Aufforderung darf erst kommen, wenn der Drucker wirklich steht.
+// Also: warten, bis nichts mehr laeuft, DANN homed_axes erneut abfragen -
+// dieselbe Pruefung wie oben. Nur die beweist, dass das Homing fertig ist.
 function ensureHomedAfterActivate() {
-  return $.get(printerUrl(printerIp, "/printer/objects/query?toolhead"))
-    .then(function (data) {
-      var homed = (data && data.result && data.result.status &&
-                   data.result.status.toolhead &&
-                   data.result.status.toolhead.homed_axes) || "";
-      if (homed.indexOf("x") !== -1 && homed.indexOf("y") !== -1 &&
-          homed.indexOf("z") !== -1) {
-        return true;
-      }
+  return xyHomedAxes()
+    .then(function (homed) {
+      if (xyIsHomed(homed)) return true;
       return sendGcodeWithRecovery("G28", "Homen nach dem Aktivieren")
-        .then(function (r) { return xyStepOk(r); });
+        .then(function (r) {
+          // "handled" = Fehlerdialog war schon zu sehen, nicht nochmal.
+          if (!r || r.handled) return false;
+          if (r.transport && typeof showToast === 'function') {
+            showToast("Verbindung zum Homing-Lauf verloren - er laeuft " +
+                      "weiter. Warte, bis der Drucker steht...", "warning");
+          }
+          return waitForPrinterIdle(900000).then(function (idle) {
+            if (!idle) return false;
+            return xyHomedAxes().then(xyIsHomed);
+          });
+        });
     })
     .then(function (ok) {
       if (!ok) throw new Error(
-        "Homing nach dem Aktivieren ist nicht sauber durchgelaufen -- " +
+        "Homing nach dem Aktivieren ist nicht sauber durchgelaufen (der " +
+        "Drucker meldet nicht x/y/z als gehomt, oder er arbeitet noch) -- " +
         "Abbruch, solange das Bett noch leer ist.");
       return true;
     });
@@ -3401,16 +3560,25 @@ function xyWizard() {
   }).then(function (ok) {
     if (!ok) return null;
     return xyProbeCheckPresent().then(function () {
-      showToast("Sonde wird aktiviert, Klipper startet neu…", "info");
+      if (typeof showToast === 'function') {
+        showToast("Sonde wird aktiviert, Klipper startet neu…", "info");
+      }
       return xyProbeActivate();
     }).then(function () {
-      showToast("Klipper ist bereit, homt jetzt…", "info");
+      if (typeof showToast === 'function') {
+        showToast("Klipper ist bereit, homt jetzt…", "info");
+      }
       return ensureHomedAfterActivate();
     }).then(function () {
       return sendGcodeWithRecovery("NOZZLE_LOCATOR_READ DURATION=1.0",
                                    "Sonde prüfen");
     }).then(function (r) {
-      if (!xyStepOk(r)) throw new Error("Sonde pruefen fehlgeschlagen.");
+      if (!xyStepOk(r)) throw new Error(
+        (r && r.transport)
+          ? "Die Verbindung zur Sondenpruefung ist abgerissen -- ob die " +
+            "Sonde antwortet, ist damit ungeklaert. Abbruch, solange das " +
+            "Bett noch leer ist."
+          : "Sonde pruefen fehlgeschlagen.");
       return confirmDialog({
         title: "XY-Sonde: Aufsetzen",
         body: "Halterung jetzt auf das Bett stellen. AB HIER nicht mehr " +
@@ -3436,10 +3604,61 @@ function xyWizard() {
         cancelLabel: "Überspringen"
       }).then(function (runDry) {
         if (!runDry) return null;
-        return xySendMounted("CALIBRATE_XY_OFFSETS DRY_RUN=1", "Trockenlauf");
+        return xySendMounted("CALIBRATE_XY_OFFSETS DRY_RUN=1", "Trockenlauf")
+          .then(function (r) {
+            // Der Trockenlauf existiert genau dafuer, dass der Nutzer den
+            // Wechselweg beobachtet und danach ABBRECHEN kann. Vorher
+            // hingen Trocken- und Messlauf ohne irgendetwas dazwischen
+            // aneinander: ein Verbindungsabbruch beim Trockenlauf hat den
+            // absenkenden Messlauf sofort hinterhergeschoben.
+            var note = (r && r.transport)
+              ? '<p class="mb-2 text-warning">' +
+                '<i class="bi bi-exclamation-triangle"></i> Die Verbindung ' +
+                'zum Trockenlauf ist abgerissen -- er laeuft auf dem ' +
+                'Drucker weiter. Erst antworten, wenn der Drucker wirklich ' +
+                'steht.</p>'
+              : '';
+            return confirmDialog({
+              title: "Trockenlauf beendet?",
+              body: note +
+                    "Lief der Trockenlauf kollisionsfrei ab? Der Messlauf " +
+                    "faehrt dieselben Wege, senkt die Duese dabei aber ab.",
+              okLabel: "Ja -- Messlauf starten",
+              okClass: "btn-warning",
+              cancelLabel: "Nein -- abbrechen"
+            });
+          }).then(function (clean) {
+            if (clean) return null;
+            var e = new Error(
+              "Trockenlauf nicht als kollisionsfrei bestaetigt -- kein " +
+              "Messlauf.");
+            e.xyHolderMounted = true;
+            throw e;
+          });
       }).then(function () {
         return xySendMounted("CALIBRATE_XY_OFFSETS", "XY-Messlauf");
-      }).then(function () {
+      }).then(function (r) {
+        // Auch hier gilt: das Aufloesen des Requests ist KEIN Beweis, dass
+        // der Lauf fertig ist - bei einem Messlauf ueber alle Tools ist
+        // {transport:true} sogar der Regelfall. Der naechste Schritt waere
+        // xyProbeDeactivate() -> FIRMWARE_RESTART, also ein Abbruch
+        // mitten in der Bewegung. Deshalb nicht am Request weitergehen,
+        // sondern erst, wenn der Drucker selbst wieder idle meldet.
+        if (r && r.transport && typeof showToast === 'function') {
+          showToast("Verbindung zum Messlauf verloren - er laeuft weiter. " +
+                    "Warte, bis der Drucker steht...", "warning");
+        }
+        return waitForPrinterIdle(3600000);
+      }).then(function (idle) {
+        if (!idle) {
+          var e = new Error(
+            "Der Drucker arbeitet nach dem Messlauf immer noch. Der " +
+            "Assistent haelt hier an, damit kein FIRMWARE_RESTART in eine " +
+            "laufende Bewegung faellt. Wenn der Drucker steht: die Sonde " +
+            "unten deaktivieren, ERST DANACH die Halterung abnehmen.");
+          e.xyHolderMounted = true;
+          throw e;
+        }
         return updateAllProbeResults();
       }).then(function () {
         return alertDialog("Abschließen",
@@ -3482,7 +3701,13 @@ function xyWizard() {
       { extraLabel: "Sonde deaktivieren", extraClass: "btn-warning" }
     ).then(function (choice) {
       if (choice !== 'extra') return null;
-      showToast("Sonde wird deaktiviert, Klipper startet neu…", "info");
+      // Ungeschuetzt wie zuvor waere das der Wurf, der den Assistenten-
+      // Knopf dauerhaft auf "Laeuft…" stehen liesse: er faellt in den
+      // catch() und damit an jedem .then() vorbei, das ihn wieder
+      // freigibt. Die Nachbarfunktionen pruefen aus genau dem Grund.
+      if (typeof showToast === 'function') {
+        showToast("Sonde wird deaktiviert, Klipper startet neu…", "info");
+      }
       return xyProbeDeactivate().then(function () {
         return alertDialog("Sonde deaktiviert", mounted
           ? "Die Sonde ist jetzt aus der Config entfernt. ERST die " +
@@ -3504,14 +3729,47 @@ $(document).on("click", "#xy-wizard-btn", function () {
   var $btn = $(this);
   var btnHtml = $btn.html();
   $btn.prop("disabled", true).text("Läuft…");
-  xyWizard().then(function () {
+  // Wie bei #dock-cal-btn: der Knopf wird auf BEIDEN Wegen wieder
+  // freigegeben. Ein Wurf aus xyWizard() selbst - etwa aus dessen eigenem
+  // catch() heraus - liesse ihn sonst dauerhaft gesperrt zurueck, und das
+  // waere nur per Reload zu loesen.
+  var release = function (e) {
+    if (e) console.error("XY-Assistent abgebrochen:", e);
     $btn.prop("disabled", false).html(btnHtml);
-  });
+  };
+  xyWizard().then(function () { release(); }, release);
 });
+
+// Ist die XY-Sonde in der Config ueberhaupt scharf? xy_probe.cfg ist die
+// Datei, die printer.cfg included: leer bzw. nur Kommentar heisst
+// deaktiviert, Vorlageninhalt heisst aktiv. Existiert die Datei gar nicht
+// (jede fremde Config, und heute auch beide Drucker des Projekts), ist die
+// Antwort ebenfalls "nicht aktiv".
+function xyProbeConfigActive() {
+  var baseUrl = printerUrl(printerIp, "");
+  return fetch(baseUrl + "/server/files/config/xy_probe.cfg", NO_CACHE)
+    .then(function (r) { return r.ok ? r.text() : ""; })
+    .then(function (text) {
+      return String(text || "").split("\n").some(function (line) {
+        var s = line.trim();
+        return s !== "" && s.charAt(0) !== "#" && s.charAt(0) !== ";";
+      });
+    })
+    .catch(function () { return false; });
+}
 
 // Aktivierte Sonde + abgesteckter Knoten = Klipper startet nicht. Moonraker
 // laeuft weiter, also koennen wir das genau hier noch reparieren - beim
 // Laden der Offset-UI aufgerufen (siehe getTools()).
+//
+// Fix-Runde 3: das Kriterium ist die CONFIG, nicht der Fehlertext. Die
+// vorherige Bedingung liess "mcu" als Ausloeser gelten - das steht in
+// praktisch jeder Klipper-MCU-Stoerung ("Lost communication with MCU
+// 'mcu'", "MCU 'mcu' shutdown: Timer too close"). Da bisher nirgends eine
+// xy_probe.cfg existiert, war ein Fehlalarm der EINZIG mogliche Ausgang:
+// eine nicht vorhandene Sonde beschuldigt, vor einer nicht aufgestellten
+// Halterung gewarnt, und als "Reparatur" eine ueberfluessige xy_probe.cfg
+// geschrieben samt Klipper-Neustart.
 function checkXyProbeStranded() {
   var baseUrl = printerUrl(printerIp, "");
   return fetch(baseUrl + "/printer/info", NO_CACHE)
@@ -3519,34 +3777,43 @@ function checkXyProbeStranded() {
     .then(function (j) {
       var st = j && j.result && j.result.state;
       if (st !== 'error' && st !== 'shutdown') return;
-      var msg = (j.result.state_message || '');
-      if (msg.indexOf('xyprobe') === -1 && msg.indexOf('mcu') === -1) return;
-      return alertDialog(
-        "XY-Sonde blockiert den Start",
-        '<p class="mb-2">Klipper startet nicht, und in der Config steht ' +
-        'noch die XY-Sonde. Wurde sie abgezogen, ohne sie vorher zu ' +
-        'deaktivieren?</p>' +
-        '<p class="mb-0 text-warning"><i class="bi bi-exclamation-triangle">' +
-        '</i> Dieser Check weiss nicht, ob die XY-Halterung noch auf dem ' +
-        'Bett steht. Erst pruefen und ggf. abnehmen, bevor irgendwo ' +
-        'gehomt wird.</p>',
-        { extraLabel: "Sonde deaktivieren und neu starten",
-          extraClass: "btn-warning" }
-      ).then(function (choice) {
-        if (choice !== 'extra') return null;
-        return xyProbeDeactivate().then(function () {
-          if (typeof showToast === 'function') {
-            showToast("Sonde deaktiviert, Klipper laeuft wieder", "success");
-          }
-        }).catch(function (err) {
-          var detail = gcodeErrorMessage(err) || (err && err.message) ||
-                       "Unbekannter Fehler";
-          return alertDialog("Deaktivieren fehlgeschlagen",
-            '<p class="mb-0">' + escapeHtml(detail) + '</p>');
-        });
+      var msg = String((j.result && j.result.state_message) || '');
+      return xyProbeConfigActive().then(function (active) {
+        if (!active) return null;
+        return offerXyProbeRescue(msg);
       });
     })
     .catch(function () { return null; }); // Moonraker selbst nicht erreichbar - hier nichts zu melden
+}
+
+function offerXyProbeRescue(stateMessage) {
+  var first = String(stateMessage || '').split("\n")[0];
+  return alertDialog(
+    "XY-Sonde blockiert den Start",
+    '<p class="mb-2">Klipper startet nicht, und in der Config steht ' +
+    'noch die XY-Sonde. Wurde sie abgezogen, ohne sie vorher zu ' +
+    'deaktivieren?</p>' +
+    (first ? '<p class="mb-2 small text-secondary">Klipper meldet: <code>' +
+             escapeHtml(first) + '</code></p>' : '') +
+    '<p class="mb-0 text-warning"><i class="bi bi-exclamation-triangle">' +
+    '</i> Dieser Check weiss nicht, ob die XY-Halterung noch auf dem ' +
+    'Bett steht. Erst pruefen und ggf. abnehmen, bevor irgendwo ' +
+    'gehomt wird.</p>',
+    { extraLabel: "Sonde deaktivieren und neu starten",
+      extraClass: "btn-warning" }
+  ).then(function (choice) {
+    if (choice !== 'extra') return null;
+    return xyProbeDeactivate().then(function () {
+      if (typeof showToast === 'function') {
+        showToast("Sonde deaktiviert, Klipper laeuft wieder", "success");
+      }
+    }).catch(function (err) {
+      var detail = gcodeErrorMessage(err) || (err && err.message) ||
+                   "Unbekannter Fehler";
+      return alertDialog("Deaktivieren fehlgeschlagen",
+        '<p class="mb-0">' + escapeHtml(detail) + '</p>');
+    });
+  });
 }
 
 function syncPidSelectAllState() {

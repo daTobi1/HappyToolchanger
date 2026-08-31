@@ -24,15 +24,32 @@ function check(name, cond, extra) {
 // Teil 1: _cameraOffsetFor() - reine Funktion, kein Netzwerk noetig.
 // --------------------------------------------------------------------
 
-// _cameraOffsetFor liest _xyResults.ref_tool und _cameraPositions - beides
-// globale `let`-Variablen in tools.js. Frisch fuer jeden Testfall setzen,
-// dann die herausgeschnittene Funktion neu auswerten (eval() bindet an die
-// zu diesem Zeitpunkt sichtbaren globals).
-function withState(xyResults, cameraPositions, fn) {
+// _cameraOffsetFor liest ueber xyRefTool() das Referenztool und dazu
+// _cameraPositions - beides globale `let`-Variablen in tools.js. Frisch
+// fuer jeden Testfall setzen, dann die herausgeschnittenen Funktionen neu
+// auswerten (eval() bindet an die zu diesem Zeitpunkt sichtbaren globals).
+//
+// xyRefTool() faellt, wenn Klipper noch kein ref_tool gemessen hat, auf die
+// UI-Auswahl zurueck (getSelectedReferenceTool/computeDefaultRef). Beide
+// werden echt mitgeschnitten statt gestubbt - der Rueckfallweg ist genau
+// das, was Fix-Runde 3 hier geaendert hat. getSelectedReferenceTool()
+// braucht dafuer ein $-Stub: uiRef === undefined heisst "keine Checkbox
+// angehakt".
+function withState(xyResults, cameraPositions, fn, toolGcodeOffsets, uiRef) {
   global._xyResults = xyResults;
   global._cameraPositions = cameraPositions;
-  eval(grab('_cameraOffsetFor'));
-  return fn(_cameraOffsetFor);
+  global._toolGcodeOffsets = toolGcodeOffsets || {};
+  global.offsetMasterTool = null;
+  global.$ = function () {
+    return { first: function () {
+      return (uiRef === undefined)
+        ? { length: 0 }
+        : { length: 1, val: function () { return String(uiRef); } };
+    } };
+  };
+  eval(grab('computeDefaultRef') + grab('getSelectedReferenceTool') +
+       grab('xyRefTool') + grab('_cameraOffsetFor'));
+  return fn(_cameraOffsetFor, xyRefTool);
 }
 
 // --- 1) Positionen fuer Referenz und ein anderes Tool vorhanden ---
@@ -100,6 +117,75 @@ withState(
   }
 );
 
+// --- 6a) Fremde Config ohne T0: ohne ref_tool darf NICHT T0 unterstellt
+//     werden, sonst wird die Referenzposition unter einer Toolnummer
+//     gesucht, die es nicht gibt - jede Zeile "nicht gemessen". Genau der
+//     Generality-Bruch aus Fix-Runde 3. ---
+withState(
+  {},
+  { "1": { x: 100, y: 50 }, "3": { x: 100.25, y: 49.9 } },
+  function (f, refTool) {
+    check('kein T0 in der Config -> kleinstes Tool ist Referenz, nicht T0',
+      refTool() === 1, 'ref=' + refTool());
+    var off = f(3);
+    check('kein T0: Offset wird gegen T1 gerechnet',
+      off && Math.abs(off.x - 0.25) < 1e-9 && Math.abs(off.y - (-0.1)) < 1e-9,
+      JSON.stringify(off));
+  },
+  { "1": {}, "3": {} }
+);
+
+// --- 6b) UI-Auswahl im Kalibrier-Abschnitt schlaegt die Vorgabe durch ---
+withState(
+  {},
+  { "0": { x: 100, y: 50 }, "2": { x: 99.5, y: 50.4 } },
+  function (f, refTool) {
+    check('UI-Referenzauswahl T2 wird uebernommen (nicht hart T0)',
+      refTool() === 2, 'ref=' + refTool());
+    var off = f(0);
+    check('UI-Referenz T2: Offset von T0 wird gegen T2 gerechnet',
+      off && Math.abs(off.x - 0.5) < 1e-9 && Math.abs(off.y - (-0.4)) < 1e-9,
+      JSON.stringify(off));
+  },
+  { "0": {}, "2": {} },
+  2
+);
+
+// --- 6c) Hat Klipper gemessen, gilt SEIN ref_tool - nicht die UI ---
+withState(
+  { ref_tool: 0 },
+  { "0": { x: 100, y: 50 }, "2": { x: 99.5, y: 50.4 } },
+  function (f, refTool) {
+    check('gemessenes ref_tool schlaegt die UI-Auswahl',
+      refTool() === 0, 'ref=' + refTool());
+  },
+  { "0": {}, "2": {} },
+  2
+);
+
+// --------------------------------------------------------------------
+// Teil 1b: xyMeasured() (Fix-Runde 3) - entscheidet, ob ein Eintrag als
+// Messwert zaehlt. Eine blosse Wahrheitspruefung reichte nicht: das noch
+// zu schreibende Klipper-Modul legt fuer ein Tool auch dann einen Eintrag
+// an, wenn der Fit fehlschlaegt. Dann fehlt x/y - und res.x.toFixed(3)
+// warf mitten in der ungefangenen Poll-Kette, die Dock-, PID- und
+// Probe-Tabelle gleich mit einfriert.
+// --------------------------------------------------------------------
+eval(grab('xyMeasured'));
+
+check('vollstaendiger Messwert -> true',
+  xyMeasured({ x: 0.5, y: -0.2 }) === true);
+check('Eintrag ohne x -> false (nicht gemessen statt Absturz)',
+  xyMeasured({ y: -0.2 }) === false);
+check('Eintrag ohne y -> false',
+  xyMeasured({ x: 0.5 }) === false);
+check('x als String -> false (toFixed gibt es dort nicht)',
+  xyMeasured({ x: "0.5", y: "-0.2" }) === false);
+check('x = 0 zaehlt als Messwert (0 ist ein gueltiger Offset)',
+  xyMeasured({ x: 0, y: 0 }) === true);
+check('null/undefined -> false', xyMeasured(null) === false &&
+  xyMeasured(undefined) === false);
+
 // --------------------------------------------------------------------
 // Teil 2a: parseXyProbeSerial() (Task 8) - reine Textverarbeitung der
 // serial-Zeile aus der xy_probe.cfg.disabled-Vorlage. Kein Netzwerk-Stub
@@ -137,20 +223,45 @@ eval(grab('parseXyProbeSerial'));
 })();
 
 // --------------------------------------------------------------------
-// Teil 2b: xyStepOk() (Task 8, Fix-Runde 1) - entscheidet nach jedem
-// sendGcodeWithRecovery()-Aufruf im XY-Assistenten, ob es weitergehen darf.
-// Reiner Einzeiler, aber genau diese Entscheidung haette im Fix-Runde-1-
-// Befund (Recovery-Knopf mit Halterung auf dem Bett) den Fehlschlag
-// durchwinken koennen, waere sie falsch verdrahtet.
+// Teil 2b: xyStepOk() (Task 8, Fix-Runde 1; Bedeutung geaendert in
+// Fix-Runde 3) - entscheidet nach jedem sendGcodeWithRecovery()-Aufruf im
+// XY-Assistenten, ob es weitergehen darf.
+//
+// Bis Fix-Runde 2 galt {transport:true} hier als Erfolg. Das war falsch,
+// und diese Testzeile hat den Fehler mit beglaubigt:
+// /printer/gcode/script bleibt offen, BIS das Skript fertig ist - ein
+// Verbindungsabbruch heisst also "der Drucker arbeitet noch", nicht
+// "fertig". Der PID-Lauf und der Z-Lauf melden darauf "Verbindung zum Lauf
+// verloren - er laeuft weiter" und HALTEN AN; nur der Assistent hat daran
+// einen maschinenbewegenden Folgeschritt gekettet (Halterung aufs Bett
+// stellen lassen, waehrend G28 noch faehrt; den absenkenden Messlauf
+// direkt hinter den Trockenlauf; FIRMWARE_RESTART mitten in der Fahrt).
+// Seit Fix-Runde 3 ist nur {ok:true} ein Erfolg; wo transport der
+// Regelfall ist (Messlauf), wartet der Assistent stattdessen auf
+// idle_timeout.
 // --------------------------------------------------------------------
 eval(grab('xyStepOk'));
 
 check('{ok:true} -> true', xyStepOk({ ok: true }) === true);
-check('{transport:true} -> true (Verbindung weg, Lauf laeuft weiter)',
-  xyStepOk({ transport: true }) === true);
+check('{transport:true} -> false (Lauf laeuft weiter - kein Erfolg)',
+  xyStepOk({ transport: true }) === false);
 check('{handled:true} -> false (Fehlerdialog schon gezeigt, nicht weiter)',
   xyStepOk({ handled: true }) === false);
 check('null -> false', xyStepOk(null) === false);
+
+// --------------------------------------------------------------------
+// Teil 2c: xyIsHomed() (Fix-Runde 3) - die Pruefung, die
+// ensureHomedAfterActivate() nach dem G28 WIEDERHOLT, statt dem
+// Sendeergebnis zu glauben.
+// --------------------------------------------------------------------
+eval(grab('xyIsHomed'));
+
+check('"xyz" -> gehomt', xyIsHomed("xyz") === true);
+check('"xy" -> nicht gehomt (Z fehlt)', xyIsHomed("xy") === false);
+check('"" -> nicht gehomt (nach FIRMWARE_RESTART der Normalfall)',
+  xyIsHomed("") === false);
+check('undefined -> nicht gehomt (kein Crash)',
+  xyIsHomed(undefined) === false);
 
 // --------------------------------------------------------------------
 // Teil 2: writeXyConfigs() - Fix-Runde 1, Befund 1 ("Erfolgsmeldung, obwohl
@@ -243,6 +354,186 @@ function runXyWizardAbortTest() {
     check('Trockenlauf wird nicht erreicht (Abbruch vor dem Aufsetzen-OK)',
       wizConfirms.indexOf('Trockenlauf') === -1, JSON.stringify(wizConfirms));
   });
+}
+
+// --------------------------------------------------------------------
+// Teil 3b: ensureHomedAfterActivate() (Fix-Runde 3) - der Schritt direkt
+// VOR der Aufforderung "Halterung auf das Bett stellen". Vorher galt hier
+// das Ergebnis von sendGcodeWithRecovery() als Beweis; bei
+// {transport:true} meldete die Funktion "gehomt", waehrend G28 - oder der
+// Recovery-Weg G28 -> QGL -> G28 Z, der Minuten dauert - noch fuhr. Der
+// Nutzer wurde also aufgefordert, in eine fahrende Maschine zu greifen.
+// Jetzt wird homed_axes NACH dem Lauf erneut gefragt.
+// --------------------------------------------------------------------
+function runEnsureHomedTest() {
+  function withHoming(sendResult, axesSequence, idleResult) {
+    var queries = 0;
+    var sends = 0;
+    global.showToast = function () {};
+    global.printerUrl = function (ip, path) { return 'http://' + ip + ':7125' + path; };
+    global.printerIp = '1.2.3.4';
+    global.$ = { get: function () {
+      var axes = axesSequence[Math.min(queries, axesSequence.length - 1)];
+      queries++;
+      return Promise.resolve(
+        { result: { status: { toolhead: { homed_axes: axes } } } });
+    } };
+    global.sendGcodeWithRecovery = function () {
+      sends++;
+      return Promise.resolve(sendResult);
+    };
+    global.waitForPrinterIdle = function () { return Promise.resolve(idleResult); };
+
+    eval(grab('xyHomedAxes') + grab('xyIsHomed') +
+         grab('ensureHomedAfterActivate'));
+    return ensureHomedAfterActivate().then(
+      function () { return { ok: true, queries: queries, sends: sends }; },
+      function (e) {
+        return { ok: false, msg: String(e && e.message),
+                 queries: queries, sends: sends };
+      });
+  }
+
+  var seq = Promise.resolve();
+
+  // --- schon gehomt -> gar kein G28, eine einzige Abfrage ---
+  seq = seq.then(function () {
+    return withHoming({ ok: true }, ["xyz"], true).then(function (r) {
+      check('bereits x/y/z gehomt -> kein G28 noetig',
+        r.ok === true && r.sends === 0 && r.queries === 1, JSON.stringify(r));
+    });
+  });
+
+  // --- transport, danach meldet der Drucker xyz -> erst DAS ist Erfolg ---
+  seq = seq.then(function () {
+    return withHoming({ transport: true }, ["", "xyz"], true).then(function (r) {
+      check('transport + homed_axes danach "xyz" -> gehomt',
+        r.ok === true, JSON.stringify(r));
+      check('homed_axes wird nach dem Lauf ERNEUT abgefragt',
+        r.queries === 2, 'queries=' + r.queries);
+    });
+  });
+
+  // --- transport, aber der Drucker meldet weiterhin nichts gehomt ---
+  seq = seq.then(function () {
+    return withHoming({ transport: true }, ["", ""], true).then(function (r) {
+      check('transport allein ist KEIN Beweis fuers Homing -> Abbruch',
+        r.ok === false, JSON.stringify(r));
+    });
+  });
+
+  // --- selbst {ok:true} wird nachgeprueft ---
+  seq = seq.then(function () {
+    return withHoming({ ok: true }, ["", ""], true).then(function (r) {
+      check('auch {ok:true} wird gegen homed_axes geprueft -> Abbruch',
+        r.ok === false, JSON.stringify(r));
+    });
+  });
+
+  // --- der Drucker arbeitet noch (idle-Wartezeit abgelaufen) ---
+  seq = seq.then(function () {
+    return withHoming({ transport: true }, ["", "xyz"], false).then(function (r) {
+      check('Drucker arbeitet noch -> Abbruch, statt zum Aufsetzen zu bitten',
+        r.ok === false, JSON.stringify(r));
+    });
+  });
+
+  return seq;
+}
+
+// --------------------------------------------------------------------
+// Teil 3c: xyWizard()-Tore um Trocken- und Messlauf (Fix-Runde 3).
+// Vorher hingen Trockenlauf, Messlauf und Deaktivieren ohne irgendetwas
+// dazwischen aneinander - ein Verbindungsabbruch ({transport:true}) beim
+// Trockenlauf schob den absenkenden Messlauf sofort hinterher, und ein
+// Abbruch beim Messlauf fuehrte zu FIRMWARE_RESTART mitten in der Fahrt.
+// Alle drei Faelle laufen hier mit mountedResult {transport:true}, weil
+// genau das bei einem Lauf ueber alle Tools der Regelfall ist.
+// --------------------------------------------------------------------
+function runXyWizardGateTest() {
+  function runWizard(answers, opts) {
+    opts = opts || {};
+    var confirms = [];
+    var sent = [];
+    var deactivateCalls = 0;
+    var queue = answers.slice();
+
+    global.confirmDialog = function (o) {
+      confirms.push(o.title);
+      return Promise.resolve(queue.shift());
+    };
+    global.showToast = function () {};
+    global.xyProbeCheckPresent = function () { return Promise.resolve(true); };
+    global.xyProbeActivate = function () { return Promise.resolve(); };
+    global.ensureHomedAfterActivate = function () { return Promise.resolve(); };
+    global.sendGcodeWithRecovery = function () { return Promise.resolve({ ok: true }); };
+    global.xySendMounted = function (script) {
+      sent.push(script);
+      return Promise.resolve({ transport: true });
+    };
+    global.waitForPrinterIdle = function () {
+      return Promise.resolve(opts.idle !== false);
+    };
+    global.updateAllProbeResults = function () { return Promise.resolve(); };
+    global.xyProbeDeactivate = function () {
+      deactivateCalls++;
+      return Promise.resolve();
+    };
+
+    eval(grab('gcodeErrorMessage') + grab('xyStepOk') + grab('xyWizard'));
+    return xyWizard().then(function () {
+      return { confirms: confirms, sent: sent, deactivate: deactivateCalls };
+    });
+  }
+
+  var seq = Promise.resolve();
+
+  // --- Trockenlauf nicht als kollisionsfrei bestaetigt -> KEIN Messlauf ---
+  seq = seq.then(function () {
+    return runWizard([true, true, true, false, null]).then(function (r) {
+      check('nach dem Trockenlauf wird nachgefragt, bevor der Messlauf laeuft',
+        r.confirms.indexOf('Trockenlauf beendet?') !== -1,
+        JSON.stringify(r.confirms));
+      check('"Nein" nach dem Trockenlauf -> der Messlauf wird NICHT gestartet',
+        JSON.stringify(r.sent) ===
+          JSON.stringify(['CALIBRATE_XY_OFFSETS DRY_RUN=1']),
+        JSON.stringify(r.sent));
+      check('abgelehnter Trockenlauf landet im Abbruch-Dialog (Halterung liegt)',
+        r.confirms.indexOf('XY-Assistent abgebrochen') !== -1,
+        JSON.stringify(r.confirms));
+    });
+  });
+
+  // --- Messlauf laeuft noch (nie idle) -> kein FIRMWARE_RESTART ---
+  seq = seq.then(function () {
+    return runWizard([true, true, true, true, null], { idle: false })
+      .then(function (r) {
+        check('Messlauf wird nach der Bestaetigung gestartet',
+          r.sent.length === 2 && r.sent[1] === 'CALIBRATE_XY_OFFSETS',
+          JSON.stringify(r.sent));
+        check('Drucker noch nicht idle -> "Abschliessen" wird NICHT angeboten',
+          r.confirms.indexOf('Abschließen') === -1,
+          JSON.stringify(r.confirms));
+        check('Drucker noch nicht idle -> kein xyProbeDeactivate (kein Restart)',
+          r.deactivate === 0, 'calls=' + r.deactivate);
+      });
+  });
+
+  // --- Regelfall: transport, aber der Drucker meldet sich wieder idle ---
+  seq = seq.then(function () {
+    return runWizard([true, true, true, true, true, true]).then(function (r) {
+      check('idle nach dem Messlauf -> "Abschliessen" und Deaktivieren',
+        r.confirms.indexOf('Abschließen') !== -1 && r.deactivate === 1,
+        JSON.stringify(r.confirms) + ' calls=' + r.deactivate);
+      check('vollstaendige Dialogfolge des Regelfalls',
+        JSON.stringify(r.confirms) === JSON.stringify([
+          'XY-Sonde: Anstecken', 'XY-Sonde: Aufsetzen', 'Trockenlauf',
+          'Trockenlauf beendet?', 'Abschließen', 'Fertig'
+        ]), JSON.stringify(r.confirms));
+    });
+  });
+
+  return seq;
 }
 
 // --------------------------------------------------------------------
@@ -442,6 +733,14 @@ writeXyConfigs({ "0": { x: "0.5300", y: "-0.0200" } }).then(function (ok) {
   // Als letzter Schritt: braucht eigene confirmDialog-Antwortfolge, deshalb
   // erst NACHDEM Teil 2 mit seinem eigenen confirmDialog-Stub fertig ist.
   return runXyWizardAbortTest();
+}).then(function () {
+  // Teil 3c teilt sich den confirmDialog-Stub-Stil mit Teil 3, setzt ihn
+  // aber je Szenario neu - deshalb direkt danach.
+  return runXyWizardGateTest();
+}).then(function () {
+  // Teil 3b stubbt $ als Objekt mit .get - danach nutzt Teil 4 dasselbe
+  // Muster weiter.
+  return runEnsureHomedTest();
 }).then(function () {
   // Teil 4 stubbt $ und printerUrl/printerIp neu - erst NACHDEM Teil 2/3
   // ihre eigenen fetch/confirmDialog-Stubs nicht mehr brauchen.

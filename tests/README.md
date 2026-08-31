@@ -118,37 +118,83 @@ console.log('sichtbar:', el.classList.contains('show'));   // muss true sein
 
 ## `check_xy_offset_ui.js`
 
-Prüft `_cameraOffsetFor()` aus der Offset-Webapp — ohne Browser, ohne
-Drucker. Wie `check_webapp_recovery.js` wird die Funktion aus
+Prüft die Entscheidungslogik des XY-Offset-Blocks und des XY-Assistenten
+aus der Offset-Webapp — ohne Browser, ohne Drucker. Wie
+`check_webapp_recovery.js` werden einzelne Funktionen als Text aus
 `webapp/js/tools.js` herausgeschnitten und gegen gestubbte globale
-Zustandsvariablen (`_xyResults`, `_cameraPositions`) laufen gelassen.
+Zustandsvariablen, `fetch`, `$.get` und `confirmDialog` laufen gelassen.
 
 ```bash
 node tests/check_xy_offset_ui.js
 ```
 
-Der Anlass: `_cameraOffsetFor()` ist die einzige Funktion des
-XY-Offset-Blocks mit echter Logik statt nur Darstellung — der Rest ist
-Tabellenaufbau. Sie macht die Kameramethode mit dem Eddy-Sweep
-vergleichbar, indem sie denselben Trick anwendet: der Offset ist die
-Differenz zur zuletzt festgehaltenen Position des Referenztools, nicht ein
-absoluter Wert.
+63 Zusicherungen in fünf Teilen; die Teile überschreiben nacheinander
+dieselben Globals, die Reihenfolge in der Promise-Kette am Dateiende ist
+deshalb Teil des Aufbaus.
+
+**Teil 1 — Referenztool und Messwert-Erkennung**
+
+Der Offset der Kameramethode ist, wie beim Eddy-Sweep, die Differenz zur
+zuletzt festgehaltenen Position des Referenztools — nur so sind beide
+Verfahren vergleichbar.
 
 | Zusicherung | warum sie zählt |
 |---|---|
 | Referenz- und Zieltool erfasst → Offset ist die Differenz | Grundfunktion |
-| Zieltool nicht erfasst → `null` | die Tabelle zeigt „nicht gemessen" statt `NaN` |
-| Referenztool nicht erfasst → `null` | dieselbe Falle von der anderen Seite |
-| keine Position erfasst → `null` für jedes Tool | der einzige heute erreichbare Zustand — die zweite Eddy-Spule und das Kamera-„Position übernehmen" (Task 9) existieren noch nicht |
-| `_xyResults.ref_tool` fehlt → T0 gilt als Referenz | Fallback für den Fall, dass noch nie ein Referenztool gewählt wurde |
-| `ref_tool` explizit gesetzt → wird respektiert | Referenztool ist frei wählbar, nicht immer T0 |
+| Ziel- bzw. Referenztool nicht erfasst → `null` | die Tabelle zeigt „nicht gemessen" statt `NaN` |
+| keine Position erfasst → `null` für jedes Tool | Zustand vor der ersten Messung |
+| `ref_tool` explizit gesetzt → wird respektiert, auch gegen die UI-Auswahl | hat Klipper gemessen, gilt sein Bezugspunkt |
+| kein `ref_tool`, kein T0 in der Config → kleinstes Tool ist Referenz | ein hart verdrahtetes `0` machte die Kameramethode auf fremden Configs ohne T0 unbenutzbar (Generality-Requirement) |
+| kein `ref_tool` → UI-Auswahl aus dem Kalibrier-Abschnitt gilt | wer T2 als Referenz anhakt, bekam trotzdem T0 beschriftet |
+| `xyMeasured()`: Eintrag ohne `x` bzw. `y` → kein Messwert | ein Eintrag ohne Fit-Ergebnis ließ `res.x.toFixed(3)` in der ungefangenen Poll-Kette werfen — das fror Dock-, PID- und Probe-Tabelle gleich mit ein, alle 2 s, sichtbar nur in der Konsole |
+| `x = 0` zählt trotzdem als Messwert | 0 ist ein gültiger Offset, keine Abwesenheit |
 
-**Deckt nicht ab:** die Darstellung selbst. Ob die Tabelle korrekt rendert,
-ob der Methodenwechsel (Kamera/Eddy-Sweep) die Zeilen tatsächlich neu
-aufbaut, und ob die Sparkline mitwächst, bleibt unverifiziert, bis ein
-Browser-Test möglich ist — heute existieren weder die zweite Eddy-Spule
-noch das Klipper-seitige `nozzle_locator`-Objekt, das die Messwerte liefern
-würde.
+**Teil 2 — `parseXyProbeSerial()`, `xyStepOk()`, `xyIsHomed()`, `writeXyConfigs()`**
+
+| Zusicherung | warum sie zählt |
+|---|---|
+| Platzhalter `HIER_EINTRAGEN` bzw. fehlende `serial:`-Zeile → Fehler | sonst wird ein `undefined`-Pfad in die scharfe Config geschrieben |
+| `xyStepOk({transport:true})` → **false** | `/printer/gcode/script` bleibt offen, bis das Skript fertig ist: Verbindungsabbruch heißt „läuft noch", nicht „fertig". PID- und Z-Lauf halten darauf an; nur der Assistent hatte daran maschinenbewegende Folgeschritte gekettet |
+| `xyIsHomed("xy")` / `""` / `undefined` → nicht gehomt | die Prüfung, die `ensureHomedAfterActivate()` nach dem `G28` **wiederholt** |
+| fehlender Config-Schlüssel → `false` **und** kein Upload | vorher meldete derselbe Vorgang gleichzeitig Erfolg und „nicht geschrieben" |
+
+**Teil 3 — Assistenten-Kontrollfluss**
+
+| Zusicherung | warum sie zählt |
+|---|---|
+| Abbruch bei „Aufsetzen" ruft `xyProbeDeactivate()` | die Sonde ist zu dem Zeitpunkt schon aktiviert; ein stiller Abbruch ließe Klipper beim nächsten Start scheitern |
+| nach dem Trockenlauf wird nachgefragt, bevor der Messlauf startet | der Trockenlauf existiert genau dafür, dass man abbrechen kann — vorher schob ein Verbindungsabbruch den absenkenden Messlauf sofort hinterher |
+| „Nein" nach dem Trockenlauf → `CALIBRATE_XY_OFFSETS` wird nicht gesendet | — |
+| Drucker nach dem Messlauf nicht idle → kein „Abschließen", kein Deaktivieren | `xyProbeDeactivate()` macht `FIRMWARE_RESTART`; der fiele sonst mitten in die Fahrt |
+| Regelfall (`transport`, danach idle) → vollständige Dialogfolge, genau ein Deaktivieren | — |
+| `ensureHomedAfterActivate()`: `transport` **oder** `{ok:true}` allein → Abbruch; erst `homed_axes` mit x/y/z zählt | der nächste Dialog bittet darum, die Halterung **auf das Bett** zu stellen — das darf erst kommen, wenn der Drucker steht |
+
+**Teil 4/5 — Kamera-„Position übernehmen"**
+
+| Zusicherung | warum sie zählt |
+|---|---|
+| erfasst wird das **montierte** Tool, nicht das angehakte Referenztool | der Nutzer zentriert die Düse des Tools, das er in der Hand hatte |
+| `tool_number < 0` oder kein `toolchanger`-Objekt → Dialog statt Capture | fremde Configs müssen ohne Toolchanger-Modul durchlaufen |
+| abgelehnte `toolchanger`- bzw. `gcode_move`-Abfrage → Dialog statt Stille | ein verpuffter Klick sieht aus wie ein erfasster Wert |
+
+**Deckt nicht ab:**
+
+* **`renderXyBlock()`, `applyXyOffset()` und `applyAllXyOffsets()` — die drei
+  Funktionen, die tatsächlich Maschinen-Offsets schreiben — haben keine
+  einzige Zusicherung.** Geprüft ist nur die Hilfsfunktion `xyMeasured()`,
+  die sie benutzen, und `writeXyConfigs()` als deren letzte Stufe. Ob der
+  Bestätigungsdialog die richtigen Vorher-/Nachher-Werte zeigt, ob das
+  Referenztool übersprungen wird und ob `SET_TOOL_GCODE_OFFSET` mit den
+  Werten rausgeht, die in der Tabelle stehen, ist unverifiziert.
+* **Nichts davon wurde je in einem Browser gesehen.** Der gesamte Block ist
+  bisher ausschließlich gegen diesen Node-Harness gelaufen. Tabellenaufbau,
+  Methodenwechsel (Kamera/Eddy-Sweep), Sparkline und die `onclick`-Handler
+  der Tabelle sind ungeprüft — dieselbe Lücke, die bei
+  `check_webapp_recovery.js` schon einmal einen grünen Test neben einem
+  unsichtbaren Dialog stehen ließ.
+* Die Klipper-Seite. `nozzle_locator`, `CALIBRATE_XY_OFFSETS` und
+  `xy_results` existieren noch nicht; alle Assistenten-Tests laufen gegen
+  gestubbte Sender. Wie sich der echte Messlauf verhält, sagt kein Test hier.
 
 ## `check_nozzle_locator_fit.py`
 
