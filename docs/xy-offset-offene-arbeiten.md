@@ -18,7 +18,9 @@ Die XY-Offset-Kalibrierung per Eddy-Spule ist entworfen, geplant und zur Hälfte
 | 5 — `CALIBRATE_XY_OFFSETS` | offen, hängt an Task 3 |
 | 6 — Extraktion `updateConfigFile()` | **fertig**, Test grün |
 | 7 — XY-Block in der Webapp | **vorgebaut ohne Hardware**, Node-Tests gruen, siehe Abschnitt 4 |
-| 8–9 — Assistent, Kamera-Position | vorgebaut ohne Hardware, siehe Abschnitt 4 |
+| 8–9 — Assistent, Kamera-Position | **vorgebaut ohne Hardware**, siehe Abschnitt 4 |
+
+Die Webapp-Tests umfassen 63 Zusicherungen (`tests/check_xy_offset_ui.js`), der Fit 18 (`tests/check_nozzle_locator_fit.py`). Ein Abschluss-Review über den gesamten Umfang ist gelaufen; sein einziger blockierender Befund (`transport` als Erfolg behandelt) ist behoben, siehe 4.5.
 
 **Task 4 wurde bewusst gestrichen.** Die Annahme, `CALIBRATE_ALL_Z_OFFSETS` und `CALIBRATE_PROBE_OFFSETS` lösten dieselbe Tool-Auswahl doppelt, war falsch — sie haben absichtlich verschiedene Politiken (u. a. wählt das zweite ohne `TOOLS` nur Tools mit vorhandenen Z-Switch-Daten und erzwingt das Referenztool weder in die Liste noch an deren Anfang). Ein gemeinsamer Helfer hätte das zweite Kommando im Normalfall verändert. Details in Task 4 des Plans.
 
@@ -131,11 +133,33 @@ War als Risiko notiert („existiert der Endpunkt überhaupt?"), ist inzwischen 
 
 Der Rückfall auf eine manuelle Rückfrage bleibt trotzdem im Code, falls jemand das Ganze auf einer älteren Moonraker-Version betreibt.
 
-### 4.5 Das Abmelden vom Sensor-Datenstrom
+### 4.5 Eine Falle, die schon einmal zugeschnappt ist: `transport` heißt „läuft noch"
+
+Das gehört gelesen, bevor jemand Task 2, 3 oder 5 baut oder den Assistenten anfasst.
+
+`sendGcodeWithRecovery` liefert drei Ergebnisse: `{ok}`, `{handled}` und **`{transport}`**. Der eigene Kommentar der Funktion (`tools.js:244`) erklärt, was das dritte bedeutet: `/printer/gcode/script` bleibt offen, bis das Skript fertig ist — **ein Verbindungsabriss heißt also, dass der Drucker weiterarbeitet.** Nicht, dass etwas schiefging.
+
+Der XY-Assistent hat das anfangs als Erfolg behandelt und den nächsten maschinenbewegenden Schritt drangehängt. Konkret hätte das bedeutet: „Halterung jetzt aufs Bett stellen", während ein `G28` noch fährt. Der Fehler ist behoben, aber die Lehre bleibt:
+
+> **Bei einem `transport`-Ergebnis darf nie ein Folgeschritt anlaufen, der die Maschine bewegt oder den Nutzer an die Maschine schickt** — erst muss positiv belegt sein, dass der Drucker steht. Der Assistent tut das über `waitForPrinterIdle()`, und Homing wird über eine erneute `homed_axes`-Abfrage nachgewiesen statt aus dem Sendeergebnis geschlossen.
+
+Bei `CALIBRATE_XY_OFFSETS` über sechs Tools mit bidirektionalen Sweeps ist `transport` **der Normalfall, nicht der Randfall** — der Lauf dauert länger als der PID-Lauf, den dieses Repo bereits als „überlebt seinen HTTP-Request" dokumentiert. Wer die Klipper-Seite baut, sollte damit rechnen.
+
+Die PID- und Z-Abläufe (`tools.js:2249` und `:1502`) machen es richtig vor: Meldung „Verbindung verloren, läuft weiter" — und dann **Stopp**.
+
+### 4.5a Drei kleine Nacharbeiten, wenn die Sonde da ist
+
+Aus dem Abschluss-Review, bewusst zurückgestellt, weil sie ohne Hardware nichts bewirken:
+
+- **`_xyLocatorProbe` beim Aktivieren zurücksetzen.** Der Sparkline-Poll merkt sich beim Laden der Seite, dass es kein `nozzle_locator`-Objekt gibt. Der Assistent erzeugt es später per `FIRMWARE_RESTART` — die Merkung steht dann aber schon, und die Live-Kurve bleibt genau während des Messlaufs leer. Einzeiler: den Cache in `xyProbeActivate`/`xyProbeDeactivate` verwerfen.
+- **`console.error` im `catch` des Status-Polls.** Er loggt derzeit nur über `OffsetDebug`, das ohne `?debug=1` stumm ist. Ein künftiger Render-Fehler hinterlässt damit keine sichtbare Spur mehr.
+- **Zwei Stellen sind menschliche statt maschineller Sperren:** die Rückfrage „Trockenlauf beendet?" und der „Sonde deaktivieren"-Knopf im Abbruchdialog warnen bei laufendem Drucker, hindern aber niemanden am zu frühen Klick. Kein Verletzungspfad (der Trockenlauf senkt nichts ab), aber wer will, kann sich um die Kollisionsprüfung bringen.
+
+### 4.6 Das Abmelden vom Sensor-Datenstrom
 
 `read_frequency()` meldet sich per `sensor.add_client(cb)` an und beendet die Session, indem der Callback `False` liefert. **Ob Klippers `bulk_sensor.BatchBulkHelper` Clients wirklich so verwirft, ist an der Quelle zu bestätigen** — im Plan steht ein Hinweis dazu bei Task 2 Step 3. Wenn nicht, muss der Callback selbst ein Flag setzen, statt einen zweiten Callback anzumelden. Symptom bei Fehler: der Sensor läuft nach der ersten Messung endlos weiter oder die Sample-Zahl wächst über Messungen hinweg.
 
-### 4.6 Kein einziger Browser-Check
+### 4.7 Kein einziger Browser-Check
 
 Weder Task 6 noch 7–9 wurden je im Browser gesehen. Die Node-Tests decken Fehlerdialoge und die Offset-Rechnung der Kameramethode ab, **nicht das DOM** — und genau dort saß schon einmal ein Fehler, den der grüne Node-Test nicht gefunden hat (siehe `tests/README.md`, Abschnitt zu `check_webapp_recovery.js`: Bootstrap verwirft `show()` während einer laufenden Transition, ohne das zu melden). Beim ersten Öffnen also gezielt die Dialogketten des Assistenten durchklicken, nicht nur die Tabelle ansehen.
 
