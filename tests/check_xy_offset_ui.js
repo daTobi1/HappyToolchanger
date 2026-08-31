@@ -1,6 +1,6 @@
-// Test-Harness: schneidet _cameraOffsetFor() als Text aus tools.js heraus
-// und laesst es gegen gestubbte globale Zustandsvariablen laufen - ohne
-// Browser/DOM, wie check_webapp_recovery.js.
+// Test-Harness: schneidet Funktionen als Text aus tools.js heraus und
+// laesst sie gegen gestubbte globale Zustandsvariablen/fetch/confirmDialog
+// laufen - ohne Browser/DOM, wie check_webapp_recovery.js.
 const fs = require('fs');
 const src = fs.readFileSync(require('path').join(__dirname, '..', 'webapp', 'js', 'tools.js'), 'utf8');
 
@@ -19,6 +19,10 @@ function check(name, cond, extra) {
   if (!cond) { failed++; console.log('FAIL: ' + name + (extra ? '  ' + extra : '')); }
   else console.log('  ok  ' + name);
 }
+
+// --------------------------------------------------------------------
+// Teil 1: _cameraOffsetFor() - reine Funktion, kein Netzwerk noetig.
+// --------------------------------------------------------------------
 
 // _cameraOffsetFor liest _xyResults.ref_tool und _cameraPositions - beides
 // globale `let`-Variablen in tools.js. Frisch fuer jeden Testfall setzen,
@@ -96,5 +100,89 @@ withState(
   }
 );
 
-console.log(failed ? '\n' + failed + ' TESTS FEHLGESCHLAGEN' : '\nALLE TESTS OK');
-process.exit(failed ? 1 : 0);
+// --------------------------------------------------------------------
+// Teil 2: writeXyConfigs() - Fix-Runde 1, Befund 1 ("Erfolgsmeldung, obwohl
+// nichts geschrieben wurde"). Braucht gestubbtes fetch()/confirmDialog(),
+// deshalb eigener Abschnitt mit eigenem Netzwerk-Stub.
+// --------------------------------------------------------------------
+
+var uploads = [];   // Pfade, fuer die tatsaechlich hochgeladen wurde
+var dialogs = [];   // von reportMissingKeys() ausgeloeste Alerts
+var files = {};     // simulierter Config-Dateibestand: { path: content }
+
+global.printerIp = '1.2.3.4';
+global.printerUrl = (ip, path) => 'http://' + ip + ':7125' + path;
+global.OffsetDebug = { error: function () {}, log: function () {} };
+global.confirmDialog = function (o) { dialogs.push(o); return Promise.resolve(true); };
+global.fetch = function (url) {
+  if (url.indexOf('/server/files/config/') !== -1) {
+    var path = url.split('/server/files/config/')[1];
+    var content = files[path];
+    return Promise.resolve({
+      ok: content !== undefined,
+      text: function () { return Promise.resolve(content === undefined ? '' : content); }
+    });
+  }
+  if (url.indexOf('/server/files/upload') !== -1) {
+    uploads.push(url);
+    return Promise.resolve({ ok: true });
+  }
+  return Promise.reject(new Error('unerwarteter fetch: ' + url));
+};
+
+eval(
+  'var NO_CACHE = { cache: "no-store" };' +
+  grab('escapeHtml') +
+  'var _alertQueue = Promise.resolve();' +
+  grab('alertDialog') + grab('_showAlert') +
+  grab('replaceInConfigSection') + grab('reportMissingKeys') +
+  grab('updateConfigFile') + grab('writeXyConfigs')
+);
+
+function reset(fileMap) {
+  uploads = []; dialogs = []; files = fileMap;
+}
+
+// --- 7) Beide Schluessel vorhanden -> true, ein Upload, kein Alert ---
+reset({ 'toolchanger/tools/T0.cfg':
+  '[tool T0]\ngcode_x_offset: 0.000\ngcode_y_offset: 0.000\n' });
+writeXyConfigs({ "0": { x: "0.5300", y: "-0.0200" } }).then(function (ok) {
+  check('vollstaendige Config -> true', ok === true);
+  check('genau ein Upload', uploads.length === 1, 'uploads=' + uploads.length);
+  check('kein Alert', dialogs.length === 0, 'dialogs=' + dialogs.length);
+
+  // --- 8) Ein Schluessel fehlt in der Config -> false, KEIN Upload ---
+  // Das ist der Fehler aus Fix-Runde-1-Befund 1: vorher lieferte der
+  // Aufrufer unbedingt true, obwohl reportMissingKeys() bereits "nicht
+  // geschrieben" meldete - Erfolg und Fehlschlag fuer dieselbe Aktion.
+  reset({ 'toolchanger/tools/T1.cfg': '[tool T1]\ngcode_x_offset: 0.000\n' });
+  return writeXyConfigs({ "1": { x: "1.2000", y: "0.4000" } });
+}).then(function (ok) {
+  check('gcode_y_offset fehlt -> false (nicht faelschlich true)', ok === false);
+  check('kein Upload, wenn ein Schluessel fehlt',
+    uploads.length === 0, 'uploads=' + uploads.length);
+  check('reportMissingKeys zeigt genau einen Alert', dialogs.length === 1);
+
+  // --- 9) Mehrere Tools, nur eines unvollstaendig -> Gesamtergebnis false,
+  //        aber das vollstaendige Tool wird trotzdem geschrieben ---
+  reset({
+    'toolchanger/tools/T0.cfg':
+      '[tool T0]\ngcode_x_offset: 0.000\ngcode_y_offset: 0.000\n',
+    'toolchanger/tools/T2.cfg': '[tool T2]\ngcode_x_offset: 0.000\n'
+  });
+  return writeXyConfigs({
+    "0": { x: "0.1000", y: "0.2000" },
+    "2": { x: "0.3000", y: "0.4000" }
+  });
+}).then(function (ok) {
+  check('ein unvollstaendiges Tool unter mehreren -> Gesamtergebnis false',
+    ok === false);
+  check('das vollstaendige Tool wird trotzdem geschrieben',
+    uploads.length === 1, 'uploads=' + uploads.length);
+
+  console.log(failed ? '\n' + failed + ' TESTS FEHLGESCHLAGEN' : '\nALLE TESTS OK');
+  process.exit(failed ? 1 : 0);
+}).catch(function (e) {
+  console.log('EXCEPTION', e);
+  process.exit(1);
+});

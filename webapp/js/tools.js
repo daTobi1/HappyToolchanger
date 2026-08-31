@@ -2901,6 +2901,45 @@ function pollXySparkline() {
     .catch(function () { renderXySparkline(null); });
 }
 
+// Schreibt gcode_x_offset/gcode_y_offset fuer die genannten Tools in die
+// Configs, sequentiell wie updateToolDockValues/updateToolPidValues
+// (parallele Uploads verursachen Moonraker-500er). toolValues:
+// { "0": {x: "0.5300", y: "-0.0200"}, ... } - Werte bereits als Text.
+// Liefert true nur, wenn fuer JEDES Tool BEIDE Schluessel gefunden und
+// geschrieben wurden - fehlende Schluessel loesen reportMissingKeys() aus
+// UND liefern false, statt gleichzeitig Erfolg zu behaupten.
+function writeXyConfigs(toolValues) {
+  var tools = Object.keys(toolValues);
+  var missing = [];
+
+  function processNext(idx) {
+    if (idx >= tools.length) {
+      reportMissingKeys(missing);
+      return Promise.resolve(missing.length === 0);
+    }
+    var t = tools[idx];
+    var v = toolValues[t];
+    var filePath = "toolchanger/tools/T" + t + ".cfg";
+    var section = "tool T" + t;
+    return updateConfigFile(filePath, function (content) {
+      var updated = content;
+      var allOk = true;
+      [["gcode_x_offset", v.x], ["gcode_y_offset", v.y]].forEach(function (pair) {
+        var next = replaceInConfigSection(updated, section, pair[0], pair[1]);
+        if (next === null) {
+          allOk = false;
+          missing.push({file: filePath, section: section, key: pair[0]});
+        } else {
+          updated = next;
+        }
+      });
+      if (!allOk) return null;
+      return updated;
+    }).then(function () { return processNext(idx + 1); });
+  }
+  return processNext(0);
+}
+
 // Schreibt den XY-Offset eines Tools sofort per SET_TOOL_GCODE_OFFSET
 // (Laufzeit). alsoWrite=true schreibt danach zusaetzlich in die
 // Tool-Config - wie bei den anderen APPLY-...-Aktionen erst nach einem
@@ -2946,25 +2985,9 @@ function applyXyOffset(toolNr, alsoWrite) {
       });
     }).then(function (ok) {
       if (!ok) return false;
-      var missing = [];
-      return updateConfigFile(filePath, function (content) {
-        var updated = content;
-        var allOk = true;
-        [["gcode_x_offset", xTxt], ["gcode_y_offset", yTxt]].forEach(function (pair) {
-          var next = replaceInConfigSection(updated, section, pair[0], pair[1]);
-          if (next === null) {
-            allOk = false;
-            missing.push({file: filePath, section: section, key: pair[0]});
-          } else {
-            updated = next;
-          }
-        });
-        if (!allOk) return null;
-        return updated;
-      }).then(function () {
-        reportMissingKeys(missing);
-        return true;
-      });
+      var toolValues = {};
+      toolValues[toolNr] = { x: xTxt, y: yTxt };
+      return writeXyConfigs(toolValues);
     });
   }
 
@@ -2975,8 +2998,10 @@ function applyXyOffset(toolNr, alsoWrite) {
         showToast("T" + toolNr + ": XY-Offset gesetzt (Laufzeit)", "success");
       }
       if (!alsoWrite) return true;
-      // Nur Laufzeit-Toast, wenn der Schreibvorgang abgelehnt/abgebrochen
-      // wird - "Nur Laufzeit" im Dialog ist eine gueltige Wahl, kein Fehler.
+      // Toast fuer den Schreibvorgang nur bei echtem Erfolg - sonst zeigt
+      // die UI "geschrieben" und den reportMissingKeys()-Alarm gleichzeitig
+      // fuer dieselbe Aktion. "Nur Laufzeit" im Dialog ist eine gueltige
+      // Wahl, kein Fehler, und bleibt deshalb ebenfalls ohne zweiten Toast.
       return writeConfig().then(function (wrote) {
         if (wrote && typeof showToast === 'function') {
           showToast("T" + toolNr + ": in die Config geschrieben", "success");
@@ -2993,31 +3018,85 @@ function applyXyOffset(toolNr, alsoWrite) {
     });
 }
 
-// "Alle uebernehmen + schreiben": wendet applyXyOffset(t, true) sequentiell
-// auf alle Tools an, die im aktuell gewaehlten Verfahren einen Messwert
-// haben. Jedes Tool bekommt seinen eigenen Bestaetigungsdialog - wie beim
-// Klick auf die einzelnen "+ schreiben"-Knoepfe, nur automatisiert.
+// "Alle uebernehmen + schreiben": sammelt die Aenderungen aller Tools mit
+// Messwert im aktuell gewaehlten Verfahren in EINEM Bestaetigungsdialog -
+// wie applyDockValues(null), statt wie zuvor pro Tool einzeln nachzufragen.
+// Erst nach der einen Bestaetigung werden alle Laufzeitwerte in einem
+// GCode-Request gesetzt und die Configs geschrieben.
 function applyAllXyOffsets() {
   var ref = _xyResults.ref_tool;
   if (ref === undefined) ref = 0;
-  var tools = Object.keys(_toolGcodeOffsets).filter(function (t) {
-    if (String(ref) === String(t)) return false;
-    var res = (_xyMethod === 'eddy') ? _xyResults[t] : _cameraOffsetFor(t);
-    return !!res;
-  }).sort(function (a, b) { return parseInt(a, 10) - parseInt(b, 10); });
 
-  if (!tools.length) {
+  var toolValues = {};
+  var requests = [];
+  Object.keys(_toolGcodeOffsets).forEach(function (t) {
+    if (String(ref) === String(t)) return;
+    var res = (_xyMethod === 'eddy') ? _xyResults[t] : _cameraOffsetFor(t);
+    if (!res) return;
+    toolValues[t] = { x: res.x.toFixed(4), y: res.y.toFixed(4) };
+    requests.push({ tool: t, key: "gcode_x_offset", section: "tool T" + t });
+    requests.push({ tool: t, key: "gcode_y_offset", section: "tool T" + t });
+  });
+
+  var names = Object.keys(toolValues).sort(function (a, b) {
+    return parseInt(a, 10) - parseInt(b, 10);
+  });
+  if (!names.length) {
     if (typeof showToast === 'function') {
       showToast("Keine XY-Messwerte zum Uebernehmen", "warning");
     }
     return Promise.resolve(false);
   }
 
-  function next(i) {
-    if (i >= tools.length) return Promise.resolve(true);
-    return applyXyOffset(tools[i], true).then(function () { return next(i + 1); });
-  }
-  return next(0);
+  return fetchToolConfigValues(requests).then(function (cur) {
+    var entries = names.map(function (t) {
+      var v = toolValues[t];
+      return {
+        tool: t,
+        file: "toolchanger/tools/T" + t + ".cfg",
+        section: "tool T" + t,
+        changes: [
+          { key: "gcode_x_offset", from: cur[t + "|gcode_x_offset"], to: v.x },
+          { key: "gcode_y_offset", from: cur[t + "|gcode_y_offset"], to: v.y }
+        ]
+      };
+    });
+    return confirmDialog({
+      title: names.length === 1
+        ? "XY-Offset von T" + names[0] + " uebernehmen?"
+        : "XY-Offsets uebernehmen?",
+      body: offsetChangeListHtml(entries,
+        '"Current" kommt aus der Config-Datei. Die Werte werden auch zur ' +
+        'Laufzeit per <code>SET_TOOL_GCODE_OFFSET</code> gesetzt.'),
+      okLabel: "OK — uebernehmen",
+      okClass: "btn-success",
+      cancelLabel: "Abbrechen"
+    });
+  }).then(function (ok) {
+    if (!ok) return false;
+    var script = names.map(function (t) {
+      var v = toolValues[t];
+      return "SET_TOOL_GCODE_OFFSET T=" + t + " X=" + v.x + " Y=" + v.y;
+    }).join("\n");
+    return sendGcodeWithRecovery(script, "XY-Offsets uebernehmen")
+      .then(function (r) {
+        if (!r || !r.ok) return false;
+        return writeXyConfigs(toolValues).then(function (wrote) {
+          if (wrote && typeof showToast === 'function') {
+            showToast(names.length === 1
+              ? "T" + names[0] + ": XY-Offset gesetzt und geschrieben"
+              : "XY-Offsets gesetzt und geschrieben", "success");
+          }
+          return wrote;
+        });
+      });
+  }).catch(function (err) {
+    var detail = "";
+    try { detail = (err.responseJSON || err).message || ""; } catch (_) {}
+    return alertDialog("XY-Offsets uebernehmen fehlgeschlagen",
+                       escapeHtml(detail || "Unbekannter Fehler"))
+      .then(function () { return false; });
+  });
 }
 
 function syncPidSelectAllState() {
