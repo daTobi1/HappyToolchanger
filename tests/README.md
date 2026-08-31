@@ -116,6 +116,51 @@ console.log('sichtbar:', el.classList.contains('show'));   // muss true sein
 
 `sichtbar: false` heißt: der Fehlerdialog wird wieder verschluckt.
 
+## `check_nozzle_locator_fit.py`
+
+Prüft die Fit-Mathematik der XY-Offset-Ortung. Braucht **keine
+Druckerhardware und kein Klipper** — nur einen Python-Interpreter:
+
+```bash
+python3 tests/check_nozzle_locator_fit.py
+```
+
+Auf dem Windows-Entwicklungsrechner ist keiner installiert, dort also über
+den Pi (der Drucker bewegt sich dabei nicht):
+
+```bash
+scp tests/check_nozzle_locator_fit.py klippy/extras/nozzle_locator_fit.py biqu@<IP>:/tmp/
+ssh biqu@<IP> 'cd /tmp && python3 check_nozzle_locator_fit.py'
+```
+
+Der Anlass ist ein Denkfehler, der beinahe ins Verfahren eingebaut worden
+wäre. Der ursprüngliche Schluss lautete: ein Peak-Fit ist gegen additive
+Ablagen invariant, also stört der Temperaturgang der Basislinie nicht. Das
+gilt aber nur für eine *konstante* Ablage. Der Sweep läuft monoton in x —
+ein zeitlinearer Drift wird dadurch zu einem linearen Term in x und
+verschiebt den Scheitel um `m/(2a)`, bei den gemessenen Werten des 250ers
+rund 19 µm pro Kelvin.
+
+Zwei Eigenschaften machen das gefährlich: die Verschiebung ist ein **Bias,
+keine Streuung** (alle Läufe fahren dieselbe Richtung, also sieht σ sie
+nicht), und sie kürzt sich **nicht** zwischen den Tools weg (das
+Referenztool wird mit kalter Spule gemessen, spätere Tools mit warmer).
+
+| Zusicherung | warum sie zählt |
+|---|---|
+| Fit ohne Drift trifft das bekannte Zentrum | Grundfunktion |
+| Einzelsweep verschiebt sich um exakt `m/(2a)` | nagelt den Fehlerbetrag fest, statt ihn zu behaupten |
+| bidirektionaler Mittelwert hebt ihn auf | der eigentliche Fix |
+| konstante Ablage verschiebt nichts | die Hälfte der Ursprungsannahme, die stimmt |
+| `sweep_quality` lehnt zu schwaches Signal ab | ein Ad-hoc-Skript ohne diesen Guard hat im Vorversuch fünf wertlose Läufe produziert |
+| `sweep_quality` lehnt Scheitel am Fensterrand ab | halb erfasstes Ziel liefert einen plausibel aussehenden Unsinnswert |
+| Tal statt Berg wird abgewiesen | bei gehärtetem Stahl kann das Vorzeichen drehen |
+
+**Deckt nicht ab:** ob die reale Glocke überhaupt einer Parabel ähnelt. Der
+Vorversuch zeigt eine leichte Schiefe, die in X stärker ist als in Y — der
+Fit über einen *festen* Punktesatz ist deshalb Pflicht, ein
+schwellwertabhängiges Fenster verschob den Scheitel schon um 47 µm.
+
 ## `check_qgl_probe_choice.py`
 
 Prüft, welche Probe `QUAD_GANTRY_LEVEL` wählt — ohne den Drucker zu bewegen.
