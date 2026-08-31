@@ -100,6 +100,24 @@ def main():
     close(fit.parabola_vertex(shifted), CENTER, 1e-6,
           "konstante Ablage verschiebt den Scheitel (darf sie nicht)")
 
+    # --- 4a: der Fit traegt auch bei realen Bettkoordinaten weit vom Ursprung ---
+    # Der Fit zentriert intern um den Mittelwert der x-Werte; ohne das
+    # liefert die schlecht konditionierte Normalgleichungsmatrix Unsinn bei
+    # x ~ 300. Hier ist Kondition das Motiv, nicht Drift.
+    CENTER_FAR = 300.0
+    POSITIONS_FAR = [296.0, 297.0, 298.0, 299.0, 300.0, 301.0, 302.0, 303.0, 304.0]
+    pts_far = bell(CENTER_FAR, AMPL, CURV, POSITIONS_FAR)
+    close(fit.parabola_vertex(pts_far), CENTER_FAR, 1e-6,
+          "Fit bei Bettkoordinaten (x~300) trifft das Zentrum nicht")
+    fwd_far = bell(CENTER_FAR, AMPL, CURV, POSITIONS_FAR, DRIFT_PER_STEP)
+    close(fit.parabola_vertex(fwd_far), CENTER_FAR + expected_shift, 1e-6,
+          "Einzelsweep bei Bettkoordinaten verschiebt sich nicht um m/(2a)")
+    n_far = len(POSITIONS_FAR)
+    rev_far = [(x, AMPL - CURV * (x - CENTER_FAR) ** 2 + DRIFT_PER_STEP * (n_far - 1 - i))
+               for i, x in enumerate(POSITIONS_FAR)]
+    close(fit.bidirectional_center(fwd_far, rev_far), CENTER_FAR, 1e-9,
+          "bidirektionaler Mittelwert bei Bettkoordinaten hebt den Drift nicht auf")
+
     # --- 5: Guard greift bei zu schwachem Signal ---
     weak = bell(CENTER, 500.0, CURV, POSITIONS)
     good, reason = fit.sweep_quality(weak, BASELINE, 2000.0)

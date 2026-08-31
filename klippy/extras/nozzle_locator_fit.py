@@ -14,21 +14,28 @@ def parabola_vertex(points):
     Invariant gegen eine *konstante* Ablage: die verschiebt nur c in
     y = a*x^2 + b*x + c, nicht -b/(2a). Ein Drift, der *linear in x* ist,
     verschiebt den Scheitel dagegen um m/(2a) -- siehe bidirectional_center.
+
+    Die x-Werte werden um ihren Mittelwert zentriert, bevor gefixt wird.
+    Bei realen Bettkoordinaten (120-300 mm, weit vom Ursprung) verbessert
+    das die Kondition der Normalgleichungsmatrix erheblich.
     """
     n = len(points)
     if n < 3:
         raise ValueError("Fit braucht mindestens 3 Punkte, hat %d" % n)
+    # x um seinen Mittelwert zentrieren fuer bessere Kondition.
+    xbar = sum(x for x, _ in points) / n
     sx = sx2 = sx3 = sx4 = sy = sxy = sx2y = 0.0
     for x, y in points:
-        x2 = x * x
-        sx += x
-        sx2 += x2
-        sx3 += x2 * x
-        sx4 += x2 * x2
+        xc = x - xbar
+        xc2 = xc * xc
+        sx += xc
+        sx2 += xc2
+        sx3 += xc2 * xc
+        sx4 += xc2 * xc2
         sy += y
-        sxy += x * y
-        sx2y += x2 * y
-    # Normalgleichungen fuer y = a x^2 + b x + c, geloest per Cramer.
+        sxy += xc * y
+        sx2y += xc2 * y
+    # Normalgleichungen fuer y = a xc^2 + b xc + c, geloest per Cramer.
     m11, m12, m13 = sx4, sx3, sx2
     m21, m22, m23 = sx3, sx2, sx
     m31, m32, m33 = sx2, sx, float(n)
@@ -46,7 +53,7 @@ def parabola_vertex(points):
     b = det3(m11, r1, m13, m21, r2, m23, m31, r3, m33) / det
     if a >= 0.0:
         raise ValueError("Parabel hat keinen Hochpunkt (a = %.6g)" % a)
-    return -b / (2.0 * a)
+    return xbar - b / (2.0 * a)
 
 
 def bidirectional_center(fwd_points, rev_points):
