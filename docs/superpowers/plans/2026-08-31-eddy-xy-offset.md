@@ -30,7 +30,7 @@
 |---|---|
 | `klippy/extras/nozzle_locator_fit.py` | **neu** — reine Fit-Mathematik, keine Klipper-Imports. Der einzige Teil, der ohne Drucker testbar ist. |
 | `klippy/extras/nozzle_locator.py` | **neu** — Sensorbesitz, Sweep-Fahrten, Z-Anfahrt. Kennt keine Tools. |
-| `klippy/extras/offset.py` | erweitert — `CALIBRATE_XY_OFFSETS`, Extraktion `_resolve_tool_run()` |
+| `klippy/extras/offset.py` | erweitert — `CALIBRATE_XY_OFFSETS` (die geplante Extraktion `_resolve_tool_run()` ist gestrichen, siehe Task 4) |
 | `webapp/js/tools.js` | erweitert — XY-Block, Assistent, Extraktion `updateConfigFile()` |
 | `webapp/js/camera.js` | erweitert — „Position übernehmen" |
 | `webapp/index.html` | erweitert — Markup des XY-Blocks |
@@ -993,86 +993,44 @@ git commit -m "feat(xy-offset): bidirektionale Ortung mit Z-Anfahrt und Guards"
 
 ---
 
-## Task 4: Extraktion `_resolve_tool_run()` (reiner Refactor)
+## Task 4: GESTRICHEN — die Extraktion war ein Denkfehler
 
-Kein neues Verhalten. Eigene Task, damit ein Reviewer sie unabhängig von der
-Orchestrierung annehmen oder ablehnen kann.
+**Diese Task wird nicht ausgeführt.** Ein Implementer hat sie mit BLOCKED
+zurückgegeben, nachdem er beide Aufrufer gelesen hatte, und der Befund ist
+stichhaltig.
 
-**Files:**
-- Modify: `klippy/extras/offset.py:491-514` (in `cmd_CALIBRATE_ALL_Z_OFFSETS`)
-- Modify: `klippy/extras/offset.py:716-785` (in `cmd_CALIBRATE_PROBE_OFFSETS`)
+Die Annahme des Plans war: `cmd_CALIBRATE_ALL_Z_OFFSETS` und
+`cmd_CALIBRATE_PROBE_OFFSETS` lösen dieselbe Aufgabe doppelt. Das stimmt
+nicht. Sie haben **drei verschiedene, jeweils absichtliche Auswahlpolitiken**,
+die nur von weitem gleich aussehen:
 
-**Interfaces:**
-- Produces: `Offset._resolve_tool_run(gcmd, ref_param='REF') -> (ref_tool, ordered_tools, available_tools)`
+| | `CALIBRATE_ALL_Z_OFFSETS` (`offset.py:474-514`) | `CALIBRATE_PROBE_OFFSETS` (`offset.py:696-916`) |
+|---|---|---|
+| unbekanntes Tool in `TOOLS` | wird still verworfen | harter Abbruch |
+| Abbruchschwelle | nur wenn danach nichts übrig ist | schon bei einem einzigen |
+| Duplikate | werden dedupliziert | — |
+| Default ohne `TOOLS` | alle Tools | **nur Tools, die schon Z-Switch-Daten haben** |
+| Referenztool | erzwungen enthalten, immer zuerst | **weder enthalten noch zuerst** — bewusst unabhängig (`offset.py:904-908` behandelt den Fall „Ref ist mitgemessen" explizit als Sonderfall mit Ergebnis ≈ 0) |
 
-- [ ] **Step 1: Helfer einfügen**
+Der zweite Aufrufer wäre nicht in einem Randfall gebrochen, sondern im
+**Normalfall**: sein Default hätte statt der Tools mit vorhandenen
+Z-Switch-Daten plötzlich alle Tools gewählt, das Referenztool zwangsweise
+mitgemessen und für alles ohne Daten mit „Missing Z-switch data" abgebrochen.
+Auf der Hardware wären das echte zusätzliche Werkzeugwechsel und Antastungen.
 
-```python
-    def _resolve_tool_run(self, gcmd, ref_param='REF'):
-        """Referenztool und Tool-Reihenfolge fuer einen Kalibrierlauf.
+Übrig bliebe als tatsächlich gemeinsamer Code ein Dreizeiler
+(`if ref_tool not in available_tools: ref_tool = available_tools[0]`). Ein
+Helfer mit genügend Schaltern, um alle drei Politiken abzubilden, wäre
+schwerer zu lesen als die drei getrennten Stellen.
 
-        Das Referenztool steht immer vorn. Alle Kalibrierungen enden ausserdem
-        wieder auf ihm (_return_to_ref_tool), damit der Drucker in einem
-        definierten Zustand zurueckbleibt.
-        """
-        available_tools = list(self.toolchanger.tool_numbers)
-        if not available_tools:
-            raise gcmd.error("Keine Tools konfiguriert")
-        ref_tool = gcmd.get_int(ref_param, self.default_ref_tool, minval=0)
-        if ref_tool not in available_tools:
-            ref_tool = available_tools[0]
-        tools_param = gcmd.get('TOOLS', None)
-        if tools_param:
-            try:
-                requested = [int(t) for t in tools_param.replace(',', ' ').split()]
-            except ValueError:
-                raise gcmd.error("TOOLS erwartet Tool-Nummern, bekam '%s'"
-                                 % tools_param)
-            unknown = [t for t in requested if t not in available_tools]
-            if unknown:
-                raise gcmd.error("Unbekannte Tools: %s"
-                                 % ", ".join(str(t) for t in unknown))
-            ordered = requested
-        else:
-            ordered = list(available_tools)
-        ordered = [ref_tool] + [t for t in ordered if t != ref_tool]
-        self.last_ref_tool = ref_tool
-        return ref_tool, ordered, available_tools
-```
+**Ruling:** Die Extraktion entfällt ersatzlos. Task 5 löst seine Tool-Auswahl
+selbst, mit einer Politik, die zur XY-Messung passt (siehe dort). Die
+Duplizierung, die dieser Plan vermeiden wollte, existierte nie — sie war eine
+Formähnlichkeit, keine Logikgleichheit.
 
-- [ ] **Step 2: Beide Aufrufer umstellen**
-
-In `cmd_CALIBRATE_ALL_Z_OFFSETS` den Block bei `491-514` ersetzen durch:
-
-```python
-        ref_tool, ordered_tools, available_tools = self._resolve_tool_run(
-            gcmd, ref_param='REF')
-```
-
-In `cmd_CALIBRATE_PROBE_OFFSETS` bei `716-785` analog mit
-`ref_param='REF_TOOL'`. **Die dortige Zusatzprüfung gegen `data_refs`
-(`771-785`) bleibt stehen** — sie ist spezifisch für die Probe-Offsets und
-gehört nicht in den Helfer.
-
-- [ ] **Step 3: Auf dem Drucker gegenprüfen, dass sich nichts geändert hat**
-
-```bash
-ssh biqu@192.168.178.60 'sudo systemctl restart klipper'
-ssh biqu@192.168.178.60 '~/klippy-env/bin/python /tmp/check_gcode_vocabulary.py'
-```
-
-Dann in der Konsole beide Kommandos mit `DRY_RUN`-artiger Beobachtung
-aufrufen und prüfen, dass die gemeldete Tool-Reihenfolge dieselbe ist wie
-vorher. Expected: identische Reihenfolge, Referenztool zuerst.
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add klippy/extras/offset.py
-git commit -m "refactor(offset): Ref-Tool-Aufloesung in _resolve_tool_run zusammenfassen"
-```
-
----
+Der Befund ist trotzdem wertvoll und bleibt hier stehen: er dokumentiert die
+Auswahlsemantik beider bestehender Kalibrierungen, die vorher nirgends
+festgehalten war.
 
 ## Task 5: `CALIBRATE_XY_OFFSETS` — Orchestrierung
 
@@ -1080,7 +1038,64 @@ git commit -m "refactor(offset): Ref-Tool-Aufloesung in _resolve_tool_run zusamm
 - Modify: `klippy/extras/offset.py`
 
 **Interfaces:**
-- Consumes: `_resolve_tool_run` (Task 4), `nozzle_locator.locate/approach_z/measure_baseline` (Task 3)
+- Consumes: `nozzle_locator.locate/approach_z/measure_baseline` (Task 3)
+- Produces zusätzlich: `Offset._xy_tool_run(gcmd) -> (ref_tool, ordered_tools)`
+
+**Zur Tool-Auswahl:** Der Plan wollte diese Logik ursprünglich aus den beiden
+bestehenden Kalibrierungen extrahieren. Das war ein Denkfehler (siehe Task 4)
+— die drei Kommandos haben absichtlich verschiedene Auswahlpolitiken. Dieses
+Kommando bekommt deshalb seine **eigene**, bewusst benannte Auflösung. Der
+Name `_xy_tool_run` sagt, dass sie nur für diesen Zweck gilt; sie ist nicht
+zum Teilen gedacht.
+
+Die Politik für die XY-Messung:
+
+- **Referenztool ist zwingend enthalten und steht zuerst.** Anders als bei den
+  Probe-Offsets ist es hier keine optionale Vergleichsgröße: es legt die
+  Messhöhe und das Grobsuchfenster für alle folgenden Tools fest. Ohne es gibt
+  es keine Differenz, gegen die gerechnet werden kann.
+- **Unbekannte Tools in `TOOLS` brechen ab**, statt still verworfen zu werden.
+  Ein Tippfehler soll auffallen, bevor der Kopf über eine Halterung fährt.
+- **Default ohne `TOOLS`:** alle konfigurierten Tools.
+- Duplikate werden entfernt.
+
+```python
+    def _xy_tool_run(self, gcmd):
+        """Referenztool und Reihenfolge fuer einen XY-Messlauf.
+
+        Bewusst NICHT geteilt mit CALIBRATE_ALL_Z_OFFSETS oder
+        CALIBRATE_PROBE_OFFSETS: die drei Kommandos haben absichtlich
+        verschiedene Auswahlpolitiken. Siehe Task 4 im Plan.
+        """
+        available = sorted(self.toolchanger.tool_numbers)
+        if not available:
+            raise gcmd.error("Keine Tools konfiguriert")
+        ref_tool = gcmd.get_int('REF_TOOL', self.default_ref_tool, minval=0)
+        if ref_tool not in available:
+            ref_tool = available[0]
+        tools_param = gcmd.get('TOOLS', None)
+        if tools_param:
+            requested = []
+            for token in tools_param.split(','):
+                token = token.strip()
+                if not token.isdigit():
+                    raise gcmd.error(
+                        "TOOLS erwartet Tool-Nummern, bekam '%s'" % token)
+                requested.append(int(token))
+            unknown = [t for t in requested if t not in available]
+            if unknown:
+                raise gcmd.error(
+                    "Unbekannte Tools: %s"
+                    % ", ".join("T%d" % t for t in unknown))
+        else:
+            requested = list(available)
+        ordered, seen = [ref_tool], {ref_tool}
+        for t in requested:
+            if t not in seen:
+                seen.add(t)
+                ordered.append(t)
+        self.last_ref_tool = ref_tool
+        return ref_tool, ordered
 - Produces:
   - G-Code `CALIBRATE_XY_OFFSETS [REF_TOOL=n] [TOOLS=0,1,2] [DRY_RUN=1] [TEMP=n]`
   - State-Datei `.offset_xy_results.json`
@@ -1103,8 +1118,7 @@ git commit -m "refactor(offset): Ref-Tool-Aufloesung in _resolve_tool_run zusamm
                 "Assistenten aktivieren -- xy_probe.cfg ist derzeit leer.")
         dry_run = gcmd.get_int('DRY_RUN', 0)
         temp = gcmd.get_float('TEMP', 0., minval=0.)
-        ref_tool, ordered_tools, _ = self._resolve_tool_run(
-            gcmd, ref_param='REF_TOOL')
+        ref_tool, ordered_tools = self._xy_tool_run(gcmd)
         self._require_leveled(gcmd)
         locator._require_homed()
 

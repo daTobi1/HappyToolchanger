@@ -348,16 +348,23 @@ genau der Zweck der Datei.
 
 ## 12. Gezielte Extraktionen
 
-Beide sind nötig, weil der neue Code sie sonst dupliziert; beide bekommen
-im Plan einen eigenen, einzeln prüfbaren Schritt.
+~~1. **`_resolve_tool_run()`** in `offset.py`~~ — **gestrichen.** Die Annahme,
+`cmd_CALIBRATE_ALL_Z_OFFSETS` und `cmd_CALIBRATE_PROBE_OFFSETS` lösten
+dieselbe Aufgabe doppelt, hat sich bei der Umsetzung als falsch erwiesen. Die
+beiden haben absichtlich verschiedene Auswahlpolitiken — unter anderem wählt
+das zweite ohne `TOOLS` **nur Tools mit vorhandenen Z-Switch-Daten** und
+erzwingt das Referenztool weder in die Liste noch an deren Anfang
+(`offset.py:904-908` behandelt „Referenz ist mitgemessen" ausdrücklich als
+Sonderfall). Eine gemeinsame Funktion hätte das zweite Kommando im Normalfall
+verändert. Gemeinsam wäre nur ein Dreizeiler geblieben. `CALIBRATE_XY_OFFSETS`
+bringt stattdessen seine eigene, so benannte Auflösung `_xy_tool_run()` mit.
+Details und die Gegenüberstellung stehen in Task 4 des Plans.
 
-1. **`_resolve_tool_run()`** in `offset.py`: Ref-Tool-Auflösung,
-   Gültigkeitsprüfung, Reihenfolge (Ref zuerst). Steht heute doppelt in
-   `cmd_CALIBRATE_ALL_Z_OFFSETS` (`491-514`) und
-   `cmd_CALIBRATE_PROBE_OFFSETS` (`716-785`); beide werden umgestellt.
 2. **`updateConfigFile(path, mutator)`** in `tools.js`: der
    Lese-/Upload-Block steht viermal fast identisch (`474/499`, `627/637`,
-   `1784/1803`, `2640/2656`).
+   `1784/1803`, `2640/2656`). Diese Extraktion bleibt — hier ist der Code
+   tatsächlich gleich und nicht nur ähnlich geformt. Zeigt sich bei der
+   Umsetzung das Gegenteil, gilt dieselbe Regel wie oben: nicht einebnen.
 
 Weiteres Refactoring an `offset.py` (2005 Zeilen) ist ausdrücklich **nicht**
 Teil dieser Arbeit.
