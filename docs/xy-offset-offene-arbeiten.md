@@ -34,15 +34,33 @@ Grund: eddy-ng bringt einen eigenen MCU-Befehlssatz mit (`config_ldc1612_ng`, `l
 
 Das ist kein Nachteil, sondern Absicht: beide Sensoren bleiben vollständig unabhängig, verschiedene Firmware, keine Kollision von Kommandos oder Config-Sektionen. Der Grund für diese Entscheidung war ohnehin ein anderer — eine zweite `[probe_eddy_ng]`-Sektion lässt Klipper gar nicht erst starten, weil `eddy-ng/probe_eddy_ng/probe.py:186` seine Kommandos global und nicht instanz-skopiert registriert.
 
-**Zu tun:** neue Spule mit Katapult + Standard-Klipper flashen. Für die Duo-Variante gelten die bekannten CAN-Pins RX=GPIO4 / TX=GPIO5 (nicht GPIO0/GPIO1). Eigene CAN-UUID notieren.
+**Zu tun:** neue Spule mit Standard-Klipper flashen (USB-Variante, siehe 2.2).
 
 **Früh verifizieren, bevor Zeit in Task 2 fließt:** dass Klippers `ldc1612` die neue Spule wirklich anspricht. Ein einzelnes `NOZZLE_LOCATOR_READ` mit plausibler Frequenz und ohne Fehlerflags reicht als Beweis.
 
 ### 2.2 Sensor
 
 - LDC1612-basiert (BTT Eddy oder baugleich), Spule **nach oben** gerichtet
-- CAN-Anschluss mit eigener UUID; Kabel lang genug, um die Halterung mittig aufs Bett zu stellen
+- **Anbindung per USB** (Entscheidung vom 31.08.), Kabel lang genug für die Bettmitte
 - Es wird **keine** Frequenz→Höhe-Kalibrierung gebraucht und sie ist auch nicht möglich — ein aufwärts gerichteter Sensor lässt sich nicht gegen ein Bett kalibrieren. Nur die Rohfrequenz zählt.
+
+**Warum USB hier die bessere Wahl ist**, über die Bequemlichkeit hinaus: die Präsenzerkennung wird dadurch eindeutig. Ich habe beide Moonraker-Endpunkte am 250er nachgemessen:
+
+```
+/machine/peripherals/serial  → serial_devices[] mit path_by_id   ✓ brauchbar
+/machine/peripherals/canbus  → can_uuids: []                     ✗ leer,
+                                obwohl zwei CAN-MCUs laufen
+```
+
+Der canbus-Endpunkt sieht nur Knoten, die **kein laufender Klipper beansprucht** — im Normalbetrieb also nichts. Eine CAN-basierte „steckt die Sonde?"-Prüfung wäre damit bestenfalls zweideutig gewesen. Über USB fragt der Assistent `path_by_id` ab und bekommt eine klare Antwort.
+
+**Den `serial`-Pfad einmal ermitteln**, während die Sonde steckt, und in `xy_probe.cfg.disabled` eintragen:
+
+```bash
+ls /dev/serial/by-id/
+```
+
+Immer den `by-id`-Pfad nehmen, nie `/dev/ttyACM0` — der wandert, sobald ein anderes USB-Gerät früher erkannt wird.
 
 ### 2.3 Halterung
 
@@ -105,11 +123,13 @@ Der Plan rief drei Helfer auf, deren Namen geraten waren. Inzwischen gegen `tool
 
 Der Assistent homet deshalb in Schritt 1 **selbst und vorher**, über eine eigene kleine Funktion `ensureHomedBeforeSetup()`, und verlässt sich ausdrücklich nicht auf die Recovery. Steht so im Plan.
 
-`readXyProbeUuid()` ist weiterhin selbst zu schreiben (liest die `canbus_uuid`-Zeile aus `xy_probe.cfg.disabled`).
+`readXyProbeSerial()` ist weiterhin selbst zu schreiben (liest die `serial`-Zeile aus `xy_probe.cfg.disabled`). Code steht im Plan.
 
-### 4.4 Moonrakers CAN-Endpunkt
+### 4.4 Präsenzerkennung — erledigt
 
-Der Assistent prüft über `/machine/peripherals/canbus?interface=can0`, ob die Sonde am Bus hängt. **Ob dieser Endpunkt in der eingesetzten Moonraker-Version existiert, ist ungeprüft.** Der Code fällt bei Fehlen auf eine Rückfrage zurück („Ist die Sonde angesteckt?"), das ist also kein Blocker — aber wenn die Prüfung nie greift, fehlt ein Sicherheitsnetz.
+War als Risiko notiert („existiert der Endpunkt überhaupt?"), ist inzwischen am 250er nachgemessen: `/machine/peripherals/serial` liefert `serial_devices[]` mit `path_by_id`, der Assistent kann also zuverlässig prüfen, ob die USB-Sonde steckt. Details und der Grund, warum die CAN-Variante untauglich gewesen wäre, in Abschnitt 2.2.
+
+Der Rückfall auf eine manuelle Rückfrage bleibt trotzdem im Code, falls jemand das Ganze auf einer älteren Moonraker-Version betreibt.
 
 ### 4.5 Das Abmelden vom Sensor-Datenstrom
 
@@ -126,7 +146,7 @@ Weder Task 6 noch 7–9 wurden je im Browser gesehen. Die Node-Tests decken Fehl
 ### 5.1 Reihenfolge, die nicht verhandelbar ist
 
 1. **Erst homen, DANN die Halterung aufs Bett stellen.** `homing.cfg:35` setzt bei unhomed Z ein `SET_KINEMATIC_POSITION Z=0`, hebt nur 10 mm an und fährt danach Y quer über die Bettmitte. Mit Aufbau auf dem Bett ist das ein Crash.
-2. **Erst deaktivieren, DANN abstecken.** Steht die Sonde in der Config und fehlt der CAN-Knoten, startet Klipper nicht mehr. Die UI hat dafür ein Rettungsnetz (Moonraker läuft weiter, die Config lässt sich auch bei totem Klipper zurückschreiben) — aber es ist unangenehm.
+2. **Erst deaktivieren, DANN abstecken.** Steht die Sonde in der Config und ist sie abgezogen, startet Klipper nicht mehr — USB aendert daran nichts, Klipper braucht jeden MCU beim Start. Die UI hat dafür ein Rettungsnetz (Moonraker läuft weiter, die Config lässt sich auch bei totem Klipper zurückschreiben) — aber es ist unangenehm.
 
 ### 5.2 Trockenlauf zuerst
 

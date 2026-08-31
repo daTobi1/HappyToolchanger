@@ -630,11 +630,16 @@ liefern, statt einen zweiten Callback anzumelden.
 `configs/250/xy_probe.cfg.disabled`:
 
 ```ini
-# Vorlage der XY-Sonde. UUID und Halterungsmasse hier EINMALIG eintragen.
-# Diese Datei wird nie von Klipper geladen -- die Webapp kopiert ihren
-# Inhalt beim Aktivieren nach xy_probe.cfg.
+# Vorlage der XY-Sonde. Serial-Pfad und Halterungsmasse hier EINMALIG
+# eintragen. Diese Datei wird nie von Klipper geladen -- die Webapp kopiert
+# ihren Inhalt beim Aktivieren nach xy_probe.cfg.
+#
+# Die Sonde haengt per USB. Den Pfad einmal ermitteln, waehrend sie steckt:
+#   ls /dev/serial/by-id/
+# Immer den by-id-Pfad eintragen, nie /dev/ttyACM0 -- der wandert, sobald
+# ein anderes USB-Geraet frueher erkannt wird.
 [mcu xyprobe]
-canbus_uuid: HIER_EINTRAGEN
+serial: /dev/serial/by-id/HIER_EINTRAGEN
 
 [nozzle_locator]
 i2c_mcu: xyprobe
@@ -681,7 +686,7 @@ vorhanden)**, nicht nach dem Muster der Liste in Zeile 174. Diese Liste
 (`HEXA.cfg happy_toolchanger.cfg eddy-ng.cfg`) überschreibt bei **jedem**
 Install. Landeten unsere Dateien dort, würde jeder Install
 
-- die im `.disabled` eingetragene CAN-UUID und die Halterungsmaße vernichten
+- den im `.disabled` eingetragenen serial-Pfad und die Halterungsmaße vernichten
   (der Nutzer trägt sie genau einmal ein), und
 - den Aktiv-/Inaktiv-Zustand von `xy_probe.cfg` überschreiben.
 
@@ -1822,14 +1827,15 @@ function xyProbeActivate() {
                NO_CACHE)
     .then(function (r) {
       if (!r.ok) throw new Error(
-        "xy_probe.cfg.disabled fehlt -- dort muessen CAN-UUID und " +
+        "xy_probe.cfg.disabled fehlt -- dort muessen serial-Pfad und " +
         "Halterungsmasse einmalig eingetragen werden.");
       return r.text();
     })
     .then(function (template) {
       if (template.indexOf("HIER_EINTRAGEN") !== -1) throw new Error(
-        "In xy_probe.cfg.disabled steht noch HIER_EINTRAGEN statt der " +
-        "CAN-UUID der Sonde.");
+        "In xy_probe.cfg.disabled steht noch HIER_EINTRAGEN statt des " +
+        "serial-Pfads der Sonde. Einmal 'ls /dev/serial/by-id/' auf dem " +
+        "Drucker ausfuehren, waehrend die Sonde steckt.");
       return updateConfigFile("xy_probe.cfg", function () { return template; });
     })
     .then(function () { return restartKlipperAndWait(); });
@@ -1988,18 +1994,36 @@ function xyWizard() {
 // Praesenzpruefung mit Rueckfall: kennt diese Moonraker-Version den
 // CAN-Endpunkt nicht, fragen wir den Nutzer statt zu scheitern.
 function xyProbeCheckPresent() {
-  return readXyProbeUuid()
-    .then(function (uuid) { return xyProbeOnBus(uuid); })
-    .then(function (onBus) {
-      if (onBus === true) return true;
-      if (onBus === false) throw new Error(
-        "Die Sonde ist nicht auf dem CAN-Bus zu sehen. Steckt sie richtig?");
+  return readXyProbeSerial()
+    .then(function (path) { return xyProbeConnected(path); })
+    .then(function (present) {
+      if (present === true) return true;
+      if (present === false) throw new Error(
+        "Die Sonde ist am USB nicht zu sehen. Steckt sie, und stimmt der " +
+        "serial-Pfad in xy_probe.cfg.disabled?");
       return confirmDialog({
         title: "Sonde angesteckt?",
-        body: "Diese Moonraker-Version kann den CAN-Bus nicht abfragen. " +
-              "Bitte selbst prüfen: ist die Sonde angesteckt?",
+        body: "Diese Moonraker-Version kann die seriellen Geräte nicht " +
+              "auflisten. Bitte selbst prüfen: ist die Sonde angesteckt?",
         okLabel: "Ja, ist angesteckt"
       });
+    });
+}
+
+// Liest die serial-Zeile aus der Vorlage. Ungecacht, sonst liefert ein
+// Browser-Cache nach einer Aenderung noch den alten Pfad.
+function readXyProbeSerial() {
+  return fetch(baseUrl + "/server/files/config/xy_probe.cfg.disabled",
+               NO_CACHE)
+    .then(function (r) {
+      if (!r.ok) throw new Error("xy_probe.cfg.disabled fehlt");
+      return r.text();
+    })
+    .then(function (text) {
+      var m = text.match(/^\s*serial\s*:\s*(\S+)/m);
+      if (!m) throw new Error(
+        "In xy_probe.cfg.disabled steht keine serial-Zeile.");
+      return m[1];
     });
 }
 ```
@@ -2015,7 +2039,7 @@ Der Entwurf oben nannte drei Helfer, deren Namen geraten waren. Gegen
 | `currentToolNumber()` | Für den Assistenten irrelevant. Das **Referenztool** kommt aus `getSelectedReferenceTool(fallback)` (`:721`) bzw. `computeDefaultRef(toolNumbers)` (`:714`). Das **montierte** Tool steht in der Druckerstatus-Abfrage unter `toolchanger.tool_number` (verifiziert am 250er). |
 | `ensureHomed()` | **Existiert nicht — und darf hier auch nicht durch die vorhandene Recovery ersetzt werden.** Siehe unten. |
 
-`readXyProbeUuid()` ist selbst zu schreiben: liest die `canbus_uuid`-Zeile aus
+`readXyProbeSerial()` ist selbst zu schreiben: liest die `serial`-Zeile aus
 `xy_probe.cfg.disabled` über `getConfigFile`/`fetch` mit `NO_CACHE`.
 
 ### ACHTUNG: die vorhandene Homing-Recovery ist hier gefährlich
