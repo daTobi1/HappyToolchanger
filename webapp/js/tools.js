@@ -3362,7 +3362,14 @@ function xyWizard() {
         okLabel: "Ist erledigt"
       });
     }).then(function (ok2) {
-      if (!ok2) return null;
+      // Anders als der Abbruch ganz am Anfang ist die Sonde hier schon
+      // aktiviert (siehe Fix-Runde 2) - ein stilles return liesse den
+      // Nutzer mit aktiver Sonden-Config zurueck, ohne dass er es merkt.
+      // Denselben Weg wie jeden anderen Fehlschlag nach der Aktivierung
+      // nehmen: in den catch() werfen, der "Sonde deaktivieren" anbietet.
+      if (!ok2) throw new Error(
+        "Aufsetzen abgebrochen. Die Sonde ist bereits aktiviert -- bitte " +
+        "deaktivieren, bevor sie abgezogen wird.");
       return confirmDialog({
         title: "Trockenlauf",
         body: "Beim ersten Mal dringend empfohlen: alle Werkzeugwechsel " +

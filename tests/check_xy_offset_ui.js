@@ -195,6 +195,56 @@ function reset(fileMap) {
   uploads = []; dialogs = []; files = fileMap;
 }
 
+// --------------------------------------------------------------------
+// Teil 3: xyWizard() (Task 8, Fix-Runde 2) - bricht der Nutzer den
+// "Aufsetzen"-Dialog ab, ist die Sonde zu diesem Zeitpunkt schon
+// aktiviert (Fix-Runde 1 hat die Reihenfolge geaendert: aktivieren, dann
+// homen, dann ERST zum Aufsetzen auffordern). Ein stiller Abbruch wuerde
+// die Sonde unbemerkt aktiv zuruecklassen. Alle Nachbarfunktionen werden
+// gestubbt, damit nur dieser eine Kontrollfluss-Zweig geprueft wird;
+// confirmDialog/alertDialog/escapeHtml sind schon aus Teil 2 vorhanden und
+// werden hier per global.confirmDialog auf eine eigene Antwortfolge
+// umgebogen. Nur definiert, noch nicht aufgerufen - laeuft als letzter
+// Schritt der Teil-2-Kette unten, NACHDEM Teil 2 seinen eigenen
+// confirmDialog-Stub nicht mehr braucht.
+// --------------------------------------------------------------------
+function runXyWizardAbortTest() {
+  var wizConfirms = [];
+  var wizQueue = [];
+  var deactivateCalls = 0;
+
+  global.confirmDialog = function (o) {
+    wizConfirms.push(o.title);
+    return Promise.resolve(wizQueue.shift());
+  };
+  global.showToast = function () {};
+  global.xyProbeCheckPresent = function () { return Promise.resolve(true); };
+  global.xyProbeActivate = function () { return Promise.resolve(); };
+  global.ensureHomedAfterActivate = function () { return Promise.resolve(); };
+  global.sendGcodeWithRecovery = function () { return Promise.resolve({ ok: true }); };
+  global.xyProbeDeactivate = function () { deactivateCalls++; return Promise.resolve(); };
+  global.updateAllProbeResults = function () {};
+
+  eval(grab('gcodeErrorMessage') + grab('xyStepOk') + grab('xyWizard'));
+
+  // Reihenfolge: "Anstecken" bestaetigen (true), "Aufsetzen" abbrechen
+  // (false), dann im Abbruch-Dialog "Sonde deaktivieren" waehlen (extra) -
+  // die vierte Antwort ist fuer die abschliessende Erfolgsmeldung
+  // ("Sonde deaktiviert", selbst ueber alertDialog->confirmDialog).
+  wizQueue = [true, false, 'extra', true];
+  return xyWizard().then(function () {
+    check('Abbruch bei "Aufsetzen" ruft xyProbeDeactivate() auf statt still zu enden',
+      deactivateCalls === 1, 'calls=' + deactivateCalls);
+    check('Dialogreihenfolge: Anstecken, Aufsetzen, Abbruch-Dialog, Erfolgsmeldung',
+      JSON.stringify(wizConfirms) === JSON.stringify([
+        'XY-Sonde: Anstecken', 'XY-Sonde: Aufsetzen',
+        'XY-Assistent abgebrochen', 'Sonde deaktiviert'
+      ]), JSON.stringify(wizConfirms));
+    check('Trockenlauf wird nicht erreicht (Abbruch vor dem Aufsetzen-OK)',
+      wizConfirms.indexOf('Trockenlauf') === -1, JSON.stringify(wizConfirms));
+  });
+}
+
 // --- 7) Beide Schluessel vorhanden -> true, ein Upload, kein Alert ---
 reset({ 'toolchanger/tools/T0.cfg':
   '[tool T0]\ngcode_x_offset: 0.000\ngcode_y_offset: 0.000\n' });
@@ -232,6 +282,10 @@ writeXyConfigs({ "0": { x: "0.5300", y: "-0.0200" } }).then(function (ok) {
   check('das vollstaendige Tool wird trotzdem geschrieben',
     uploads.length === 1, 'uploads=' + uploads.length);
 
+  // Als letzter Schritt: braucht eigene confirmDialog-Antwortfolge, deshalb
+  // erst NACHDEM Teil 2 mit seinem eigenen confirmDialog-Stub fertig ist.
+  return runXyWizardAbortTest();
+}).then(function () {
   console.log(failed ? '\n' + failed + ' TESTS FEHLGESCHLAGEN' : '\nALLE TESTS OK');
   process.exit(failed ? 1 : 0);
 }).catch(function (e) {
