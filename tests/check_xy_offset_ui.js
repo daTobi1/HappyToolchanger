@@ -137,6 +137,22 @@ eval(grab('parseXyProbeSerial'));
 })();
 
 // --------------------------------------------------------------------
+// Teil 2b: xyStepOk() (Task 8, Fix-Runde 1) - entscheidet nach jedem
+// sendGcodeWithRecovery()-Aufruf im XY-Assistenten, ob es weitergehen darf.
+// Reiner Einzeiler, aber genau diese Entscheidung haette im Fix-Runde-1-
+// Befund (Recovery-Knopf mit Halterung auf dem Bett) den Fehlschlag
+// durchwinken koennen, waere sie falsch verdrahtet.
+// --------------------------------------------------------------------
+eval(grab('xyStepOk'));
+
+check('{ok:true} -> true', xyStepOk({ ok: true }) === true);
+check('{transport:true} -> true (Verbindung weg, Lauf laeuft weiter)',
+  xyStepOk({ transport: true }) === true);
+check('{handled:true} -> false (Fehlerdialog schon gezeigt, nicht weiter)',
+  xyStepOk({ handled: true }) === false);
+check('null -> false', xyStepOk(null) === false);
+
+// --------------------------------------------------------------------
 // Teil 2: writeXyConfigs() - Fix-Runde 1, Befund 1 ("Erfolgsmeldung, obwohl
 // nichts geschrieben wurde"). Braucht gestubbtes fetch()/confirmDialog(),
 // deshalb eigener Abschnitt mit eigenem Netzwerk-Stub.

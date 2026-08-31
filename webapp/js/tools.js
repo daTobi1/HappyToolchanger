@@ -3257,14 +3257,49 @@ function xyStepOk(r) {
   return !!(r && (r.ok || r.transport));
 }
 
-// Prueft und homet VOR dem Aufsetzen der Halterung. Bewusst nicht ueber
-// sendGcodeWithRecovery allein: dessen "Must home first"-Pfad greift erst
-// mitten im Messlauf, also wenn der Aufbau schon auf dem Bett steht - und
-// ein G28 mit Aufbau auf dem Bett hebt nur 10mm und faehrt dann Y quer
-// darueber (homing.cfg:35). Nach einem angestossenen G28 wird das Ergebnis
-// geprueft: schlaegt das Homen fehl, darf der Assistent nicht zum
+// Fix-Runde 1: sendGcodeWithRecovery() ist ab dem Aufsetzen der Halterung
+// nicht mehr sicher. Sein "Must home first"-Recovery-Knopf faehrt
+// G28 -> QUAD_GANTRY_LEVEL -> G28 Z, und G28 hebt bei unhomed Z nur 10mm
+// und faehrt danach Y quer ueber die Bettmitte (homing.cfg:35) - das setzt
+// ein leeres Bett voraus. Sobald die Halterung liegt, darf kein Aufruf
+// mehr diesen Knopf anbieten. Eigener, bewusst dummer Sender: kein
+// Reparaturdialog, ein Fehlschlag wirft direkt und traegt eine Markierung,
+// damit der catch() unten weiss, dass die Halterung noch auf dem Bett
+// steht.
+function xySendMounted(script, title) {
+  function send() {
+    var req;
+    try {
+      req = $.get(printerUrl(printerIp,
+        "/printer/gcode/script?script=" + encodeURIComponent(script)));
+    } catch (e) {
+      return Promise.resolve({ err: e });
+    }
+    return Promise.resolve(req).then(function () { return { ok: true }; },
+                                     function (err) { return { err: err }; });
+  }
+  return send().then(function (r) {
+    if (r.ok) return true;
+    var detail = gcodeErrorMessage(r.err);
+    // Kein Payload = Verbindung weg, der Drucker rechnet weiter (wie bei
+    // sendGcodeWithRecovery) - kein Grund, den Assistenten abzubrechen.
+    if (!detail) return true;
+    var e = new Error(title + " fehlgeschlagen: " + detail);
+    e.xyHolderMounted = true;
+    throw e;
+  });
+}
+
+// Homt bei GARANTIERT leerem Bett: laeuft direkt nach xyProbeActivate(),
+// BEVOR die Halterung ueberhaupt aufs Bett kommt. FIRMWARE_RESTART
+// verwirft homed_axes immer (siehe der vorhandene RESTART-KLIPPER-Knopf:
+// "Der Drucker verliert das Homing") - dieses Homing danach ist deshalb
+// der Normalfall, nicht die Ausnahme. Bewusst trotzdem ueber
+// sendGcodeWithRecovery: ein G28-Recovery-Lauf ueber die Bettmitte ist
+// hier gefahrlos, weil auf dem Bett noch nichts steht. Nach dem Homen wird
+// das Ergebnis geprueft - schlaegt es fehl, darf der Assistent nicht zum
 // "Halterung aufsetzen"-Schritt weitergehen.
-function ensureHomedBeforeSetup() {
+function ensureHomedAfterActivate() {
   return $.get(printerUrl(printerIp, "/printer/objects/query?toolhead"))
     .then(function (data) {
       var homed = (data && data.result && data.result.status &&
@@ -3274,24 +3309,26 @@ function ensureHomedBeforeSetup() {
           homed.indexOf("z") !== -1) {
         return true;
       }
-      return sendGcodeWithRecovery("G28", "Homen vor dem Aufsetzen")
+      return sendGcodeWithRecovery("G28", "Homen nach dem Aktivieren")
         .then(function (r) { return xyStepOk(r); });
     })
     .then(function (ok) {
       if (!ok) throw new Error(
-        "Homing ist nicht sauber durchgelaufen. Ohne Homing darf die " +
-        "Halterung nicht aufs Bett -- Abbruch.");
+        "Homing nach dem Aktivieren ist nicht sauber durchgelaufen -- " +
+        "Abbruch, solange das Bett noch leer ist.");
       return true;
     });
 }
 
 // Der Assistent fuehrt durch An- und Abstecken der XY-Sonde. Zwei
 // Reihenfolgen sind zwingend:
-//   Schritt 1: erst homen, DANN die Halterung aufsetzen -- ein G28 mit
-//              Aufbau auf dem Bett ist ein Kollisionsrisiko (siehe
-//              ensureHomedBeforeSetup).
-//   Schritt 7: erst deaktivieren, DANN abziehen -- sonst startet Klipper
-//              beim naechsten Mal nicht mehr.
+//   - JEDES Homing findet bei leerem Bett statt: zuerst anstecken und
+//     aktivieren (das verwirft ueber FIRMWARE_RESTART ohnehin jedes
+//     bestehende Homing), DANN homen (ensureHomedAfterActivate), und ERST
+//     DANACH zum Aufsetzen der Halterung auffordern. Kein G28 -- auch kein
+//     Recovery-G28 -- nachdem die Halterung liegt (siehe xySendMounted).
+//   - Deaktivieren steht vor dem Abziehen/Abnehmen -- sonst startet
+//     Klipper beim naechsten Mal nicht mehr.
 //
 // Jeder confirmDialog-Ausgang wird geprueft, bevor es weitergeht (wie bei
 // dockJogLoop/dockToolLoop) - ein ignorierter Ausgang wuerde einen
@@ -3300,65 +3337,77 @@ function ensureHomedBeforeSetup() {
 // hier ist das Deaktivieren keine Option mehr, nur noch eine Bestaetigung.
 function xyWizard() {
   return confirmDialog({
-    title: "XY-Sonde: Vorbereiten",
-    body: "Zuerst werden die Achsen gehomt. Die Halterung kommt ERST " +
-          "DANACH aufs Bett -- ein Homing mit Aufbau auf dem Bett ist ein " +
-          "Kollisionsrisiko.",
-    okLabel: "Homen"
+    title: "XY-Sonde: Anstecken",
+    body: "Sonde jetzt per USB anstecken. Die Halterung kommt NOCH NICHT " +
+          "aufs Bett -- erst wird aktiviert und neu gehomt, und das " +
+          "Bett muss dafuer leer bleiben.",
+    okLabel: "Ist angesteckt"
   }).then(function (ok) {
     if (!ok) return null;
-    return ensureHomedBeforeSetup().then(function () {
+    return xyProbeCheckPresent().then(function () {
+      showToast("Sonde wird aktiviert, Klipper startet neu…", "info");
+      return xyProbeActivate();
+    }).then(function () {
+      showToast("Klipper ist bereit, homt jetzt…", "info");
+      return ensureHomedAfterActivate();
+    }).then(function () {
+      return sendGcodeWithRecovery("NOZZLE_LOCATOR_READ DURATION=1.0",
+                                   "Sonde prüfen");
+    }).then(function (r) {
+      if (!xyStepOk(r)) throw new Error("Sonde pruefen fehlgeschlagen.");
       return confirmDialog({
         title: "XY-Sonde: Aufsetzen",
-        body: "Halterung jetzt auf das Bett stellen und die Sonde anstecken.",
+        body: "Halterung jetzt auf das Bett stellen. AB HIER nicht mehr " +
+              "homen, ohne die Halterung vorher wieder abzunehmen.",
         okLabel: "Ist erledigt"
       });
     }).then(function (ok2) {
       if (!ok2) return null;
-      return xyProbeCheckPresent().then(function () {
-        showToast("Sonde wird aktiviert, Klipper startet neu…", "info");
-        return xyProbeActivate();
-      }).then(function () {
-        return sendGcodeWithRecovery("NOZZLE_LOCATOR_READ DURATION=1.0",
-                                     "Sonde prüfen");
-      }).then(function (r) {
-        if (!xyStepOk(r)) throw new Error("Sonde pruefen fehlgeschlagen.");
-        return confirmDialog({
-          title: "Trockenlauf",
-          body: "Beim ersten Mal dringend empfohlen: alle Werkzeugwechsel " +
-                "und Verfahrwege werden abgefahren, aber nie abgesenkt. " +
-                "Damit siehst du gefahrlos, ob der Wechselweg über die " +
-                "Halterung führt.",
-          okLabel: "Trockenlauf fahren",
-          cancelLabel: "Überspringen"
-        });
+      return confirmDialog({
+        title: "Trockenlauf",
+        body: "Beim ersten Mal dringend empfohlen: alle Werkzeugwechsel " +
+              "und Verfahrwege werden abgefahren, aber nie abgesenkt. " +
+              "Damit siehst du gefahrlos, ob der Wechselweg über die " +
+              "Halterung führt.",
+        okLabel: "Trockenlauf fahren",
+        cancelLabel: "Überspringen"
       }).then(function (runDry) {
         if (!runDry) return null;
-        return sendGcodeWithRecovery("CALIBRATE_XY_OFFSETS DRY_RUN=1",
-                                     "Trockenlauf").then(function (r) {
-          if (!xyStepOk(r)) throw new Error("Trockenlauf fehlgeschlagen.");
-        });
+        return xySendMounted("CALIBRATE_XY_OFFSETS DRY_RUN=1", "Trockenlauf");
       }).then(function () {
-        return sendGcodeWithRecovery("CALIBRATE_XY_OFFSETS", "XY-Messlauf");
-      }).then(function (r) {
-        if (!xyStepOk(r)) throw new Error("XY-Messlauf fehlgeschlagen.");
+        return xySendMounted("CALIBRATE_XY_OFFSETS", "XY-Messlauf");
+      }).then(function () {
         return updateAllProbeResults();
       }).then(function () {
         return alertDialog("Abschließen",
           "Die Sonde wird jetzt aus der Config entfernt und Klipper neu " +
-          "gestartet. Erst DANACH abziehen.",
+          "gestartet. Erst DANACH die Halterung abnehmen und die Sonde " +
+          "abziehen.",
           { okLabel: "Deaktivieren" });
       }).then(function () {
-        return xyProbeDeactivate();
+        // Schlaegt das Deaktivieren selbst fehl, steht die Halterung immer
+        // noch auf dem Bett -- der catch() unten muss das wissen.
+        return xyProbeDeactivate().catch(function (e) {
+          e.xyHolderMounted = true;
+          throw e;
+        });
       }).then(function () {
         return alertDialog("Fertig",
-          "Sonde ist deaktiviert. Sie kann jetzt abgezogen und die " +
-          "Halterung vom Bett genommen werden.");
+          "Sonde ist deaktiviert. Halterung jetzt vom Bett nehmen und die " +
+          "Sonde abziehen.");
       });
     });
   }).catch(function (err) {
+    var mounted = !!(err && err.xyHolderMounted);
     var detail = gcodeErrorMessage(err) || (err && err.message) ||
                  "Unbekannter Fehler";
+    var body = '<p class="mb-0">' + escapeHtml(detail) + '</p>';
+    if (mounted) {
+      body += '<p class="mt-2 mb-0 text-warning">' +
+        '<i class="bi bi-exclamation-triangle"></i> Die Halterung steht ' +
+        'noch auf dem Bett. ERST die Halterung abnehmen, DANN erst wieder ' +
+        'homen -- nicht homen, solange sie noch draufsteht.</p>';
+    }
     // Der wichtigste Zweig: egal, welcher Schritt scheitert, die Sonde
     // muss sich von hier aus deaktivieren lassen, ohne den Assistenten
     // erneut zu durchlaufen - sonst bleibt sie aktiviert stehen und der
@@ -3366,16 +3415,18 @@ function xyWizard() {
     // einzigen Optionen, die confirmDialog/alertDialog kennen; der Choice-
     // Wert 'extra' wird hier selbst ausgewertet (kein automatischer
     // extraAction-Callback in der bestehenden Dialog-Implementierung).
-    return alertDialog("XY-Assistent abgebrochen",
-      '<p class="mb-0">' + escapeHtml(detail) + '</p>',
+    return alertDialog("XY-Assistent abgebrochen", body,
       { extraLabel: "Sonde deaktivieren", extraClass: "btn-warning" }
     ).then(function (choice) {
       if (choice !== 'extra') return null;
       showToast("Sonde wird deaktiviert, Klipper startet neu…", "info");
       return xyProbeDeactivate().then(function () {
-        return alertDialog("Sonde deaktiviert",
-          "Die Sonde ist jetzt aus der Config entfernt. Sie kann abgezogen " +
-          "werden.");
+        return alertDialog("Sonde deaktiviert", mounted
+          ? "Die Sonde ist jetzt aus der Config entfernt. ERST die " +
+            "Halterung vom Bett nehmen, DANN erst wieder homen -- danach " +
+            "kann auch die Sonde abgezogen werden."
+          : "Die Sonde ist jetzt aus der Config entfernt. Sie kann " +
+            "abgezogen werden.");
       }).catch(function (err2) {
         var d2 = gcodeErrorMessage(err2) || (err2 && err2.message) ||
                  "Unbekannter Fehler";
@@ -3409,8 +3460,13 @@ function checkXyProbeStranded() {
       if (msg.indexOf('xyprobe') === -1 && msg.indexOf('mcu') === -1) return;
       return alertDialog(
         "XY-Sonde blockiert den Start",
-        "Klipper startet nicht, und in der Config steht noch die XY-Sonde. " +
-        "Wurde sie abgezogen, ohne sie vorher zu deaktivieren?",
+        '<p class="mb-2">Klipper startet nicht, und in der Config steht ' +
+        'noch die XY-Sonde. Wurde sie abgezogen, ohne sie vorher zu ' +
+        'deaktivieren?</p>' +
+        '<p class="mb-0 text-warning"><i class="bi bi-exclamation-triangle">' +
+        '</i> Dieser Check weiss nicht, ob die XY-Halterung noch auf dem ' +
+        'Bett steht. Erst pruefen und ggf. abnehmen, bevor irgendwo ' +
+        'gehomt wird.</p>',
         { extraLabel: "Sonde deaktivieren und neu starten",
           extraClass: "btn-warning" }
       ).then(function (choice) {
