@@ -519,6 +519,18 @@ class Offset:
 
         self.last_ref_tool = ref_tool
 
+        # XY_SOURCE=eddy: den Schalter mit den vorlaeufigen XY-Offsets aus
+        # dem Sonden-Lauf anfahren statt mit den Config-Offsets. Braucht
+        # eine frische Config, die noch keine XY-Offsets hat -- mit 5 mm
+        # Versatz trifft die Duese den Schalter sonst nicht. Die Config
+        # bleibt unberuehrt, es wird nichts zwischengespeichert.
+        xy_source = (gcmd.get('XY_SOURCE', 'config') or 'config').lower()
+        if xy_source not in ('config', 'eddy'):
+            raise gcmd.error("XY_SOURCE muss config oder eddy sein")
+        eddy_xy = None
+        if xy_source == 'eddy':
+            eddy_xy = self._xy_offsets_from_eddy(gcmd, ordered_tools)
+
         # Clean run
         self.probe_results = {}
         ref_trigger = None
@@ -545,7 +557,10 @@ class Offset:
                 self.gcode.run_script_from_command(
                     f"M109 S{extruder_temp}")
 
-            self.gcode.run_script_from_command("MOVE_TO_ZSWITCH")
+            if eddy_xy is not None:
+                self._move_to_zswitch_eddy(gcmd, eddy_xy[tool])
+            else:
+                self.gcode.run_script_from_command("MOVE_TO_ZSWITCH")
 
             z_calc_arg = f" Z_CALC={z_calc}" if z_calc else ""
             self.gcode.run_script_from_command(
@@ -572,6 +587,8 @@ class Offset:
                         self.probe_results[key]['z_offset'] = z_trig - ref_trigger
                 self.probe_results[key]['ref_tool'] = ref_tool
                 self.probe_results[key]['run_id'] = run_id
+                if eddy_xy is not None:
+                    self.probe_results[key]['xy_source'] = 'eddy'
                 zs_temp = self._tool_extruder_temp(tool)
                 if zs_temp is not None:
                     self.probe_results[key]['zswitch_temp'] = zs_temp
@@ -1767,10 +1784,44 @@ class Offset:
                 "NICHT homen, solange die Halterung auf dem Bett steht."
                 % tc_status)
 
+        # Bootstrap (Tobi, 2026-09-04): eine frische Config hat weder XY-
+        # noch Z-Daten. Gleicher Spalt braucht Z-Switch-Daten, der
+        # Z-Switch braucht XY-Offsets, um den Schalter zu treffen. Also
+        # drei Phasen in einem Lauf, Halterung bleibt stehen: XY grob
+        # (Amplitude) -> Z-Switch mit den vorlaeufigen XY-Werten -> XY fein
+        # (gleicher Spalt). Sind Z-Daten da, laeuft nur die dritte Phase.
+        bootstrap = (z_mode == 'switch' and not dry_run
+                     and self._xy_zswitch_triggers(ordered_tools) is None)
+        if bootstrap:
+            gcmd.respond_info(
+                "XY: keine Z-Switch-Daten fuer alle Tools -- Bootstrap in "
+                "drei Phasen: XY grob, Z-Switch, XY fein (gleicher Spalt).")
+
         prev_timeout = self._current_idle_timeout()
         self.gcode.run_script_from_command("SET_IDLE_TIMEOUT TIMEOUT=3600")
         results = {}
         try:
+            if bootstrap:
+                gcmd.respond_info("XY: Phase 1/3 -- grob, gleiche Amplitude")
+                coarse = self._run_xy_calibration(
+                    gcmd, locator, ref_tool, ordered_tools, False, temp,
+                    1, 'amplitude')
+                self.xy_results = coarse
+                self._save_xy_results()
+                gcmd.respond_info("XY: Phase 2/3 -- Z-Switch mit den "
+                                  "vorlaeufigen XY-Werten")
+                script = ("CALIBRATE_ALL_Z_OFFSETS XY_SOURCE=eddy REF=%d "
+                          "TOOLS=%s" % (ref_tool,
+                                        ",".join(str(t) for t in
+                                                 ordered_tools)))
+                if temp > 0:
+                    script += " EXTRUDER_TEMP=%d" % int(temp)
+                self.gcode.run_script_from_command(script)
+                if self._xy_zswitch_triggers(ordered_tools) is None:
+                    raise gcmd.error(
+                        "Z-Switch-Lauf hat nicht fuer alle Tools Daten "
+                        "geliefert -- Phase 3 nicht moeglich")
+                gcmd.respond_info("XY: Phase 3/3 -- fein, gleicher Spalt")
             results = self._run_xy_calibration(
                 gcmd, locator, ref_tool, ordered_tools, dry_run, temp,
                 iterations, z_mode)
@@ -1831,6 +1882,50 @@ class Offset:
         self.cmd_OFFSET_BEFORE_PICKUP_GCODE(gcmd)
         self.gcode.run_script_from_command("T%d" % tool_nr)
         self.cmd_OFFSET_AFTER_PICKUP_GCODE(gcmd)
+
+    def _xy_offsets_from_eddy(self, gcmd, tools):
+        """Vorlaeufige XY-Offsets je Tool aus dem letzten Sonden-Lauf, als
+        Carriage-Versatz gegenueber der gcode-Position des Schalters.
+
+        Der Sonden-Wert ist off(tool) - off(ref) in Carriage-Koordinaten;
+        die gcode-Position des Schalters trifft das Referenztool bei
+        Carriage = zswitch + off_cfg(ref). Also: Carriage(tool) = zswitch
+        + off_cfg(ref) + gemessen(tool)."""
+        res = self.xy_results or {}
+        ref = res.get('ref_tool')
+        if ref is None:
+            raise gcmd.error(
+                "XY_SOURCE=eddy: kein Sonden-Lauf vorhanden -- erst "
+                "CALIBRATE_XY_OFFSETS Z_MODE=amplitude fahren")
+        ref_cfg = self._xy_tool_offset(int(ref))
+        out = {}
+        for t in tools:
+            e = res.get(str(t)) or {}
+            if 'x' not in e or 'y' not in e:
+                raise gcmd.error(
+                    "XY_SOURCE=eddy: kein Sonden-Ergebnis fuer T%d" % t)
+            out[t] = (ref_cfg[0] + float(e['x']), ref_cfg[1] + float(e['y']))
+        return out
+
+    def _move_to_zswitch_eddy(self, gcmd, off):
+        """MOVE_TO_ZSWITCH mit explizitem Carriage-Versatz statt der
+        Tool-Offsets aus gcode_move -- Bewegung in Toolhead-Koordinaten,
+        sonst identisch: erst XY auf aktueller Hoehe, dann Z herunter."""
+        if not self.is_homed():
+            raise gcmd.error("Must home first")
+        if not self.has_switch_pos():
+            raise gcmd.error("Z switch positions invalid")
+        toolhead = self.printer.lookup_object('toolhead')
+        toolhead.wait_moves()
+        cur = toolhead.get_position()
+        toolhead.manual_move([self.x_pos + off[0], self.y_pos + off[1], cur[2]],
+                             self.move_speed)
+        target_z = max(self.z_pos + self.lift_z, self.safe_start_z)
+        toolhead.manual_move([None, None, target_z], self.z_move_speed)
+        toolhead.wait_moves()
+        # gcode_move kennt die neue Position nicht -- wie bei manual_move
+        # ueblich nachziehen, sonst rechnet der naechste G0 von der alten.
+        self.gcode_move.reset_last_position()
 
     def _xy_zswitch_triggers(self, tools):
         """z_trigger je Tool aus dem letzten Z-Switch-Lauf, oder None, wenn
@@ -1933,9 +2028,25 @@ class Offset:
             # Ausloesepunkte -- ein hoeherer Ausloesepunkt heisst laengere
             # Duese, also hoeher fahren), sonst ebenfalls auf die
             # Zielamplitude.
-            if tool_nr == ref_tool or zs is None:
+            if zs is None:
                 z_reached = locator.approach_z(baseline)
                 z_note = "Zielamplitude"
+            elif tool_nr == ref_tool:
+                # Kleiner Spalt (Tobi, 2026-09-04): die Duesenlaengen sind
+                # bekannt, also nicht auf Amplitude, sondern auf Geometrie:
+                # holder_top_z + fine_gap. Das kuerzeste Tool darf dabei
+                # nicht unter den Boden -- sonst alle gemeinsam anheben.
+                z_target = locator.holder_top_z + locator.fine_gap
+                dz_min = min(zs[t] - zs[ref_tool] for t in ordered_tools)
+                lift = locator._z_floor() - (z_target + dz_min)
+                if lift > 0:
+                    z_target += lift
+                    gcmd.respond_info(
+                        "XY: Feinspalt um %.3f mm angehoben, damit das "
+                        "kuerzeste Tool ueber dem Z-Boden bleibt" % lift)
+                locator._move([None, None, z_target], locator.approach_speed)
+                z_reached = z_target
+                z_note = "Feinspalt %.2f mm" % (z_target - locator.holder_top_z)
             else:
                 dz = zs[tool_nr] - zs[ref_tool]
                 z_target = ref_z + dz
@@ -2022,6 +2133,14 @@ class Offset:
                     % (key, dev_x, dev_y, locator.max_offset))
         results['ref_tool'] = ref_tool
         results['timestamp'] = int(time.time())
+        results['z_mode'] = 'switch' if zs is not None else 'amplitude'
+        if zs is not None:
+            # Kennung des Z-Switch-Laufs, auf dem der Spalt beruht. Werden
+            # spaeter Duesen gewechselt und Z neu kalibriert, ist dieser
+            # XY-Lauf bei falschem Spalt entstanden -- die Webapp kann das
+            # gegen probe_results[..].run_id pruefen.
+            results['zswitch_run_id'] = (
+                self.probe_results.get(str(ref_tool), {}).get('run_id'))
         return results
 
     def _xy_tool_offset(self, tool_nr):

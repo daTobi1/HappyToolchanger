@@ -39,6 +39,7 @@ park_z: 60
 search_span: 30
 holder_top_z: 53
 min_gap: 0.5
+fine_gap: 0.75
 
 sweep_span: 8
 sweep_step: 1
