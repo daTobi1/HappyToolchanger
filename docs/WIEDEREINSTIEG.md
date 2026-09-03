@@ -56,7 +56,9 @@ grob mittig darunter. `park_z` ist Freihöhe und Fahrhöhe zugleich, ein
 `safe_z` gibt es nicht mehr; `holder_top_z` bleibt als harter Z-Boden.
 Kommando: `NOZZLE_LOCATOR_PARK [X= Y= Z=]`, gebaut und im Assistenten als
 Schritt „Anfahren" verdrahtet (Node-Tests: 80). Der Messlauf nimmt später
-`locator.parked`, die tatsächlich angefahrene Position.
+`locator.parked`, die tatsächlich angefahrene Position. Am 250er
+verifiziert: ungehomt wird verweigert, nach `G28` steht der Kopf auf
+X 125 / Y 130 / Z 60 (Bettmesh-Mitte), Z unter dem Boden wird abgelehnt.
 
 **Nächste Schritte in dieser Reihenfolge:**
 
