@@ -45,8 +45,8 @@ Standard-Klipper per BOOT-Taster; der Pfad steht in
 | Samples | 480 in 1 s (400 Hz Rate, skaliert sauber mit der Dauer) |
 | Fehler | 0 |
 
-Damit trägt der Ansatz. Der einzige offene Vorversuch aus dem Plan ist
-der Metalltest (Hand oder Düse über die Spule, Frequenz muss steigen).
+Metalltest: eine von Hand darüber gehaltene Düse hebt die Frequenz um ~9.700 Hz
+(sd ~200 Hz durch das Zittern der Hand). Damit trägt der Ansatz.
 
 **Nächste Schritte in dieser Reihenfolge:**
 
