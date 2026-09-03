@@ -1,6 +1,6 @@
-# XY-Offset-Kalibrierung: offene Arbeiten, sobald die zweite Eddy-Spule da ist
+# XY-Offset-Kalibrierung: offene Arbeiten und Befunde der ersten Messläufe
 
-Die XY-Offset-Kalibrierung per Eddy-Spule ist entworfen, geplant und zur Hälfte gebaut. Was fehlt, hängt an der zweiten Spule, die es noch nicht gibt. Dieses Issue hält fest, was noch zu tun ist, was beim Bestellen und Bauen zu beachten ist, und welche Stellen nachgeprüft werden müssen, weil sie ohne echte Hardware entstanden sind.
+Die XY-Offset-Kalibrierung per Eddy-Spule ist entworfen, gebaut und am 250er einmal komplett gelaufen (Stand 2026-09-04, Abschnitt 8). Dieses Issue hält fest, was noch zu tun ist, was beim Bauen zu beachten war, welche Stellen ohne Hardware entstanden sind, und was die ersten echten Messläufe gelehrt haben. Die Abschnitte 1–7 sind die Vorgeschichte, Abschnitt 8 der aktuelle Stand.
 
 **Design:** `docs/superpowers/specs/2026-08-31-eddy-xy-offset-design.md`
 **Plan:** `docs/superpowers/plans/2026-08-31-eddy-xy-offset.md`
@@ -13,9 +13,9 @@ Die XY-Offset-Kalibrierung per Eddy-Spule ist entworfen, geplant und zur Hälfte
 |---|---|
 | 1 — Fit-Mathematik (`nozzle_locator_fit.py`) | **fertig**, 18 Zusicherungen, getestet |
 | 2 — Sensoranbindung (`nozzle_locator.py`) | **fertig**, am 250er verifiziert (2026-09-03), siehe 2.1 |
-| 3 — Z-Anfahrt, Sweep, Ortung | offen, **braucht die Halterung** |
+| 3 — Z-Anfahrt, Sweep, Ortung | **fertig**, am 250er verifiziert (2026-09-04), siehe Abschnitt 8 |
 | 4 — Extraktion `_resolve_tool_run()` | **gestrichen** (siehe unten) |
-| 5 — `CALIBRATE_XY_OFFSETS` | offen, hängt an Task 3 |
+| 5 — `CALIBRATE_XY_OFFSETS` | **fertig**, ein kompletter Lauf über T0–T3 am 250er (2026-09-04), siehe Abschnitt 8 |
 | 6 — Extraktion `updateConfigFile()` | **fertig**, Test grün |
 | 7 — XY-Block in der Webapp | **vorgebaut ohne Hardware**, Node-Tests gruen, siehe Abschnitt 4 |
 | 8–9 — Assistent, Kamera-Position | **vorgebaut ohne Hardware**, siehe Abschnitt 4 |
@@ -114,7 +114,7 @@ Die UI liest `printer.offset.xy_results` in einer Form, die bisher nur auf dem P
         spread_x, spread_y, z_reached}, ..., "ref_tool": 0 }
 ```
 
-**Wenn Task 5 davon abweicht, zeigt die Tabelle stillschweigend „nicht gemessen" statt zu krachen.** Das ist als Verhalten richtig, macht den Fehler aber unsichtbar. Beim ersten echten Lauf also nicht nur schauen, ob Zahlen erscheinen, sondern ob **alle** Spalten gefüllt sind — besonders Z-Vergleich und Drift-Bias.
+**Stand 2026-09-04:** Task 5 liefert genau diese Schlüssel und zusätzlich je Tool `pred_x`, `pred_y` (Vorhersage aus den Config-Offsets), `amplitude` (Hz über der Basislinie auf der Messhöhe), `coil_temp`, `z_mode`; auf oberster Ebene `timestamp`, `z_mode` und `zswitch_run_id` (Kennung des Z-Switch-Laufs, auf dem der Spalt beruht). Die Tabelle wurde **noch nicht im Browser** gegen diese Daten gesehen — die Daten liegen jetzt aber real in `printer.offset.xy_results` am 250er, der Check ist also möglich. Offen: `amplitude` und `zswitch_run_id` werden noch nicht angezeigt; letzteres sollte eine Warnung auslösen, wenn `probe_results[..].run_id` inzwischen neuer ist.
 
 ### 4.2 Der einzige bisher erreichbare Renderpfad ist der leere
 
@@ -193,11 +193,11 @@ Der Messlauf setzt ihn selbst auf 3600 s und stellt ihn danach zurück. Bei Hand
 
 ## 6. Inhaltliche Risiken, die noch offen sind
 
-### 6.1 Heizblock statt Düsenspitze (das größte)
+### 6.1 Heizblock statt Düsenspitze (das größte) — **eingetreten, gemessen**
 
 Der Vorversuch maß eine **nackte Düse** in einem Halter. Real nähert sich der komplette Hotend inklusive Heizblock, und die Spule ortet den Metallschwerpunkt in ihrem Feld, nicht die Spitze. Liegt der Schwerpunkt pro Tool anders — Einschraubtiefe, Blockverdrehung, Fertigungstoleranz — kürzt sich der Fehler **nicht** in der Differenz weg.
 
-Das lässt sich vorab nicht ausräumen. Der gemeinsame XY-Block macht die erste Version selbst zum Messinstrument dafür: Eddy gegen Kamera, pro Tool.
+**2026-09-04 am 250er bestätigt, Zahlen in Abschnitt 8.** Der Y-Scheitel von T0 wandert um **~240 µm je mm Spalt** in Richtung des Heizblocks (+Y); X kaum. Gegen die Kamera-Offsets liegt die Sonde in Y bei allen drei Tools rund 0,5 mm daneben, in dieselbe Richtung. Zwei Gegenmaßnahmen sind gebaut (gleicher Spalt aus den Z-Switch-Daten, kleiner Feinspalt), eine Ursache bleibt: die Eddy-NG-Sonde an T0, 16 mm in +Y neben der Düse.
 
 ### 6.2 Der bidirektionale Fix ist hergeleitet, nicht gemessen
 
@@ -266,3 +266,73 @@ Dazu `NOZZLE_LOCATE AXIS=X REPEATS=20` gegen 8–10 Kamerazentrierungen, einmal 
 Beim Refactor in Task 6 ist aufgefallen: **alle vier Stellen, die Config-Dateien schreiben, ignorieren den HTTP-Status** von Lesen und Schreiben. Ein fehlgeschlagener Moonraker-Write — Rechteproblem, 500, Verbindungsabbruch — wird von der Offset-UI **still als Erfolg angezeigt**. Das ist vorbestehend und wurde bewusst nicht mitgefixt, weil Task 6 ein reiner Refactor war. Es sitzt jetzt aber an *einer* Stelle (`updateConfigFile` in `webapp/js/tools.js`) statt an vieren und ließe sich dort in einem Zug beheben — sinnvollerweise so, dass ein Fehlschlag pro Tool gemeldet wird, ohne die Schleife über die restlichen Tools abzubrechen.
 
 Verdient eine eigene Task.
+
+## 8. Die ersten echten Messläufe am 250er (2026-09-03/04)
+
+Halterung 53 mm hoch (`holder_top_z: 53`), `park_z: 60`, T0 als Referenz, Sonde von Hand grob mittig unter die Düse gestellt. Vier Läufe waren nötig, bis einer über alle vier Tools durchlief; jeder Abbruch hat etwas gelehrt, und jede Lehre ist inzwischen Code.
+
+### 8.1 Was die Abbrüche gelehrt haben
+
+| Lauf | Abbruch | Ursache | Fix |
+|---|---|---|---|
+| 1 | Y-Grobsuche: „Scheitel am Rand des Fensters (115)" | Ab 8 mm nach vorn kommt der **Heizblock** über die Spule: +100.000 Hz gegen +6.000 Hz für die Düse. Die Grobsuche nahm das globale Maximum. | `nozzle_locator_fit.local_peak`: der lokale Buckel, der der Vorhersage am nächsten liegt; die echte Y-Kurve ist als Testfall festgenagelt |
+| 2 | T1: „Zielamplitude bei Z 53,5 nicht erreicht" | Zwei Fehler auf einmal. `approach_z` senkte erst und las dann, deshalb landete T0 bei der zweiten Anfahrt blind am Boden. Und T1 wurde im Fenster von T0 gesucht — **T1–T3 liegen ~5 mm in Y neben T0**, das Feinfenster von 8 mm sieht sie nie. | Erst lesen, dann senken. **Grobsuche je Tool**, zentriert auf Referenzscheitel plus Config-Offset-Differenz; Suchhöhe bis zur Mindestamplitude, Zielamplitude erst über dem Grobscheitel |
+| 3 | T1-Grobsuche: „Kein lokaler Scheitel über 2000 Hz" | Suchhöhe genau bis 2.000 Hz angefahren, die 2-mm-Sweeppunkte lagen dann bei 1.987 und 1.982 Hz. | Suchhöhe bis zum **Doppelten** der Mindestamplitude |
+| 4 | — | lief durch | — |
+
+Dazu aus Lauf 1 und 2: **jeder G-Code-Fehler setzt den Toolchanger auf `uninitialized`** (`toolchanger._handle_command_error`), das zuletzt montierte Tool ist danach im Status weg, und `T<n>` geht erst wieder nach `INITIALIZE_TOOLCHANGER` — oder nach einem Homing, das sich mit Halterung auf dem Bett verbietet. `CALIBRATE_XY_OFFSETS` prüft den Status deshalb vorher und wechselt bei Abbruch **selbst zurück auf das Referenztool**, solange der Fehler das Kommando noch nicht verlassen hat (Tobis Wunsch). Der Kopf geht dabei erst auf `park_z`; er kann 0,5 mm über der Halterung stehen.
+
+Und: die Plausibilitätsgrenze `max_offset` misst jetzt die **Abweichung von der Vorhersage**, nicht vom Referenztool — 5 mm Offset sind hier normal.
+
+### 8.2 Ergebnis von Lauf 4 (gleiche Amplitude, 6.000 Hz)
+
+| Tool | Sonde X | Kamera X | ΔX | Sonde Y | Kamera Y | ΔY | Messhöhe | Spannweite X/Y |
+|---|---|---|---|---|---|---|---|---|
+| T1 | +0,382 | +0,330 | +52 µm | −5,693 | −5,050 | **−643 µm** | 54,00 | 3,5 / 1,5 µm |
+| T2 | +0,590 | +0,440 | +150 µm | −5,015 | −4,560 | **−455 µm** | 54,50 | 2,0 / 2,6 µm |
+| T3 | +0,142 | −0,180 | +322 µm | −6,444 | −5,840 | **−604 µm** | 54,00 | 0,8 / 2,0 µm |
+
+Drift-Bias 16–24 µm in X, 7–11 µm in Y — der bidirektionale Sweep ist nötig und reicht. Die Kamera-Offsets sind die, mit denen Tobi druckt; sie gelten als richtig.
+
+**Wiederholbarkeit exzellent, Richtigkeit nicht.** Spannweite über drei Läufe 1–4 µm, aber ein systematischer Fehler von ~0,5 mm in Y bei allen Tools in dieselbe Richtung, und in X bis 0,3 mm.
+
+### 8.3 Der Höhentest, der die Ursache zeigt
+
+T0 dreimal geortet, nur die Höhe verändert:
+
+| Spalt Düse–Spule | Y-Scheitel | X-Scheitel |
+|---|---|---|
+| 2,5 mm | 129,070 | 124,151 |
+| 1,5 mm | 128,902 | 124,146 |
+| 0,75 mm | 128,652 | 124,111 |
+
+**Der Y-Scheitel wandert um ~240 µm je mm Spalt** zum Heizblock hin (+Y), X kaum. Die Spule misst den Metallschwerpunkt; je größer der Spalt, desto mehr zählt der Block.
+
+Daraus erklärt sich die Tabelle in 8.2 fast vollständig:
+
+- **Gleiche Amplitude war nicht gleicher Spalt.** T1 erreichte 6.000 Hz erst 0,5 mm tiefer als T0, obwohl der Z-Switch sagt, dass T1s Düse 0,31 mm *weiter* herausragt. T1s Düse gibt bei gleichem Spalt also deutlich weniger Signal — anderes Material oder andere Bauform (Risiko 6.3, real). T1 maß bei 0,7 mm Spalt, T0 bei 1,5 mm → ~0,2 mm des Y-Fehlers; T3 analog ~0,07 mm.
+- **Der Rest von ~0,45 mm ist bei allen drei gleich** und passt zu Metall, das nur T0 hat: die **Eddy-NG-Sonde, 16 mm in +Y neben der Düse**, wenige Millimeter über der Spule. Sie zieht T0s Scheitel nach +Y, alle anderen Tools erscheinen relativ dazu nach −Y verschoben. Nicht bewiesen — plausibelste Erklärung.
+- Nur T1–T3 untereinander verglichen: Y-Abweichung 40–190 µm, X 100–270 µm. **T3 in X (+0,3 mm) ist unerklärt.**
+
+### 8.4 Was daraus gebaut wurde (noch ohne Messlauf dahinter)
+
+- **`Z_MODE=switch` (Default): gleicher Spalt aus den Z-Switch-Daten.** Das Referenztool legt den Spalt fest, jedes weitere Tool bekommt `ref_z` plus Differenz der Auslösepunkte (`z_trigger`). Die Amplitude wird gemessen, gemeldet und gespeichert, nicht erzwungen. Ohne vollständige Z-Daten Rückfall auf `Z_MODE=amplitude` mit Hinweis.
+- **`fine_gap` (Default 0,75 mm):** im Spaltmodus misst das Referenztool auf `holder_top_z + fine_gap` statt auf Zielamplitude; liegt das kürzeste Tool damit unter dem Boden, werden alle gemeinsam angehoben. Setzt eine auf ~0,2 mm genau gemessene Halterungshöhe voraus. Für Tobis Tools heißt das Z 53,75 / 54,06 / 53,79 / **53,54** — T3 nur 0,04 mm über dem Boden.
+- **Bootstrap für frische Configs:** ohne XY-Offsets trifft der Z-Switch nicht (5 mm daneben). `CALIBRATE_XY_OFFSETS` erkennt fehlende Z-Daten und läuft dann in drei Phasen mit stehender Halterung: XY grob (Amplitude) → `CALIBRATE_ALL_Z_OFFSETS XY_SOURCE=eddy` (Schalter mit den vorläufigen Sonden-Werten anfahren, Config unberührt) → XY fein (Spalt). Der Schalter sitzt am 250er bei X 30 / Y 1, weit weg von der Halterung, Anfahrt auf der Freihöhe.
+- Das Ergebnis trägt `zswitch_run_id`. Werden Düsen gewechselt und Z neu kalibriert, ist ein alter XY-Lauf bei falschem Spalt entstanden — die Webapp sollte das anzeigen (offen, siehe 4.1).
+
+**Der nächste Lauf ist genau dieser:** Spaltmodus mit `fine_gap` 0,75. Erwartung: der spaltbedingte Anteil verschwindet, der T0-Sonden-Anteil (~0,45 mm in Y) bleibt. Bleibt er, gibt es zwei Wege — ein anderes Tool als Referenz nehmen, oder T0s Anteil einmal per Kamera bestimmen und fest verrechnen.
+
+### 8.5 Was das Verfahren heute kann und was nicht
+
+- **Als Driftwächter gegen eine per Kamera gesetzte Referenz: sofort brauchbar.** 1–4 µm Wiederholbarkeit; eine Verschiebung von 50 µm nach einem Crash oder Düsenwechsel fällt sicher auf. Das ist der Fall „systematische, aber konstante Abweichung je Tool" aus 6.5.
+- **Als Absolutverfahren:** in Y derzeit nicht, in X grenzwertig. Ob Spaltmodus plus kleiner Spalt das ändert, entscheidet der nächste Lauf.
+- Die Frage aus 6.5 („genauer als die Kamera?") ist damit **halb** beantwortet: wiederholbarer ja, richtiger nein — noch nicht.
+
+### 8.6 Praktische Lehren für den Betrieb
+
+- Jede Code-Änderung an einem Klipper-Modul kostet einen Zyklus: Halterung runter, Service-Neustart, Homen, QGL, `G28 Z`, `T0`, `NOZZLE_LOCATOR_PARK`, Halterung wieder unter die Düse. Vier Läufe = vier Zyklen. Deshalb vor jedem Neustart alles zusammen fixen, was absehbar ist.
+- Der Messlauf über vier Tools dauert ~15–19 Minuten. Die HTTP-Verbindung reißt dabei sicher ab (`{transport}`), deshalb per `gcode_store` und `idle_timeout.state` beobachten, nie auf die Antwort warten.
+- Die Basislinie auf `park_z` liegt ~1.400 Hz über der echten Freiluft — die Düse ist 7 mm über der Spule schon schwach sichtbar. Für Amplituden-Schwellen unerheblich, für absolute Vergleiche mit dem Vorversuch nicht vergessen.
+- `_return_to_ref_tool` läuft bei den Z-Kalibrierungen bewusst *nicht* bei Abbruch (Tool zum Nachsehen montiert lassen). Der XY-Lauf macht es anders, weil bei ihm eine Halterung auf dem Bett steht und ein unbekanntes Tool im Kopf gefährlicher ist als ein verlorener Befund.
+

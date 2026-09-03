@@ -171,6 +171,9 @@ park_z: 60                # Werte hierher zurück. park_z = Freihöhe zum
 search_span: 30           # Bereich der Grobsuche um die Anfahrposition
 holder_top_z: 8           # Oberkante der Halterung (Bauhöhe)
 min_gap: 0.5              # harter Z-Boden = holder_top_z + min_gap
+fine_gap: 0.75            # Spalt der Feinmessung (Z_MODE=switch), über
+                          # holder_top_z; klein, weil der Heizblock den
+                          # Scheitel um ~240 µm je mm Spalt verzieht
 
 sweep_span: 8             # Feinsweep, symmetrisch um den Grobscheitel
 sweep_step: 1
@@ -243,9 +246,28 @@ großen Schritten fahren und erst darunter tasten — der Boden bleibt hart.
 dieser Höhe untergeschoben, also ist sie per Konstruktion frei. Ein
 eigenes `safe_z` gibt es nicht mehr.
 
-**Zu Schritt 9c:** alle Tools werden auf dieselbe *Amplitude* angefahren,
-nicht auf dasselbe kommandierte Z — nur so misst jedes Tool bei gleichem
-Spalt. Die Differenz im kommandierten Z ist dann der Z-Offset-Unterschied.
+**Zu Schritt 9c — revidiert am 2026-09-04:** gleiche *Amplitude* ist
+**nicht** gleicher Spalt, sobald Düsen verschieden viel Signal geben (T1
+am 250er: 0,7 mm Spalt gegen 1,5 mm bei T0). Und der Spalt ist nicht
+egal: der Heizblock verzieht den Scheitel um ~240 µm je mm. Deshalb
+`Z_MODE=switch` (Default): das Referenztool misst auf
+`holder_top_z + fine_gap`, jedes weitere Tool auf seiner Differenz der
+Z-Switch-Auslösepunkte dazu — gleicher physischer Spalt, die Amplitude
+wird nur gemeldet. `Z_MODE=amplitude` bleibt als Rückfall ohne Z-Daten.
+
+**Zu Schritt 5/6 — revidiert:** die Grobsuche läuft **je Tool**,
+zentriert auf Referenzscheitel plus Config-Offset-Differenz, und nimmt den
+*lokalen* Buckel, der dieser Vorhersage am nächsten liegt (der Heizblock
+liefert am Fensterrand +100 kHz). Suchhöhe bis 2·`min_amplitude`.
+
+**Bootstrap (frische Config):** ohne XY-Offsets trifft der Z-Switch
+nicht. Fehlen Z-Daten, läuft `CALIBRATE_XY_OFFSETS` in drei Phasen mit
+stehender Halterung: XY grob (Amplitude) → `CALIBRATE_ALL_Z_OFFSETS
+XY_SOURCE=eddy` → XY fein (Spalt).
+
+**Bei Abbruch:** Kopf auf `park_z`, zurück auf das Referenztool, dann den
+Fehler weiterreichen — solange der Fehler das Kommando noch nicht
+verlassen hat, denn danach ist der Toolchanger `uninitialized`.
 
 ## 6. Assistent und Steck-Flow
 

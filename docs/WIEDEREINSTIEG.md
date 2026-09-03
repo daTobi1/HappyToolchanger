@@ -13,9 +13,9 @@ Stand: 2026-09-03, alles auf `main` und gepusht. Die Spule ist da, haengt per US
 |---|---|
 | 1 — Fit-Mathematik `nozzle_locator_fit.py` | **fertig**, 18 Zusicherungen |
 | 2 — Sensoranbindung `nozzle_locator.py` | **fertig**, am 250er verifiziert (3,13 MHz, sd 21 Hz, 0 Fehler) |
-| 3 — Z-Anfahrt, Sweep, Ortung | offen — **naechster Schritt**, braucht die Halterung |
+| 3 — Z-Anfahrt, Sweep, Ortung | **fertig**, `NOZZLE_LOCATE X/Y/DIAG`, am 250er verifiziert |
 | 4 — Extraktion `_resolve_tool_run()` | **gestrichen**, siehe §4 |
-| 5 — `CALIBRATE_XY_OFFSETS` | offen, hängt an Task 3 |
+| 5 — `CALIBRATE_XY_OFFSETS` | **fertig**, ein kompletter Lauf über T0–T3 am 2026-09-04 |
 | 6 — Extraktion `updateConfigFile()` | **fertig** |
 | 7–9 — Webapp (Block, Assistent, Kamera) | **fertig gebaut, nie im Browser gesehen** |
 
@@ -60,17 +60,29 @@ Schritt „Anfahren" verdrahtet (Node-Tests: 80). Der Messlauf nimmt später
 verifiziert: ungehomt wird verweigert, nach `G28` steht der Kopf auf
 X 125 / Y 130 / Z 60 (Bettmesh-Mitte), Z unter dem Boden wird abgelehnt.
 
+**Stand 2026-09-04: alles gebaut, ein kompletter Messlauf ist durch.**
+Halterung 53 mm, vier Läufe bis zum ersten Durchlauf, Ergebnis und
+Bewertung in `xy-offset-offene-arbeiten.md` §8. Kurz: Wiederholbarkeit
+1–4 µm, aber ~0,5 mm systematisch daneben in Y, weil die Spule den
+Heizblock mitsieht (240 µm je mm Spalt) und T0 die Eddy-NG-Sonde trägt.
+Gegenmaßnahmen gebaut, aber **noch nicht gefahren**: gleicher Spalt aus
+den Z-Switch-Daten (`Z_MODE=switch`) und kleiner Feinspalt (`fine_gap`).
+
 **Nächste Schritte in dieser Reihenfolge:**
 
-1. **Halterung** mit bekannter Bauhöhe, `holder_top_z` in der `.disabled`
-   eintragen (steht derzeit auf dem Plan-Default 8 mm). Ein fester Sitz
-   ist nicht mehr nötig.
-2. **Task 3 bauen** (Plan hat den vollständigen Code): Z-Anfahrt, Sweep,
-   `NOZZLE_LOCATE`. Zwei Planannahmen sind beim Bau von Task 2 gefallen
-   und gelten auch für Task 3 — siehe §3 d).
-3. Dann Task 5.
-4. **Erst danach die Webapp im Browser ansehen.** Sie ist nie geöffnet
-   worden; siehe §3.
+1. **Den Spaltmodus-Lauf fahren.** Klipper läuft schon auf dem Stand.
+   Ablauf: Bett leer → `G28`, `QUAD_GANTRY_LEVEL`, `G28 Z`,
+   `SET_IDLE_TIMEOUT TIMEOUT=3600`, `T0`, `NOZZLE_LOCATOR_PARK` → Sonde
+   unter die Düse → `CALIBRATE_XY_OFFSETS`. Erwartung: Y-Fehler schrumpft
+   auf den T0-Sonden-Anteil (~0,45 mm). Beobachten per `gcode_store`,
+   nicht auf die HTTP-Antwort warten.
+2. Bleibt der T0-Anteil: Lauf mit `REF_TOOL=1` und die Differenzen
+   T2−T1, T3−T1 gegen die Kamera stellen. Stimmen die, ist T0 der
+   Störer, nicht das Verfahren.
+3. **Webapp im Browser öffnen** — jetzt liegen echte Daten in
+   `printer.offset.xy_results`. Tabelle, Δ-Spalte, Sparkline prüfen;
+   `amplitude` und `zswitch_run_id` fehlen dort noch (§8.4).
+4. `NOZZLE_LOCATE AXIS=DIAG` einmal fahren (Kreuzkopplung, ρ).
 
 ---
 
@@ -110,6 +122,20 @@ für Task 3 im Plan ruft nur `read_frequency()` auf und ist davon nicht
 betroffen — aber wer dort direkt an den Sensor geht, muss es wissen.
 Der Wächtertest `check_klipper_api.py` nagelt beides fest.
 
+**e) Jeder G-Code-Fehler setzt den Toolchanger auf `uninitialized`.**
+Danach ist kein Tool mehr im Status, `T<n>` geht erst nach
+`INITIALIZE_TOOLCHANGER` (erkennt das Tool, fährt nicht) — oder nach
+einem Homing, das sich mit Halterung auf dem Bett verbietet. Der
+XY-Lauf prüft den Status vorher und wechselt bei Abbruch selbst zurück
+auf das Referenztool. → `xy-offset-offene-arbeiten.md` §8.1
+
+**f) Die Spule misst den Metallschwerpunkt, nicht die Spitze.** Der
+Heizblock liegt in +Y hinter der Düse und zieht den Y-Scheitel um
+~240 µm je mm Spalt; T0 trägt zusätzlich die Eddy-NG-Sonde. Deshalb
+gleicher Spalt aus den Z-Switch-Daten und ein kleiner Feinspalt — und
+deshalb ist die Grobsuche ein *lokaler* Buckel, nie das globale Maximum.
+→ `xy-offset-offene-arbeiten.md` §8.3
+
 ---
 
 ## 4. Entscheidungen, die schon getroffen sind
@@ -125,6 +151,10 @@ Damit die nächste Sitzung sie nicht neu aufmacht.
 | **Z nur als Vergleichswert** | die Z-Anfahrt ist ohnehin Pflicht, aber der Z-Switch misst die Düsenspitze und ist damit prinzipiell richtiger |
 | **XY-Default kalt messen** | der XY-Offset ist weitgehend temperaturunabhängig; der Heizblock dehnt sich nach unten |
 | **Direkt auf `main`** | Tobis Entscheidung, entspricht der übrigen Historie |
+| **Grobsuche je Tool, Vorhersage aus Config-Offsets** | T1–T3 liegen ~5 mm neben T0; ein gemeinsames Fenster findet sie nicht |
+| **Gleicher Spalt aus Z-Switch-Daten, nicht gleiche Amplitude** | Amplitude hängt vom Düsenmaterial ab (T1 gibt bei gleichem Spalt weniger Signal); der Block verzieht den Scheitel je nach Spalt |
+| **Bei Abbruch zurück auf das Referenztool** | Tobis Wunsch; mit Halterung auf dem Bett ist ein unbekanntes Tool im Kopf gefährlicher als ein verlorener Befund |
+| **Bootstrap XY grob → Z-Switch → XY fein** | frische Config hat weder XY noch Z; der Schalter braucht XY, der Spalt braucht Z |
 
 ---
 
@@ -142,10 +172,16 @@ Damit die nächste Sitzung sie nicht neu aufmacht.
 
 ## 6. Die Frage, die am Ende zählt
 
-Sie ist **weiterhin unbeantwortet**, und alles oben dient nur dazu, sie
-beantworten zu können:
+Sie ist **halb beantwortet** (2026-09-04, Details §8 der offenen
+Arbeiten):
 
 > Ist das Eddy-Verfahren genauer als die Kamera von Hand?
+
+**Wiederholbarer: ja, mit Abstand** — 1–4 µm Spannweite über drei Läufe.
+**Richtiger: noch nicht** — ~0,5 mm systematisch in Y, bis 0,3 mm in X,
+Ursache Heizblock und T0-Sonde. Als Driftwächter gegen eine per Kamera
+gesetzte Referenz ist es damit heute schon brauchbar; ob es die Kamera
+ersetzt, entscheidet der Spaltmodus-Lauf. Die ursprüngliche Planung:
 
 Der Vorversuch lieferte σ = 9,87 µm aus n = 5 — Konfidenzintervall 5,9 bis
 28,4 µm. Der Test kann „exzellent" und „unbrauchbar" statistisch nicht
