@@ -508,11 +508,15 @@ class NozzleLocator:
         # Kein calibration-Argument: es gibt keine Hoehenkarte.
         self.sensor = ldc1612.LDC1612(config)
 
-        # Suchgeometrie
-        self.search_x = config.getfloat('search_x')
-        self.search_y = config.getfloat('search_y')
+        # Anfahrposition (Aenderung 2026-09-03, Spec R-B'): der Kopf faehrt
+        # hierhin, der Nutzer stellt die Sonde darunter. X/Y optional --
+        # fehlen sie, Bettmitte aus den Achsgrenzen (siehe park_position).
+        # park_z ist Freihoehe zum Unterschieben UND Fahrhoehe aller
+        # Verfahrwege; ein eigenes safe_z gibt es nicht mehr.
+        self.park_x = config.getfloat('park_x', None)
+        self.park_y = config.getfloat('park_y', None)
+        self.park_z = config.getfloat('park_z', 60.0, above=0.)
         self.search_span = config.getfloat('search_span', 30.0, above=0.)
-        self.safe_z = config.getfloat('safe_z', 15.0, above=0.)
         self.holder_top_z = config.getfloat('holder_top_z', 0.0, minval=0.)
         self.min_gap = config.getfloat('min_gap', 0.5, above=0.)
 
@@ -645,10 +649,10 @@ serial: /dev/serial/by-id/HIER_EINTRAGEN
 i2c_mcu: xyprobe
 i2c_bus: i2c0f
 
-search_x: 125
-search_y: 125
+#park_x: 125
+#park_y: 125
+park_z: 60
 search_span: 30
-safe_z: 15
 holder_top_z: 8
 min_gap: 0.5
 
@@ -664,8 +668,9 @@ target_amplitude: 6000
 max_offset: 5.0
 ```
 
-Für `configs/350/` dieselben Dateien mit `search_x: 175`, `search_y: 175`
-(Bettmitte des 350ers).
+Für `configs/350/` dieselben Dateien. `park_x`/`park_y` bleiben in beiden
+auskommentiert — die Bettmitte kommt aus den Achsgrenzen des Druckers, der
+Assistent schreibt geänderte Werte zurück.
 
 In beiden `printer.cfg` die Include-Zeile ergänzen, bei den übrigen
 `[include]`-Zeilen:
@@ -748,6 +753,14 @@ git commit -m "feat(xy-offset): nozzle_locator liest die Rohfrequenz der XY-Sond
 ## Task 3: Z-Anfahrt, Sweep und Ortung
 
 Deliverable: `NOZZLE_LOCATE AXIS=X` findet eine Düse und meldet ihre Position.
+
+> **Änderung 2026-09-03 (Spec R-B'):** `search_x`/`search_y`/`safe_z` gibt
+> es nicht mehr. Der Kopf steht auf der Anfahrposition (`park_position()`,
+> `NOZZLE_LOCATOR_PARK`, beides schon in Task 2 nachgezogen), die Sonde
+> wurde darunter gestellt. `park_z` ist Freihöhe und Fahrhöhe zugleich;
+> die Basislinie wird dort gemessen. `approach_z` darf oberhalb von
+> `holder_top_z + 5` in 5-mm-Schritten fahren und tastet erst darunter.
+> Der Code unten ist darauf umgeschrieben.
 
 **Files:**
 - Modify: `klippy/extras/nozzle_locator.py`
@@ -868,6 +881,49 @@ from . import nozzle_locator_fit as fit
         return self.holder_top_z + self.min_gap
 
     # ------------------------------------------------------------------
+    # Anfahrposition (bereits in Task 2 gebaut, hier der Vollstaendigkeit
+    # halber -- Spec R-B')
+    # ------------------------------------------------------------------
+    def park_position(self):
+        """(x, y, z) der Anfahrposition; X/Y aus der Config, sonst Bettmitte."""
+        x, y = self.park_x, self.park_y
+        if x is None or y is None:
+            toolhead = self.printer.lookup_object('toolhead')
+            kin = toolhead.get_kinematics()
+            status = kin.get_status(None)
+            mn, mx = status['axis_minimum'], status['axis_maximum']
+            if x is None:
+                x = (mn[0] + mx[0]) / 2.
+            if y is None:
+                y = (mn[1] + mx[1]) / 2.
+        return x, y, self.park_z
+
+    def park(self, x, y, z):
+        """Faehrt das montierte Tool auf die Anfahrposition. Homt nie."""
+        self._require_homed()
+        if z <= self._z_floor():
+            raise self.printer.command_error(
+                "nozzle_locator: park_z %.1f liegt nicht ueber dem Z-Boden "
+                "%.1f (holder_top_z + min_gap)" % (z, self._z_floor()))
+        # Erst hoch, dann seitlich -- nie diagonal durch etwas hindurch.
+        self._move([None, None, z], self.move_speed)
+        self._move([x, y, None], self.move_speed)
+
+    cmd_PARK_help = ("Move the mounted tool to the XY probe park position "
+                     "without measuring. Parameters: X, Y, Z (default: "
+                     "config, else bed centre and park_z)")
+
+    def cmd_PARK(self, gcmd):
+        px, py, pz = self.park_position()
+        x = gcmd.get_float('X', px)
+        y = gcmd.get_float('Y', py)
+        z = gcmd.get_float('Z', pz, above=0.)
+        self.park(x, y, z)
+        gcmd.respond_info("nozzle_locator: Anfahrposition X%.1f Y%.1f Z%.1f "
+                          "erreicht -- Sonde jetzt grob mittig unter die "
+                          "Duese stellen" % (x, y, z))
+
+    # ------------------------------------------------------------------
     # Messschritte
     # ------------------------------------------------------------------
     def measure_baseline(self):
@@ -896,10 +952,17 @@ from . import nozzle_locator_fit as fit
         toolhead = self.printer.lookup_object('toolhead')
         floor = self._z_floor()
         z = toolhead.get_position()[2]
+        # Von park_z (60) herab ist der Weg lang: bis 5 mm ueber die
+        # Halterung in grossen Schritten, dann tasten.
+        coarse_until = self.holder_top_z + 5.0
         step = 1.0
         while z > floor:
-            z = max(floor, z - step)
-            self._move([None, None, z], self.approach_speed)
+            if z - 5.0 > coarse_until:
+                z = z - 5.0
+                self._move([None, None, z], self.move_speed)
+            else:
+                z = max(floor, z - step)
+                self._move([None, None, z], self.approach_speed)
             mean, sd, n, errors = self.read_frequency()
             if mean - baseline >= target_amplitude:
                 return z
@@ -1083,15 +1146,12 @@ from . import nozzle_locator_fit as fit
 
         toolhead = self.printer.lookup_object('toolhead')
         center = toolhead.get_position()[0 if axis == 'X' else 1]
-        # Basislinie: der Aufrufer steht schon ueber der Spule, also erst
-        # wegfahren, messen, zurueck.
+        # Basislinie: der Aufrufer steht schon ueber der Spule. Auf park_z
+        # (60 mm) ist die Spule praktisch unsichtbar -- also hoch, messen,
+        # wieder herunter. Kein seitliches Wegfahren noetig.
         here = toolhead.get_position()
-        self._move([None, None, self.safe_z], self.move_speed)
-        away = [None, None, None]
-        away[0 if axis == 'X' else 1] = center + self.search_span
-        self._move(away, self.move_speed)
+        self._move([None, None, self.park_z], self.move_speed)
         baseline = self.measure_baseline()
-        self._move([here[0], here[1], None], self.move_speed)
         self._move([None, None, here[2]], self.approach_speed)
 
         if axis == 'DIAG':
@@ -1323,34 +1383,37 @@ Die Politik für die XY-Messung:
         ref_pos = None
         measure_z = None
         baseline = None
+        # Anfahrposition (Spec R-B'): dort steht das Referenztool, dort hat
+        # der Nutzer die Sonde untergestellt. park_z ist die Fahrhoehe.
+        # locator.parked ist die per NOZZLE_LOCATOR_PARK tatsaechlich
+        # angefahrene Position -- sie gilt auch, wenn der Assistent die
+        # Config geaendert hat und Klipper noch nicht neu gestartet wurde.
+        park_x, park_y, park_z = locator.parked or locator.park_position()
 
         for tool_nr in ordered_tools:
+            # Erst auf park_z, DANN wechseln -- der Wechselweg ist damit
+            # frei, weil die Halterung auf dieser Hoehe untergeschoben wurde.
+            locator._move([None, None, park_z], locator.move_speed)
             self.gcode.run_script_from_command(
                 "SELECT_TOOL T=%d RESTORE_AXIS=XYZ" % tool_nr)
             if temp > 0:
                 self.gcode.run_script_from_command(
                     "M109 S%.0f" % temp)
-            # Immer erst auf sichere Hoehe, dann ueber die Spule.
-            locator._move([None, None, locator.safe_z], locator.move_speed)
-            locator._move([locator.search_x, locator.search_y, None],
-                          locator.move_speed)
+            locator.park(park_x, park_y, park_z)
             if dry_run:
                 gcmd.respond_info("T%d: Trockenlauf, Position erreicht"
                                   % tool_nr)
                 continue
 
             if baseline is None:
-                # Einmal pro Lauf, mit dem Referenztool und weit weg.
-                locator._move([locator.search_x + locator.search_span,
-                               locator.search_y, None], locator.move_speed)
+                # Einmal pro Lauf, mit dem Referenztool, auf park_z -- dort
+                # ist die Spule 60 mm entfernt und praktisch unsichtbar.
                 baseline = locator.measure_baseline()
-                locator._move([locator.search_x, locator.search_y, None],
-                              locator.move_speed)
 
             z_reached = locator.approach_z(baseline)
             if tool_nr == ref_tool:
                 measure_z = z_reached
-                cx, cy = locator.search_x, locator.search_y
+                cx, cy = park_x, park_y
                 # Grobsuche nur einmal: sie legt das Fenster fuer alle fest.
                 coarse_x = locator.locate(
                     'X', cx, baseline, runs=1,
@@ -1391,7 +1454,7 @@ Die Politik für die XY-Messung:
             if tool_nr == ref_tool:
                 ref_pos = (rx['center'], ry['center'], z_reached)
             results[str(tool_nr)] = entry
-            locator._move([None, None, locator.safe_z], locator.move_speed)
+            locator._move([None, None, park_z], locator.move_speed)
 
         if dry_run or ref_pos is None:
             return results
@@ -1926,6 +1989,14 @@ Sicherheit. Homen **vor** dem Aufsetzen, Deaktivieren **vor** dem Abziehen.
 //              ueber die Bettmitte (homing.cfg:35).
 //   Schritt 7: erst deaktivieren, DANN abziehen -- sonst startet Klipper
 //              beim naechsten Mal nicht mehr.
+// AENDERUNG 2026-09-03 (Spec R-B', §6 Schritt 5a): zwischen "Sensor
+// pruefen" und "Aufsetzen" kommt "Anfahren" -- drei Felder X/Y/Z
+// (vorbelegt aus printer.nozzle_locator.park bzw. Bettmitte/60), geaenderte
+// Werte werden VOR dem Anfahren in .disabled und xy_probe.cfg
+// zurueckgeschrieben, dann NOZZLE_LOCATOR_PARK mit dem Referenztool und
+// waitForPrinterIdle. Erst danach der Aufsetzen-Dialog: "Sonde samt
+// Halterung grob mittig unter die Duese stellen". Der gebaute Assistent in
+// webapp/js/tools.js ist die massgebliche Fassung, nicht dieser Entwurf.
 function xyWizard() {
   return confirmDialog({
     title: "XY-Sonde: Vorbereiten",

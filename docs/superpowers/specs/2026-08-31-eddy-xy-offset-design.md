@@ -75,6 +75,15 @@ Referenztool. Die Spulenposition kürzt sich weg. Deshalb darf die Halterung
 abnehmbar sein — sie muss nur grob auffindbar sein und während eines Laufs
 stillstehen.
 
+**R-B': Die Sonde ist portabel, der Kopf gibt die Position vor** (Änderung
+vom 2026-09-03). Nicht die Halterung hat eine Nominalposition, sondern der
+Druckkopf: er fährt auf eine vom Nutzer einstellbare **Anfahrposition**
+(`park_x`, `park_y`, `park_z`; Default Bettmitte und Z = 60), und der Nutzer
+stellt Sonde samt Halterung *danach* grob mittig darunter. Damit entfällt
+der feste Sitz der Halterung; die bekannte Bauhöhe bleibt, weil sie der
+einzige harte Z-Boden ist. `park_z` ist eine reine Freihöhe zum
+Unterschieben, keine Messhöhe — der Kopf tastet sich von dort herunter.
+
 **R-C: Eine zweite `[probe_eddy_ng]`-Instanz ist unmöglich.**
 `eddy-ng/probe_eddy_ng/probe.py:186` ruft `define_commands()` unbedingt im
 Konstruktor; die registriert globale, nicht instanz-skopierte Kommandos
@@ -104,15 +113,19 @@ Offsets**. Beantwortet ausschließlich: "wo über mir liegt Metall?"
 | Primitive | Aufgabe |
 |---|---|
 | `read_frequency(duration)` | Mittelwert, sd, Sample-Zahl, Fehlerflags aus einer `bulk_sensor`-Session |
-| `approach_z(target_amplitude)` | vorsichtige Z-Annäherung bis Zielamplitude, harter Boden |
+| `park_position()` | liefert (x, y, z) der Anfahrposition: Config-Werte, sonst Bettmitte aus den Achsgrenzen und Z = 60 |
+| `park(x, y, z)` | fährt das montierte Tool auf die Anfahrposition; unhomed -> Abbruch, nie homen |
+| `approach_z(target_amplitude)` | vorsichtige Z-Annäherung von `park_z` herab bis Zielamplitude, harter Boden |
 | `sweep(axis, center, span, step)` | ein gerichteter Sweep, Punkt für Punkt |
 | `fit_center(points)` | Symmetrie-/Parabelfit über festen Punktesatz |
 | `locate(axis, runs)` | Hin- und Rücksweep, Scheitel gemittelt |
 | `measure_coupling(cx, cy)` | zwei Diagonal-Sweeps, liefert den Kreuzterm c und rho |
 
 G-Code: `NOZZLE_LOCATOR_READ` (Rohfrequenz, Präsenz- und
-Platzierungsprüfung), `NOZZLE_LOCATE AXIS=X|Y|DIAG [REPEATS=n]`
-(Einzelmessung, Diagnose, Validierungsreihen ohne Webapp).
+Platzierungsprüfung), `NOZZLE_LOCATOR_PARK [X= Y= Z=]` (Anfahrposition
+anfahren, ohne zu messen; fehlende Parameter aus der Config),
+`NOZZLE_LOCATE AXIS=X|Y|DIAG [REPEATS=n]` (Einzelmessung, Diagnose,
+Validierungsreihen ohne Webapp).
 
 **`klippy/extras/offset.py` (erweitert, ~250 Zeilen)**
 
@@ -151,10 +164,11 @@ serial: /dev/serial/by-id/<vom Nutzer einmalig eingetragen>
 i2c_mcu: xyprobe
 i2c_bus: i2c0f
 
-search_x: 125             # Nominalposition der Halterung
-search_y: 125
-search_span: 30           # Bereich der Grobsuche
-safe_z: 15                # Fahrhöhe über der Halterung
+#park_x: 125              # Anfahrposition; fehlt sie, Bettmitte aus den
+#park_y: 125              # Achsgrenzen. Der Assistent schreibt geänderte
+park_z: 60                # Werte hierher zurück. park_z = Freihöhe zum
+                          # Unterschieben UND Fahrhöhe aller Verfahrwege
+search_span: 30           # Bereich der Grobsuche um die Anfahrposition
 holder_top_z: 8           # Oberkante der Halterung (Bauhöhe)
 min_gap: 0.5              # harter Z-Boden = holder_top_z + min_gap
 
@@ -192,10 +206,15 @@ Grobsuche aus sicherer Höhe sieht nichts. Lösung ist eine getastete
 Annäherung an der Nominalposition.
 
 ```
- 1  Referenztool aufnehmen
- 2  Basislinie: Kopf weit weg von der Spule, f_base messen
- 3  Über search_x/search_y auf safe_z fahren
- 4  approach_z: stufenweise absenken bis Amplitude > min_amplitude
+ 0  (Assistent) Referenztool auf park_x/park_y/park_z gefahren,
+    Nutzer hat die Sonde darunter gestellt — Voraussetzung, nicht Teil
+    des Kommandos
+ 1  Referenztool aufnehmen (steht bereits)
+ 2  Basislinie: auf park_z messen — 60 mm über der Spule ist sie
+    praktisch unsichtbar, ein Wegfahren entfällt
+ 3  Über park_x/park_y auf park_z stehen (Kontrollfahrt, falls ein
+    Werkzeugwechsel dazwischen lag)
+ 4  approach_z: von park_z stufenweise absenken bis Amplitude > min_amplitude
     -> harter Boden bei holder_top_z + min_gap, sonst Abbruch
  5  Grobsweep X über search_span              -> Grobscheitel X
  6  Auf Grobscheitel X, Grobsweep Y           -> Grobscheitel Y
@@ -203,18 +222,26 @@ Annäherung an der Nominalposition.
     -> diese Messhöhe gilt für ALLE Tools dieses Laufs
  8  Referenztool feinmessen: locate(X), locate(Y)
  9  Je weiteres Tool:
-      a  Werkzeugwechsel
-      b  auf gemerkten Grobscheitel, auf safe_z
+      a  Werkzeugwechsel (auf park_z)
+      b  auf gemerkten Grobscheitel, auf park_z
       c  approach_z auf dieselbe target_amplitude
          -> Delta-z gegenüber Ref-Tool = Z-Vergleichswert
       d  locate(X), locate(Y)
-10  Zurück auf das Referenztool
+10  Zurück auf das Referenztool, auf park_z
 11  Differenzen bilden, persistieren
 ```
 
 **Zu Schritt 4:** großzügig genug — der Vorversuch zeigte 5–8 mm seitlich
-daneben noch +3.513 Hz. Eine auf ±3 mm reproduzierbar sitzende Halterung
-wird zuverlässig gefunden.
+daneben noch +3.513 Hz. „Grob mittig unter die Düse gestellt" ist damit
+Millimeter-tolerant; `search_span` fängt den Rest.
+
+**Zu Schritt 4, Abstieg:** der Weg von `park_z` = 60 bis zum Signal ist
+lang. `approach_z` darf deshalb oberhalb von `holder_top_z + 5 mm` in
+großen Schritten fahren und erst darunter tasten — der Boden bleibt hart.
+
+**Zu `park_z` als Fahrhöhe:** die Halterung wurde bei stehender Düse auf
+dieser Höhe untergeschoben, also ist sie per Konstruktion frei. Ein
+eigenes `safe_z` gibt es nicht mehr.
 
 **Zu Schritt 9c:** alle Tools werden auf dieselbe *Amplitude* angefahren,
 nicht auf dasselbe kommandierte Z — nur so misst jedes Tool bei gleichem
@@ -229,8 +256,9 @@ Spalt. Die Differenz im kommandierten Z ist dann der Z-Offset-Unterschied.
 | 3 | Aktivieren | Inhalt aus `xy_probe.cfg.disabled` nach `xy_probe.cfg` kopieren -> `FIRMWARE_RESTART` -> warten bis ready. |
 | 4 | Homen | **Jetzt**, direkt nach dem Neustart, bei leerem Bett. Siehe die Begründung unten. |
 | 5 | Sensor prüfen | `NOZZLE_LOCATOR_READ` muss plausibel und fehlerfrei antworten. Bewegt nichts. |
-| 6 | Aufsetzen | **Erst jetzt** kommt die Halterung aufs Bett. Ab hier ist jedes Homing gefährlich. |
-| 7 | Trockenlauf | Ganze Sequenz inkl. Werkzeugwechsel und Verfahrwege auf `safe_z`, **ohne jedes Absenken**. Muster aus der Dock-Kalibrierung (`c5e51157`). |
+| 5a | Anfahren | Drei Felder X, Y, Z, vorbelegt aus der Config bzw. Bettmitte und 60. Weichen sie von der Config ab, werden sie **vor** dem Anfahren in `xy_probe.cfg.disabled` und `xy_probe.cfg` zurückgeschrieben. Dann `NOZZLE_LOCATOR_PARK` mit dem Referenztool, und **`waitForPrinterIdle`**, bis der Drucker nachweislich steht. Das Bett ist noch leer. |
+| 6 | Aufsetzen | **Erst jetzt**: „Sonde samt Halterung grob mittig unter die Düse stellen." Ab hier ist jedes Homing gefährlich. |
+| 7 | Trockenlauf | Ganze Sequenz inkl. Werkzeugwechsel und Verfahrwege auf `park_z`, **ohne jedes Absenken**. Muster aus der Dock-Kalibrierung (`c5e51157`). |
 | 8 | Messen | Ablauf nach §5. |
 | 9 | Ergebnisse | Anzeige, Vergleich, Übernehmen bzw. Übernehmen + schreiben. |
 | 10 | Abschließen | `xy_probe.cfg` leeren -> `FIRMWARE_RESTART` -> **und erst danach** zum Abstecken und Abnehmen der Halterung auffordern. |
@@ -276,6 +304,10 @@ läuft weiter.
 2. **Idle-Timeout** wird auf 3600 s gesetzt und am Ende **und bei jedem
    Abbruch** zurückgestellt.
 3. **Harter Z-Boden** aus `holder_top_z + min_gap`. Darunter fährt nichts.
+   `park_z` muss darüber liegen, sonst lehnt `NOZZLE_LOCATOR_PARK` ab.
+5. **`NOZZLE_LOCATOR_PARK` homt nie selbst** und bewegt nur bei gehomten
+   Achsen — es ist der letzte Move vor dem Aufsetzen, danach verbietet
+   sich jede Recovery, die homt.
 4. **Der Trockenlauf ist die Kollisionsprüfung.** Ob der Wechselweg über die
    Halterung führt, ist geometrieabhängig und im Code nicht allgemein
    prüfbar — also einmal ungefährlich abfahren statt behaupten.
@@ -443,7 +475,8 @@ statt; zusätzlich ab Schritt 6 kein G28-Recovery mehr.
 - Kontinuierlicher Sweep statt Punkt-für-Punkt (spätere Optimierung)
 - Reaktivierung von `tools_calibrate` (Pin-Antasten)
 - Z als übernehmbarer Offset
-- Automatische Erkennung der Halterungsposition ohne Config-Hinweis
+- Automatische Erkennung der Halterungsposition — überflüssig geworden,
+  der Kopf gibt die Position vor (R-B')
 - Temperaturkompensation der Basislinie — erledigt der bidirektionale Sweep
 - Heizen als Default (Feld existiert, Default 0 = kalt; der XY-Offset ist
   weitgehend temperaturunabhängig, weil sich der Heizblock im Wesentlichen

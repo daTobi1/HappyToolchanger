@@ -335,6 +335,14 @@ function runXyWizardAbortTest() {
   global.sendGcodeWithRecovery = function () { return Promise.resolve({ ok: true }); };
   global.xyProbeDeactivate = function () { deactivateCalls++; return Promise.resolve(); };
   global.updateAllProbeResults = function () {};
+  // Schritt 5a (Anfahren) auf Funktionsebene gestubbt: xyParkDialog geht
+  // hier NICHT ueber confirmDialog, damit die Antwortfolge unten die
+  // uebrigen Dialoge weiterhin in ihrer Reihenfolge trifft. Der Schritt
+  // selbst wird in Teil 6 geprueft.
+  global.xyParkDefaults = function () { return Promise.resolve({ x: 125, y: 130, z: 60 }); };
+  global.xyParkDialog = function (d) { return Promise.resolve(d); };
+  global.xyWriteParkConfig = function () { return Promise.resolve(); };
+  global.xyParkMove = function () { return Promise.resolve(true); };
 
   eval(grab('gcodeErrorMessage') + grab('xyStepOk') + grab('xyWizard'));
 
@@ -467,6 +475,17 @@ function runXyWizardGateTest() {
     global.xyProbeActivate = function () { return Promise.resolve(); };
     global.ensureHomedAfterActivate = function () { return Promise.resolve(); };
     global.sendGcodeWithRecovery = function () { return Promise.resolve({ ok: true }); };
+    // Schritt 5a (Anfahren) gestubbt, siehe runXyWizardAbortTest; opts.park
+    // erlaubt, den Schritt scheitern oder abbrechen zu lassen.
+    global.xyParkDefaults = function () { return Promise.resolve({ x: 125, y: 130, z: 60 }); };
+    global.xyParkDialog = function (d) {
+      return Promise.resolve(opts.parkCancel ? null : d);
+    };
+    global.xyWriteParkConfig = function () { return Promise.resolve(); };
+    global.xyParkMove = function () {
+      if (opts.parkFail) return Promise.reject(new Error("Kopf steht nicht auf der Anfahrposition"));
+      return Promise.resolve(true);
+    };
     global.xySendMounted = function (script) {
       sent.push(script);
       return Promise.resolve({ transport: true });
@@ -533,6 +552,31 @@ function runXyWizardGateTest() {
     });
   });
 
+
+  // --- Schritt 5a: Anfahren abgebrochen -> Abbruch-Dialog, KEIN Aufsetzen ---
+  // Das Bett ist hier noch leer, aber die Sonde ist schon aktiviert: der
+  // Nutzer muss deaktivieren koennen, bevor er abzieht.
+  seq = seq.then(function () {
+    return runWizard([true, 'extra', true], { parkCancel: true }).then(function (r) {
+      check('Anfahren abgebrochen -> Aufsetzen wird NICHT angeboten',
+        r.confirms.indexOf('XY-Sonde: Aufsetzen') === -1, JSON.stringify(r.confirms));
+      check('Anfahren abgebrochen -> Abbruch-Dialog mit Deaktivieren',
+        r.confirms.indexOf('XY-Assistent abgebrochen') !== -1 && r.deactivate === 1,
+        JSON.stringify(r.confirms) + ' calls=' + r.deactivate);
+      check('Anfahren abgebrochen -> kein Trockenlauf, kein Messlauf',
+        r.sent.length === 0, JSON.stringify(r.sent));
+    });
+  });
+
+  // --- Schritt 5a: Position nicht nachgewiesen -> ebenfalls kein Aufsetzen ---
+  seq = seq.then(function () {
+    return runWizard([true, 'extra', true], { parkFail: true }).then(function (r) {
+      check('Positionsnachweis gescheitert -> Aufsetzen wird NICHT angeboten',
+        r.confirms.indexOf('XY-Sonde: Aufsetzen') === -1, JSON.stringify(r.confirms));
+      check('Positionsnachweis gescheitert -> Abbruch-Dialog',
+        r.confirms.indexOf('XY-Assistent abgebrochen') !== -1, JSON.stringify(r.confirms));
+    });
+  });
   return seq;
 }
 
@@ -749,9 +793,61 @@ writeXyConfigs({ "0": { x: "0.5300", y: "-0.0200" } }).then(function (ok) {
   // Teil 5 stubbt global.fetch neu - erst NACHDEM Teil 4 fertig ist.
   return runCaptureCameraPositionCatchTest();
 }).then(function () {
+  return runParkTest();
+}).then(function () {
   console.log(failed ? '\n' + failed + ' TESTS FEHLGESCHLAGEN' : '\nALLE TESTS OK');
   process.exit(failed ? 1 : 0);
 }).catch(function (e) {
   console.log('EXCEPTION', e);
   process.exit(1);
 });
+
+// --------------------------------------------------------------------
+// Teil 6: Anfahrposition (Spec R-B'). xyPatchParkLines ist rein; die
+// Reihenfolge im Assistenten wird am Quelltext geprueft: Anfahren liegt
+// zwischen Sondenpruefung und Aufsetzen, und der Aufsetzen-Dialog kommt
+// erst NACH dem positiven Positionsnachweis.
+// --------------------------------------------------------------------
+function runParkTest() {
+  console.log('\n-- Teil 6: Anfahrposition --');
+  eval(grab('xyPatchParkLines'));
+  var park = { x: 125, y: 130.25, z: 60 };
+
+  var tpl = "[mcu xyprobe]\nserial: /dev/x\n\n[nozzle_locator]\ni2c_mcu: xyprobe\n" +
+            "# park_x/park_y weglassen = Bettmitte\n#park_x: 1\n#park_y: 2\npark_z: 15\n" +
+            "search_span: 30\n";
+  var out = xyPatchParkLines(tpl, park);
+  check('auskommentierte park_x-Zeile wird zur echten', /^park_x: 125\.0$/m.test(out));
+  check('park_y auf eine Nachkommastelle gerundet', /^park_y: 130\.3$/m.test(out));
+  check('vorhandenes park_z ersetzt', /^park_z: 60\.0$/m.test(out) && !/park_z: 15/.test(out));
+  check('Kommentarzeile mit park_x/park_y im Text bleibt', out.indexOf('# park_x/park_y weglassen') >= 0);
+  check('uebrige Zeilen unveraendert', out.indexOf('search_span: 30') >= 0 && out.indexOf('serial: /dev/x') >= 0);
+  check('kein Duplikat', out.split('\n').filter(function (l) { return /^park_x:/.test(l); }).length === 1);
+
+  var bare = "[nozzle_locator]\ni2c_mcu: xyprobe\n";
+  var out2 = xyPatchParkLines(bare, park);
+  var lines2 = out2.split('\n');
+  check('fehlende Schluessel direkt hinter [nozzle_locator] eingefuegt',
+    lines2[0] === '[nozzle_locator]' && lines2[1] === 'park_x: 125.0' &&
+    lines2[2] === 'park_y: 130.3' && lines2[3] === 'park_z: 60.0');
+
+  var threw = false;
+  try { xyPatchParkLines("[mcu xyprobe]\n", park); } catch (e) { threw = true; }
+  check('ohne [nozzle_locator]-Sektion wird geworfen', threw);
+
+  var wiz = grab('xyWizard');
+  var iRead = wiz.indexOf('NOZZLE_LOCATOR_READ');
+  var iPark = wiz.indexOf('xyParkDefaults()');
+  var iMount = wiz.indexOf('XY-Sonde: Aufsetzen');
+  check('Assistent: Anfahren liegt zwischen Sondenpruefung und Aufsetzen',
+    iRead >= 0 && iPark > iRead && iMount > iPark);
+  check('Aufsetzen-Text nennt das Unterstellen unter die Duese',
+    /unter die Duese/.test(wiz.slice(iMount, iMount + 400)));
+
+  var mv = grab('xyParkMove');
+  check('xyParkMove wartet bei transport auf Stillstand',
+    /transport/.test(mv) && /waitForPrinterIdle/.test(mv));
+  check('xyParkMove weist die Position ueber die Kopfposition nach',
+    /xyToolheadPosition/.test(mv) && /0\.5/.test(mv));
+  return Promise.resolve();
+}

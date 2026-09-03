@@ -75,13 +75,15 @@ Immer den `by-id`-Pfad nehmen, nie `/dev/ttyACM0` — der wandert, sobald ein an
 
 | Anforderung | Warum |
 |---|---|
-| **bekannte, feste Bauhöhe** | geht als `holder_top_z` in die Config; daraus wird der harte Z-Boden `holder_top_z + min_gap` berechnet, unter den nichts fährt |
-| **reproduzierbarer Sitz auf dem Bett, ±3 mm reicht** | die Grobsuche tastet sich an der Nominalposition nach unten; laut Vorversuch stehen 5–8 mm seitlich daneben noch +3.513 Hz an, also ist das großzügig |
+| **bekannte, feste Bauhöhe** | geht als `holder_top_z` in die Config; daraus wird der harte Z-Boden `holder_top_z + min_gap` berechnet, unter den nichts fährt. Muss unter `park_z` (Default 60) liegen, sonst lehnt das Modul die Config ab |
+| ~~reproduzierbarer Sitz auf dem Bett~~ **grob mittig unter die stehende Düse stellbar** | seit R-B' (2026-09-03) gibt der Kopf die Position vor: `NOZZLE_LOCATOR_PARK` fährt auf die Anfahrposition, danach kommt die Sonde darunter. Laut Vorversuch stehen 5–8 mm seitlich daneben noch +3.513 Hz an, „grob mittig" ist also großzügig; `search_span` fängt den Rest |
 | **kein Metall in Spulennähe** | verfälscht die Basislinie |
 | **hitzefest, falls je heiß gemessen wird** | Default ist kalt messen; heiß ist optional und dann liegt eine 200-°C-Düse ~1 mm über der Halterung |
 | **niedrig genug für den Werkzeugwechselweg** | oder der Wechselweg führt nicht darüber — das prüft der Trockenlauf, siehe 5.2 |
 
 Die absolute Position der Halterung ist **egal**. Gemessen wird pro Tool der Scheitel in Maschinenkoordinaten, der Offset ist die Differenz zum Referenztool — die Spulenposition kürzt sich exakt weg. Genau deshalb darf die Halterung abnehmbar sein.
+
+**Bettmitte als Default:** nicht aus den Achsgrenzen — beim 250er reichen sie wegen der Docks bis Y −85, die „Mitte" läge bei Y 72. Das Modul nimmt `mesh_min`/`mesh_max` aus `[bed_mesh]` (250er: X 125 / Y 130) und fällt nur ohne Bettmesh auf die Achsgrenzen zurück. Der Assistent zeigt die Werte vor dem Anfahren, sie sind editierbar und werden in beide Sonden-Dateien zurückgeschrieben.
 
 ---
 

@@ -29,10 +29,14 @@ max_temp: 100
 i2c_mcu: xyprobe
 i2c_bus: i2c0f
 
-search_x: 125
-search_y: 125
+# Anfahrposition: der Kopf faehrt hierhin, die Sonde kommt danach darunter.
+# park_x/park_y weglassen = Bettmitte aus den Achsgrenzen. park_z ist die
+# Freihoehe zum Unterschieben und die Fahrhoehe aller Verfahrwege. Der
+# Assistent schreibt geaenderte Werte hierher zurueck.
+#park_x: 125
+#park_y: 125
+park_z: 60
 search_span: 30
-safe_z: 15
 holder_top_z: 8
 min_gap: 0.5
 

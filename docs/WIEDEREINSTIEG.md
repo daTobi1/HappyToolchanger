@@ -48,10 +48,21 @@ Standard-Klipper per BOOT-Taster; der Pfad steht in
 Metalltest: eine von Hand darüber gehaltene Düse hebt die Frequenz um ~9.700 Hz
 (sd ~200 Hz durch das Zittern der Hand). Damit trägt der Ansatz.
 
+**Positionierung ist umgedreht (Spec R-B', 2026-09-03):** die Sonde ist
+portabel. Der Kopf fährt mit dem Referenztool auf eine im Assistenten
+einstellbare Anfahrposition (`park_x/park_y/park_z`, Default Bettmitte aus
+dem Bettmesh und Z 60), **danach** stellt der Nutzer Sonde samt Halterung
+grob mittig darunter. `park_z` ist Freihöhe und Fahrhöhe zugleich, ein
+`safe_z` gibt es nicht mehr; `holder_top_z` bleibt als harter Z-Boden.
+Kommando: `NOZZLE_LOCATOR_PARK [X= Y= Z=]`, gebaut und im Assistenten als
+Schritt „Anfahren" verdrahtet (Node-Tests: 80). Der Messlauf nimmt später
+`locator.parked`, die tatsächlich angefahrene Position.
+
 **Nächste Schritte in dieser Reihenfolge:**
 
 1. **Halterung** mit bekannter Bauhöhe, `holder_top_z` in der `.disabled`
-   eintragen (steht derzeit auf dem Plan-Default 8 mm).
+   eintragen (steht derzeit auf dem Plan-Default 8 mm). Ein fester Sitz
+   ist nicht mehr nötig.
 2. **Task 3 bauen** (Plan hat den vollständigen Code): Z-Anfahrt, Sweep,
    `NOZZLE_LOCATE`. Zwei Planannahmen sind beim Bau von Task 2 gefallen
    und gelten auch für Task 3 — siehe §3 d).

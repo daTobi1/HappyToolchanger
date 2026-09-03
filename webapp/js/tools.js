@@ -3550,6 +3550,150 @@ function ensureHomedAfterActivate() {
 // Abbrechen-Klick wirkungslos machen. Der letzte Schritt vor dem
 // Deaktivieren ist bewusst ein alertDialog statt eines confirmDialog: ab
 // hier ist das Deaktivieren keine Option mehr, nur noch eine Bestaetigung.
+// ---------------------------------------------------------------------
+// Anfahrposition (Spec R-B'): der Kopf faehrt mit dem Referenztool auf eine
+// einstellbare Position, DANACH stellt der Nutzer Sonde samt Halterung
+// darunter. Vorbelegung liefert Klipper (printer.nozzle_locator.park:
+// Config-Werte, sonst Bettmitte und Z 60). Geaenderte Werte werden in die
+// Vorlage und die aktive Config zurueckgeschrieben, damit sie beim
+// naechsten Mal wieder da sind; fuer den laufenden Zyklus zaehlt die per
+// NOZZLE_LOCATOR_PARK tatsaechlich angefahrene Position.
+// ---------------------------------------------------------------------
+function xyParkDefaults() {
+  return Promise.resolve(
+    $.get(printerUrl(printerIp, "/printer/objects/query?nozzle_locator=park"))
+  ).then(function (data) {
+    var p = data && data.result && data.result.status &&
+            data.result.status.nozzle_locator &&
+            data.result.status.nozzle_locator.park;
+    var okNums = p && p.length >= 3 && p.slice(0, 3).every(function (v) {
+      return typeof v === 'number' && isFinite(v);
+    });
+    if (!okNums) throw new Error(
+      "Klipper liefert keine Anfahrposition (printer.nozzle_locator.park) " +
+      "-- ist die Sonde aktiviert und Klipper bereit?");
+    return { x: p[0], y: p[1], z: p[2] };
+  });
+}
+
+function xyParkDialog(def) {
+  function field(id, label, val) {
+    return '<div class="col-4"><label class="form-label small mb-0" for="' +
+      id + '">' + label + '</label><input type="number" step="0.1" ' +
+      'class="form-control form-control-sm" id="' + id + '" value="' +
+      Number(val).toFixed(1) + '"></div>';
+  }
+  return confirmDialog({
+    title: "XY-Sonde: Anfahren",
+    body: '<p class="small">Der Kopf faehrt mit dem Referenztool auf diese ' +
+          'Position. Danach stellst du Sonde samt Halterung grob mittig ' +
+          'darunter. Z ist nur die Freihoehe zum Unterschieben und die ' +
+          'Fahrhoehe -- gemessen wird tiefer.</p>' +
+          '<div class="row g-2">' + field('xy-park-x', 'X', def.x) +
+          field('xy-park-y', 'Y', def.y) + field('xy-park-z', 'Z', def.z) +
+          '</div>',
+    okLabel: "Anfahren"
+  }).then(function (ok) {
+    if (!ok) return null;
+    // Die Felder stehen noch im Modal-Body, bis der naechste Dialog ihn
+    // ueberschreibt -- also sofort lesen.
+    var v = {
+      x: parseFloat($('#xy-park-x').val()),
+      y: parseFloat($('#xy-park-y').val()),
+      z: parseFloat($('#xy-park-z').val())
+    };
+    if ([v.x, v.y, v.z].some(function (n) { return !isFinite(n); })) {
+      throw new Error("Anfahrposition: X, Y und Z muessen Zahlen sein.");
+    }
+    return v;
+  });
+}
+
+// Reine Funktion: setzt park_x/park_y/park_z im Text einer xy_probe-Config.
+// Ersetzt vorhandene Zeilen (auch auskommentierte "#park_x: ..."), sonst
+// Einfuegen direkt hinter [nozzle_locator]. Getestet in
+// tests/check_xy_offset_ui.js.
+function xyPatchParkLines(content, park) {
+  var vals = { park_x: park.x, park_y: park.y, park_z: park.z };
+  var keys = ['park_x', 'park_y', 'park_z'];
+  var lines = String(content).split("\n");
+  var out = [], done = {}, secIdx = -1;
+  for (var i = 0; i < lines.length; i++) {
+    var m = /^\s*#?\s*(park_[xyz])\s*:/.exec(lines[i]);
+    if (m) {
+      if (!done[m[1]]) {
+        out.push(m[1] + ": " + Number(vals[m[1]]).toFixed(1));
+        done[m[1]] = true;
+      }
+      continue;
+    }
+    out.push(lines[i]);
+    if (/^\s*\[nozzle_locator\]\s*$/.test(lines[i])) secIdx = out.length;
+  }
+  var missing = keys.filter(function (k) { return !done[k]; });
+  if (missing.length) {
+    if (secIdx < 0) throw new Error(
+      "Keine [nozzle_locator]-Sektion in der Sonden-Config gefunden.");
+    var ins = missing.map(function (k) {
+      return k + ": " + Number(vals[k]).toFixed(1);
+    });
+    out.splice.apply(out, [secIdx, 0].concat(ins));
+  }
+  return out.join("\n");
+}
+
+function xyWriteParkConfig(park) {
+  return updateConfigFile("xy_probe.cfg.disabled", function (c) {
+    return xyPatchParkLines(c, park);
+  }).then(function () {
+    return updateConfigFile("xy_probe.cfg", function (c) {
+      return xyPatchParkLines(c, park);
+    });
+  });
+}
+
+function xyToolheadPosition() {
+  return Promise.resolve(
+    $.get(printerUrl(printerIp, "/printer/objects/query?toolhead=position"))
+  ).then(function (data) {
+    var p = data && data.result && data.result.status &&
+            data.result.status.toolhead && data.result.status.toolhead.position;
+    if (!p || p.length < 3) throw new Error("Keine Kopfposition von Klipper.");
+    return p;
+  });
+}
+
+// Faehrt an und weist die Position POSITIV nach. Das Bett ist hier noch
+// leer, ein Recovery-G28 waere also erlaubt -- aber {transport} heisst
+// "laeuft noch", nicht "fertig": erst warten, bis der Drucker steht, dann
+// die Kopfposition abfragen. Der naechste Dialog schickt den Nutzer an
+// die Maschine.
+function xyParkMove(park) {
+  var script = "NOZZLE_LOCATOR_PARK X=" + park.x.toFixed(1) +
+               " Y=" + park.y.toFixed(1) + " Z=" + park.z.toFixed(1);
+  return sendGcodeWithRecovery(script, "Anfahrposition anfahren")
+    .then(function (r) {
+      if (!r || r.handled) throw new Error("Anfahren fehlgeschlagen.");
+      var wait = r.transport ? waitForPrinterIdle(300000)
+                             : Promise.resolve(true);
+      return wait;
+    })
+    .then(function (idle) {
+      if (!idle) throw new Error(
+        "Der Drucker steht nach dem Anfahren nicht still -- Abbruch, " +
+        "solange das Bett noch leer ist.");
+      return xyToolheadPosition();
+    })
+    .then(function (pos) {
+      var off = Math.max(Math.abs(pos[0] - park.x), Math.abs(pos[1] - park.y),
+                         Math.abs(pos[2] - park.z));
+      if (!(off <= 0.5)) throw new Error(
+        "Der Kopf steht nicht auf der Anfahrposition (Abweichung " +
+        off.toFixed(1) + " mm) -- Abbruch, solange das Bett noch leer ist.");
+      return true;
+    });
+}
+
 function xyWizard() {
   return confirmDialog({
     title: "XY-Sonde: Anstecken",
@@ -3579,10 +3723,24 @@ function xyWizard() {
             "Sonde antwortet, ist damit ungeklaert. Abbruch, solange das " +
             "Bett noch leer ist."
           : "Sonde pruefen fehlgeschlagen.");
+      // Schritt 5a (Spec R-B'): Anfahrposition waehlen, Referenztool
+      // hinfahren, Position nachweisen -- das Bett ist dabei noch leer.
+      return xyParkDefaults();
+    }).then(function (def) {
+      return xyParkDialog(def);
+    }).then(function (park) {
+      if (!park) throw new Error(
+        "Anfahren abgebrochen. Die Sonde ist bereits aktiviert -- bitte " +
+        "deaktivieren, bevor sie abgezogen wird.");
+      return xyWriteParkConfig(park).then(function () {
+        return xyParkMove(park);
+      });
+    }).then(function () {
       return confirmDialog({
         title: "XY-Sonde: Aufsetzen",
-        body: "Halterung jetzt auf das Bett stellen. AB HIER nicht mehr " +
-              "homen, ohne die Halterung vorher wieder abzunehmen.",
+        body: "Sonde samt Halterung jetzt grob mittig unter die Duese " +
+              "stellen. AB HIER nicht mehr homen, ohne die Halterung " +
+              "vorher wieder abzunehmen.",
         okLabel: "Ist erledigt"
       });
     }).then(function (ok2) {
