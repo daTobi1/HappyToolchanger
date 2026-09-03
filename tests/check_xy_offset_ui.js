@@ -332,6 +332,7 @@ function runXyWizardAbortTest() {
   global.xyProbeCheckPresent = function () { return Promise.resolve(true); };
   global.xyProbeActivate = function () { return Promise.resolve(); };
   global.ensureHomedAfterActivate = function () { return Promise.resolve(); };
+  global.ensureLeveledBeforeSetup = function () { return Promise.resolve(true); };
   global.sendGcodeWithRecovery = function () { return Promise.resolve({ ok: true }); };
   global.xyProbeDeactivate = function () { deactivateCalls++; return Promise.resolve(); };
   global.updateAllProbeResults = function () {};
@@ -474,6 +475,7 @@ function runXyWizardGateTest() {
     global.xyProbeCheckPresent = function () { return Promise.resolve(true); };
     global.xyProbeActivate = function () { return Promise.resolve(); };
     global.ensureHomedAfterActivate = function () { return Promise.resolve(); };
+    global.ensureLeveledBeforeSetup = function () { return Promise.resolve(true); };
     global.sendGcodeWithRecovery = function () { return Promise.resolve({ ok: true }); };
     // Schritt 5a (Anfahren) gestubbt, siehe runXyWizardAbortTest; opts.park
     // erlaubt, den Schritt scheitern oder abbrechen zu lassen.
@@ -851,3 +853,17 @@ function runParkTest() {
     /xyToolheadPosition/.test(mv) && /0\.5/.test(mv));
   return Promise.resolve();
 }
+
+// Leveling liegt zwischen Homen und Sondenpruefung -- also vor dem
+// Aufsetzen, solange das Bett leer ist. Reine Quelltextpruefung.
+(function () {
+  var wiz = grab('xyWizard');
+  var iHome = wiz.indexOf('ensureHomedAfterActivate()');
+  var iLvl = wiz.indexOf('ensureLeveledBeforeSetup()');
+  var iRead = wiz.indexOf('NOZZLE_LOCATOR_READ');
+  check('Assistent: Leveling zwischen Homen und Sondenpruefung',
+    iHome >= 0 && iLvl > iHome && iRead > iLvl);
+  var lv = grab('ensureLeveledBeforeSetup');
+  check('Leveling referenziert Z neu und weist applied nach',
+    /G28 Z/.test(lv) && /waitForPrinterIdle/.test(lv) && /applied/.test(lv));
+})();

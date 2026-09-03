@@ -125,6 +125,10 @@ class Offset:
         self.gcode.register_command('MOVE_TO_ZSWITCH', self.cmd_MOVE_TO_ZSWITCH)
         self.gcode.register_command('PROBE_ZSWITCH', self.cmd_PROBE_ZSWITCH)
         self.gcode.register_command('CALIBRATE_ALL_Z_OFFSETS', self.cmd_CALIBRATE_ALL_Z_OFFSETS)
+        self.gcode.register_command(
+            'CALIBRATE_XY_OFFSETS', self.cmd_CALIBRATE_XY_OFFSETS,
+            desc=self.cmd_CALIBRATE_XY_OFFSETS_help)
+        self.xy_results = {}
         self.gcode.register_command('CALIBRATE_PROBE_OFFSETS',
                                     self.cmd_CALIBRATE_PROBE_OFFSETS,
                                     desc=self.cmd_CALIBRATE_PROBE_OFFSETS_help)
@@ -226,6 +230,7 @@ class Offset:
         self._load_probe_results()
         self._load_pid_results()
         self._load_dock_results()
+        self._load_xy_results()
         if self.config_file_path:
             self.config_file_path = os.path.expanduser(self.config_file_path)
             if os.path.exists(self.config_file_path):
@@ -308,6 +313,7 @@ class Offset:
             'probe_cal_map': pcm,
             'tool_gcode_offsets': tool_gcode_offsets,
             'pid_results': self.pid_results,
+            'xy_results': self.xy_results,
             'dock_results': self.dock_results,
             'tool_park_positions': self._tool_park_positions(),
             'dock_defaults': self._dock_defaults(),
@@ -1644,6 +1650,276 @@ class Offset:
             raise gcmd.error(
                 "No active tool — mount a tool or pass TOOL=/REF=")
         return at.tool_number
+
+    # ─── XY offsets via the nozzle locator coil ─────────────────────────
+    XY_STATE_FILE = '.offset_xy_results.json'
+
+    def _save_xy_results(self):
+        try:
+            path = self._get_state_file_path(self.XY_STATE_FILE)
+            with open(path, 'w') as f:
+                json.dump(self.xy_results, f, indent=2)
+        except Exception as e:
+            self.gcode.respond_info(
+                "Warning: could not save XY results: %s" % e)
+
+    def _load_xy_results(self):
+        try:
+            path = self._get_state_file_path(self.XY_STATE_FILE)
+            if os.path.exists(path):
+                with open(path, 'r') as f:
+                    self.xy_results = json.load(f)
+                n = len([k for k in self.xy_results if str(k).isdigit()])
+                if n:
+                    self.gcode.respond_info(
+                        "Loaded XY results for %d tools from %s"
+                        % (n, os.path.basename(path)))
+        except Exception as e:
+            self.gcode.respond_info(
+                "Warning: could not load XY results: %s" % e)
+
+    def _current_idle_timeout(self):
+        it = self.printer.lookup_object('idle_timeout', None)
+        if it is None:
+            return 600
+        try:
+            return int(getattr(it, 'idle_timeout', 600))
+        except (TypeError, ValueError):
+            return 600
+
+    def _xy_tool_run(self, gcmd):
+        """Referenztool und Reihenfolge fuer einen XY-Messlauf.
+
+        Bewusst NICHT geteilt mit CALIBRATE_ALL_Z_OFFSETS oder
+        CALIBRATE_PROBE_OFFSETS: die drei Kommandos haben absichtlich
+        verschiedene Auswahlpolitiken (Plan, Task 4). Hier: Referenztool
+        zwingend enthalten und zuerst (es legt Messhoehe und Grobsuchfenster
+        fuer alle folgenden Tools fest), unbekannte Tools brechen ab.
+        """
+        available = sorted(self.toolchanger.tool_numbers)
+        if not available:
+            raise gcmd.error("Keine Tools konfiguriert")
+        ref_tool = gcmd.get_int('REF_TOOL', self.default_ref_tool, minval=0)
+        if ref_tool not in available:
+            ref_tool = available[0]
+        tools_param = gcmd.get('TOOLS', None)
+        if tools_param:
+            requested = []
+            for token in tools_param.split(','):
+                token = token.strip()
+                if not token.isdigit():
+                    raise gcmd.error(
+                        "TOOLS erwartet Tool-Nummern, bekam '%s'" % token)
+                requested.append(int(token))
+            unknown = [t for t in requested if t not in available]
+            if unknown:
+                raise gcmd.error(
+                    "Unbekannte Tools: %s"
+                    % ", ".join("T%d" % t for t in unknown))
+        else:
+            requested = list(available)
+        ordered, seen = [ref_tool], {ref_tool}
+        for t in requested:
+            if t not in seen:
+                seen.add(t)
+                ordered.append(t)
+        self.last_ref_tool = ref_tool
+        return ref_tool, ordered
+
+    cmd_CALIBRATE_XY_OFFSETS_help = (
+        "Measure X/Y tool offsets with the XY probe coil. Parameters: "
+        "REF_TOOL, TOOLS (subset), DRY_RUN (1 = travel only, never descend), "
+        "TEMP (nozzle temperature, 0 = cold), XY_ITERATIONS (X-Y rounds "
+        "against cross-coupling, default from config; run NOZZLE_LOCATE "
+        "AXIS=DIAG once to find out whether 2 is needed). Requires homed, "
+        "levelled axes, the reference tool parked with NOZZLE_LOCATOR_PARK "
+        "and the coil placed under the nozzle. Results are only shown and "
+        "stored -- nothing is written to the tool configs.")
+
+    def cmd_CALIBRATE_XY_OFFSETS(self, gcmd):
+        locator = self.printer.lookup_object('nozzle_locator', None)
+        if locator is None:
+            raise gcmd.error(
+                "Keine XY-Sonde konfiguriert. In der Offset-Webapp ueber den "
+                "Assistenten aktivieren -- xy_probe.cfg ist derzeit leer.")
+        dry_run = gcmd.get_int('DRY_RUN', 0)
+        temp = gcmd.get_float('TEMP', 0., minval=0.)
+        iterations = gcmd.get_int('XY_ITERATIONS', locator.xy_iterations,
+                                  minval=1, maxval=4)
+        ref_tool, ordered_tools = self._xy_tool_run(gcmd)
+        # Nie selbst homen oder leveln: die Halterung steht auf dem Bett.
+        locator._require_homed()
+        self._require_leveled(gcmd)
+
+        prev_timeout = self._current_idle_timeout()
+        self.gcode.run_script_from_command("SET_IDLE_TIMEOUT TIMEOUT=3600")
+        results = {}
+        try:
+            results = self._run_xy_calibration(
+                gcmd, locator, ref_tool, ordered_tools, dry_run, temp,
+                iterations)
+        finally:
+            self.gcode.run_script_from_command(
+                "SET_IDLE_TIMEOUT TIMEOUT=%d" % prev_timeout)
+            locator.state = 'idle'
+
+        if dry_run:
+            gcmd.respond_info(
+                "XY-Trockenlauf beendet: alle Wege abgefahren, nie abgesenkt. "
+                "Wenn dabei nichts kollidiert ist, ist der Messlauf sicher.")
+            self._return_to_ref_tool(ref_tool, gcmd)
+            return
+        self.xy_results = results
+        self._save_xy_results()
+        self._report_xy_results(gcmd, results, ref_tool)
+        self._return_to_ref_tool(ref_tool, gcmd)
+
+    def _xy_select_tool(self, gcmd, tool_nr):
+        """Werkzeugwechsel wie bei CALIBRATE_ALL_Z_OFFSETS: ueber das
+        T<n>-Makro samt der Pickup-Hooks. So laeuft der Trockenlauf exakt
+        den Weg, den auch der echte Lauf nimmt."""
+        self.cmd_OFFSET_BEFORE_PICKUP_GCODE(gcmd)
+        self.gcode.run_script_from_command("T%d" % tool_nr)
+        self.cmd_OFFSET_AFTER_PICKUP_GCODE(gcmd)
+
+    def _run_xy_calibration(self, gcmd, locator, ref_tool, ordered_tools,
+                            dry_run, temp, iterations):
+        results = {}
+        ref_pos = None
+        baseline = None
+        window = None
+        # Anfahrposition (Spec R-B'): dort steht das Referenztool, dort hat
+        # der Nutzer die Sonde untergestellt. park_z ist die Fahrhoehe.
+        # locator.parked ist die per NOZZLE_LOCATOR_PARK tatsaechlich
+        # angefahrene Position -- sie gilt auch, wenn der Assistent die
+        # Config geaendert hat und Klipper noch nicht neu gestartet wurde.
+        park_x, park_y, park_z = locator.parked or locator.park_position()
+
+        for tool_nr in ordered_tools:
+            # Erst auf park_z, DANN wechseln -- der Wechselweg ist damit
+            # frei, weil die Halterung auf dieser Hoehe untergeschoben wurde.
+            locator._move([None, None, park_z], locator.move_speed)
+            self._xy_select_tool(gcmd, tool_nr)
+            if temp > 0:
+                self.gcode.run_script_from_command("M109 S%.0f" % temp)
+            locator.park(park_x, park_y, park_z)
+            if dry_run:
+                gcmd.respond_info("T%d: Trockenlauf, Position erreicht"
+                                  % tool_nr)
+                continue
+
+            if baseline is None:
+                # Einmal pro Lauf, mit dem Referenztool, auf park_z -- dort
+                # ist die Spule 60 mm entfernt und praktisch unsichtbar.
+                baseline = locator.measure_baseline()
+                gcmd.respond_info("XY: Basislinie %.0f Hz" % baseline)
+
+            if window is not None:
+                locator._move([window[0], window[1], None],
+                              locator.move_speed)
+            z_reached = locator.approach_z(baseline)
+            if window is None:
+                # Grobsuche nur einmal, mit dem Referenztool: sie legt das
+                # Fenster fuer alle folgenden Tools fest.
+                cx, cy = park_x, park_y
+                coarse_x = locator.locate(
+                    'X', cx, baseline, runs=1,
+                    span=locator.search_span, step=locator.sweep_step * 2.)
+                cx = coarse_x['center']
+                locator._move([cx, None, None], locator.move_speed)
+                coarse_y = locator.locate(
+                    'Y', cy, baseline, runs=1,
+                    span=locator.search_span, step=locator.sweep_step * 2.)
+                cy = coarse_y['center']
+                locator._move([None, cy, None], locator.move_speed)
+                # Feinanfahrt ueber dem Grobscheitel: diese Amplitude gilt
+                # fuer alle Tools des Laufs.
+                z_reached = locator.approach_z(baseline)
+                window = (cx, cy)
+                gcmd.respond_info(
+                    "XY: Grobscheitel X%.3f Y%.3f, Messhoehe Z%.3f"
+                    % (cx, cy, z_reached))
+            cx, cy = window
+            locator._move([cx, cy, None], locator.move_speed)
+
+            # X -> Y -> X: Fixpunktiteration gegen die Kreuzkopplung.
+            # Ein X-Sweep bei festem y liefert x0 - (c/a)*(y - y0); der
+            # Restfehler schrumpft pro voller Runde um rho^2.
+            rx = ry = None
+            for _ in range(iterations):
+                rx = locator.locate('X', cx if rx is None else rx['center'],
+                                    baseline)
+                locator._move([rx['center'], None, None], locator.move_speed)
+                ry = locator.locate('Y', cy if ry is None else ry['center'],
+                                    baseline)
+                locator._move([None, ry['center'], None], locator.move_speed)
+
+            entry = {
+                'x_peak': rx['center'], 'y_peak': ry['center'],
+                'x_fwd': rx['fwd'], 'x_rev': rx['rev'],
+                'y_fwd': ry['fwd'], 'y_rev': ry['rev'],
+                'spread_x': rx['spread'], 'spread_y': ry['spread'],
+                'z_reached': z_reached,
+            }
+            coil_temp = self._xy_coil_temp()
+            if coil_temp is not None:
+                entry['coil_temp'] = coil_temp
+            if tool_nr == ref_tool:
+                ref_pos = (rx['center'], ry['center'], z_reached)
+            results[str(tool_nr)] = entry
+            gcmd.respond_info(
+                "T%d: Scheitel X%.4f Y%.4f (Z %.3f, Drift-Bias X %+.1f / "
+                "Y %+.1f um)"
+                % (tool_nr, rx['center'], ry['center'], z_reached,
+                   (rx['fwd'] - rx['rev']) * 1000.,
+                   (ry['fwd'] - ry['rev']) * 1000.))
+            locator._move([None, None, park_z], locator.move_speed)
+
+        if dry_run or ref_pos is None:
+            return results
+        # Differenzen bilden -- hier kuerzt sich die Spulenposition weg.
+        for key, entry in results.items():
+            entry['x'] = entry['x_peak'] - ref_pos[0]
+            entry['y'] = entry['y_peak'] - ref_pos[1]
+            entry['z_compare'] = entry['z_reached'] - ref_pos[2]
+            if (abs(entry['x']) > locator.max_offset
+                    or abs(entry['y']) > locator.max_offset):
+                raise gcmd.error(
+                    "T%s: Offset %.3f/%.3f ueberschreitet max_offset %.1f mm "
+                    "-- vermutlich wurde ein falscher Scheitel gefittet."
+                    % (key, entry['x'], entry['y'], locator.max_offset))
+        results['ref_tool'] = ref_tool
+        results['timestamp'] = int(time.time())
+        return results
+
+    def _xy_coil_temp(self):
+        """Spulentemperatur, falls der Sensor aus der BTT-Vorlage da ist.
+        Der Drift-Bias haengt an ihr; sie gehoert zu jeder Messung."""
+        sensor = self.printer.lookup_object(
+            'temperature_sensor xyprobe_coil', None)
+        if sensor is None:
+            return None
+        try:
+            now = self.printer.get_reactor().monotonic()
+            return round(sensor.get_status(now).get('temperature'), 1)
+        except Exception:
+            return None
+
+    def _report_xy_results(self, gcmd, results, ref_tool):
+        gcmd.respond_info("XY-Offsets gegen T%d (nur gemessen, nichts "
+                          "geschrieben):" % ref_tool)
+        for key in sorted((k for k in results if str(k).isdigit()), key=int):
+            e = results[key]
+            gcmd.respond_info(
+                "  T%s  X=%+.4f  Y=%+.4f  (Z-Vergleich %+.3f, "
+                "Drift-Bias X %+.1f um / Y %+.1f um)"
+                % (key, e['x'], e['y'], e['z_compare'],
+                   (e['x_fwd'] - e['x_rev']) * 1000.,
+                   (e['y_fwd'] - e['y_rev']) * 1000.))
+        gcmd.respond_info(
+            "Vergleich und Uebernahme in der Offset-Webapp (XY-Block) -- "
+            "nicht mit SAVE_CONFIG, das kann die included T<n>.cfg nicht "
+            "schreiben.")
 
     def _return_to_ref_tool(self, ref_tool, gcmd):
         """Am Ende einer Kalibrierung wieder das Referenztool aufnehmen.

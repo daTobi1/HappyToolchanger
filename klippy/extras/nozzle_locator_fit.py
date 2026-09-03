@@ -8,12 +8,18 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 
-def parabola_vertex(points):
-    """Scheitel der Kleinstequadrate-Parabel durch [(pos, wert), ...].
+def parabola_fit(points):
+    """Scheitel UND Kruemmung der Kleinstequadrate-Parabel durch
+    [(pos, wert), ...]. Rueckgabe: (scheitel, kruemmung), kruemmung positiv
+    fuer einen Hochpunkt (also -a des gefitteten y = a x^2 + b x + c).
 
-    Invariant gegen eine *konstante* Ablage: die verschiebt nur c in
-    y = a*x^2 + b*x + c, nicht -b/(2a). Ein Drift, der *linear in x* ist,
-    verschiebt den Scheitel dagegen um m/(2a) -- siehe bidirectional_center.
+    Die Kruemmung braucht der Diagonal-Sweep: aus den Kruemmungen bei 45
+    und 135 Grad faellt der Kreuzterm der 2D-Quadrik heraus, den
+    achsparallele Sweeps prinzipiell nicht sehen koennen.
+
+    Invariant gegen eine *konstante* Ablage: die verschiebt nur c, nicht
+    -b/(2a). Ein Drift, der *linear in x* ist, verschiebt den Scheitel
+    dagegen um m/(2a) -- siehe bidirectional_center.
 
     Die x-Werte werden um ihren Mittelwert zentriert, bevor gefixt wird.
     Bei realen Bettkoordinaten (120-300 mm, weit vom Ursprung) verbessert
@@ -53,7 +59,12 @@ def parabola_vertex(points):
     b = det3(m11, r1, m13, m21, r2, m23, m31, r3, m33) / det
     if a >= 0.0:
         raise ValueError("Parabel hat keinen Hochpunkt (a = %.6g)" % a)
-    return xbar - b / (2.0 * a)
+    return xbar - b / (2.0 * a), -a
+
+
+def parabola_vertex(points):
+    """Nur der Scheitel. Duenner Wrapper um parabola_fit."""
+    return parabola_fit(points)[0]
 
 
 def bidirectional_center(fwd_points, rev_points):

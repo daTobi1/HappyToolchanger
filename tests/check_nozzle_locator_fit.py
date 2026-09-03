@@ -147,6 +147,13 @@ def main():
     except ValueError:
         ok(True, "")
 
+    # --- 9: parabola_fit liefert auch die Kruemmung (fuer AXIS=DIAG) ---
+    pts = bell(CENTER, AMPL, CURV, POSITIONS)
+    v, k = fit.parabola_fit(pts)
+    close(k, CURV, 1e-6, "parabola_fit liefert nicht die eingesetzte Kruemmung")
+    ok(v == fit.parabola_vertex(pts),
+       "parabola_vertex und parabola_fit()[0] weichen voneinander ab")
+
     print("%d Zusicherungen geprueft" % CHECKS[0])
     if FINDINGS:
         for f in FINDINGS:

@@ -24,6 +24,7 @@
 import logging
 
 from . import ldc1612
+from . import nozzle_locator_fit as fit
 
 
 class NozzleLocator:
@@ -97,6 +98,8 @@ class NozzleLocator:
             'NOZZLE_LOCATOR_READ', self.cmd_READ, desc=self.cmd_READ_help)
         self.gcode.register_command(
             'NOZZLE_LOCATOR_PARK', self.cmd_PARK, desc=self.cmd_PARK_help)
+        self.gcode.register_command(
+            'NOZZLE_LOCATE', self.cmd_LOCATE, desc=self.cmd_LOCATE_help)
 
     def get_status(self, eventtime):
         # 'park' ist die Vorbelegung fuer den Assistenten. Solange die
@@ -251,6 +254,280 @@ class NozzleLocator:
         gcmd.respond_info(
             "nozzle_locator: %.1f Hz (sd %.1f, %d Samples, %d Fehler)"
             % (mean, sd, n, errors))
+
+    # ------------------------------------------------------------------
+    # Messschritte
+    # ------------------------------------------------------------------
+    def measure_baseline(self):
+        """Freiluft-Basislinie. Der Aufrufer stellt sicher, dass die Duese
+        weit von der Spule weg ist -- auf park_z (60 mm) ist sie praktisch
+        unsichtbar. Eine Basislinie mit der Duese in Reichweite ist der
+        Fehler, der im Vorversuch 12 kHz Versatz erzeugt hat.
+        """
+        self.state = 'baseline'
+        mean, sd, n, errors = self.read_frequency(self.dwell_time * 2.0)
+        if errors:
+            raise self.printer.command_error(
+                "nozzle_locator: %d Sensorfehler waehrend der Basislinie"
+                % errors)
+        return mean
+
+    def approach_z(self, baseline, target_amplitude=None):
+        """Senkt Z stufenweise, bis das Signal die Zielamplitude erreicht.
+
+        Faehrt nie unter holder_top_z + min_gap. Von park_z herab ist der
+        Weg lang: bis 5 mm ueber die Halterung in 5-mm-Schritten, dann
+        tasten. Rueckgabe: erreichtes Z.
+        """
+        if target_amplitude is None:
+            target_amplitude = self.target_amplitude
+        self.state = 'approaching'
+        toolhead = self.printer.lookup_object('toolhead')
+        floor = self._z_floor()
+        z = toolhead.get_position()[2]
+        coarse_until = self.holder_top_z + 5.0
+        step = 1.0
+        while z > floor:
+            if z - 5.0 > coarse_until:
+                z = z - 5.0
+                self._move([None, None, z], self.move_speed)
+            else:
+                z = max(floor, z - step)
+                self._move([None, None, z], self.approach_speed)
+            mean, sd, n, errors = self.read_frequency()
+            if mean - baseline >= target_amplitude:
+                return z
+            # Naeher am Ziel feiner tasten
+            if mean - baseline >= target_amplitude * 0.5:
+                step = 0.25
+        raise self.printer.command_error(
+            "nozzle_locator: Zielamplitude bei Z=%.3f nicht erreicht "
+            "(Signal %.0f Hz, noetig %.0f). Steht die Sonde unter der "
+            "Duese, und stimmt holder_top_z?"
+            % (floor, self.last_freq - baseline, target_amplitude))
+
+    def sweep(self, axis, center, span, step, descending=False):
+        """Ein gerichteter Sweep. Rueckgabe: [(position, frequenz), ...].
+
+        Wird immer aus derselben Richtung ANGEFAHREN (Vorlauf ausserhalb des
+        Fensters), damit das Spiel der Achse nicht in die Messung geht.
+        """
+        self.state = 'sweeping'
+        half = span / 2.0
+        n_steps = int(round(span / step)) + 1
+        positions = [center - half + i * step for i in range(n_steps)]
+        if descending:
+            positions = list(reversed(positions))
+        # Vorlauf: 3 Schritte vor den ersten Punkt, gleiche Richtung
+        lead = positions[0] - (step * 3.0 if not descending else -step * 3.0)
+        idx = 0 if axis == 'X' else 1
+        coord = [None, None, None]
+        coord[idx] = lead
+        self._move(coord, self.move_speed)
+
+        points = []
+        self.last_points = []
+        for p in positions:
+            coord = [None, None, None]
+            coord[idx] = p
+            self._move(coord, self.move_speed)
+            mean, sd, n, errors = self.read_frequency()
+            points.append((p, mean))
+            self.last_points.append((round(p, 4), round(mean, 1)))
+        return points
+
+    def locate(self, axis, center, baseline, runs=None, span=None, step=None):
+        """Bidirektionale Ortung. Rueckgabe: dict mit center/fwd/rev/spread.
+
+        Jeder Lauf besteht aus Hin- UND Ruecksweep. Ein einzelner gerichteter
+        Sweep ist nie ein Ergebnis: ein zeitlinearer Drift verschoebe seinen
+        Scheitel um m/(2a), und weil alle Laeufe dieselbe Richtung haetten,
+        wuerde die Streuung diesen Fehler nicht zeigen.
+        """
+        runs = self.runs if runs is None else runs
+        span = self.sweep_span if span is None else span
+        step = self.sweep_step if step is None else step
+
+        centers, fwds, revs, curvs = [], [], [], []
+        for _ in range(runs):
+            fwd = self.sweep(axis, center, span, step, descending=False)
+            good, reason = fit.sweep_quality(fwd, baseline, self.min_amplitude)
+            if not good:
+                raise self.printer.command_error(
+                    "nozzle_locator %s-Hinsweep: %s" % (axis, reason))
+            rev = self.sweep(axis, center, span, step, descending=True)
+            good, reason = fit.sweep_quality(rev, baseline, self.min_amplitude)
+            if not good:
+                raise self.printer.command_error(
+                    "nozzle_locator %s-Ruecksweep: %s" % (axis, reason))
+            try:
+                v_fwd, k_fwd = fit.parabola_fit(fwd)
+                v_rev, k_rev = fit.parabola_fit(rev)
+            except ValueError as e:
+                raise self.printer.command_error(
+                    "nozzle_locator %s: Fit fehlgeschlagen: %s" % (axis, e))
+            centers.append((v_fwd + v_rev) / 2.0)
+            fwds.append(v_fwd)
+            revs.append(v_rev)
+            curvs.append((k_fwd + k_rev) / 2.0)
+
+        spread = max(centers) - min(centers)
+        if spread > self.runs_tolerance:
+            raise self.printer.command_error(
+                "nozzle_locator %s: Messung instabil, Spannweite %.1f um "
+                "ueber %d Laeufe (erlaubt %.1f um). Einzelwerte: %s"
+                % (axis, spread * 1000., runs, self.runs_tolerance * 1000.,
+                   ", ".join("%.4f" % c for c in centers)))
+        self.state = 'idle'
+        return {
+            'center': sum(centers) / len(centers),
+            'runs': centers,
+            'fwd': sum(fwds) / len(fwds),
+            'rev': sum(revs) / len(revs),
+            'spread': spread,
+            'curvature': sum(curvs) / len(curvs),
+        }
+
+    def measure_coupling(self, center_x, center_y, baseline, runs=None):
+        """Misst den Kreuzterm der 2D-Quadrik ueber zwei Diagonal-Sweeps.
+
+        Achsparallele Sweeps liefern nur a und b. Der Kreuzterm c ist fuer
+        sie unsichtbar, verschiebt ihren Scheitel aber um (c/a)*(y1-y0).
+        Ueber die Diagonalen faellt er heraus:
+            Kruemmung( 45 Grad) = (a + b + 2c)/2
+            Kruemmung(135 Grad) = (a + b - 2c)/2
+        Rueckgabe: {'a','b','c','rho'} mit rho = c/sqrt(a*b).
+
+        Diagnose, kein Teil der Messroutine: einmal fahren, rho ansehen,
+        danach entscheiden ob die Routine aufwendiger werden muss.
+        """
+        rx = self.locate('X', center_x, baseline, runs=runs)
+        self._move([rx['center'], None, None], self.move_speed)
+        ry = self.locate('Y', center_y, baseline, runs=runs)
+        self._move([None, ry['center'], None], self.move_speed)
+        a, b = rx['curvature'], ry['curvature']
+        k45 = self._diagonal_curvature(rx['center'], ry['center'],
+                                       baseline, +1)
+        k135 = self._diagonal_curvature(rx['center'], ry['center'],
+                                        baseline, -1)
+        c = (k45 - k135) / 2.0   # (a+b+2c)/2 - (a+b-2c)/2 = 2c
+        denom = (a * b) ** 0.5 if a > 0 and b > 0 else 0.0
+        rho = c / denom if denom > 0 else 0.0
+        self._move([rx['center'], ry['center'], None], self.move_speed)
+        return {'a': a, 'b': b, 'c': c, 'rho': rho}
+
+    def _diagonal_curvature(self, cx, cy, baseline, sign):
+        """Ein Sweep entlang (1, sign)/sqrt(2) durch (cx, cy).
+
+        Bewegt X und Y gemeinsam. Die Positionsachse des Fits ist die
+        Bogenlaenge entlang der Diagonalen, nicht x oder y allein -- sonst
+        stimmt die Kruemmung um Faktor 2 nicht.
+        """
+        self.state = 'sweeping'
+        half = self.sweep_span / 2.0
+        n_steps = int(round(self.sweep_span / self.sweep_step)) + 1
+        root2 = 2.0 ** 0.5
+        # Vorlauf in Sweeprichtung, wie bei den achsparallelen Sweeps
+        s0 = -half - 3.0 * self.sweep_step
+        self._move([cx + s0 / root2, cy + sign * s0 / root2, None],
+                   self.move_speed)
+        pts = []
+        self.last_points = []
+        for i in range(n_steps):
+            s = -half + i * self.sweep_step          # Bogenlaenge
+            dx = s / root2
+            dy = sign * s / root2
+            self._move([cx + dx, cy + dy, None], self.move_speed)
+            mean, sd, n, errors = self.read_frequency()
+            pts.append((s, mean))
+            self.last_points.append((round(s, 4), round(mean, 1)))
+        good, reason = fit.sweep_quality(pts, baseline, self.min_amplitude)
+        if not good:
+            raise self.printer.command_error(
+                "nozzle_locator Diagonale (%s45): %s"
+                % ("+" if sign > 0 else "-", reason))
+        try:
+            return fit.parabola_fit(pts)[1]
+        except ValueError as e:
+            raise self.printer.command_error(
+                "nozzle_locator Diagonale: Fit fehlgeschlagen: %s" % e)
+
+    def _coupling_advice(self, rho):
+        """Sagt, was der gemessene rho-Wert fuer die Messroutine bedeutet.
+
+        Der Restfehler einer X->Y-Sequenz schrumpft pro voller Runde um
+        rho^2. Die ZUERST gemessene Achse erbt dagegen rho*sqrt(b/a) mal den
+        Fehler der Grobsuche -- sie ist also um etwa 1/rho schlechter als die
+        zweite. Genau das behebt XY_ITERATIONS=2.
+        """
+        r = abs(rho)
+        if r < 0.1:
+            return ("Kopplung vernachlaessigbar. Eine X->Y-Sequenz genuegt, "
+                    "xy_iterations: 1 ist richtig.")
+        if r < 0.35:
+            return ("Kopplung merklich. Die zuerst gemessene Achse ist rund "
+                    "%.0fx schlechter als die zweite -- xy_iterations: 2 "
+                    "verwenden, das kostet einen Sweep und gleicht beide an."
+                    % (1.0 / r))
+        return ("Kopplung stark (rho=%.2f). Die Glocke ist deutlich gegen "
+                "die Achsen verkippt. xy_iterations: 2 reicht hier "
+                "moeglicherweise nicht; ein 2D-Gitterfit waere der saubere "
+                "Weg. Ergebnis in docs/xy-offset-offene-arbeiten.md "
+                "festhalten." % r)
+
+    cmd_LOCATE_help = (
+        "Locate a nozzle laterally over the XY probe coil. Parameters: "
+        "AXIS (X, Y or DIAG), REPEATS (runs, default from config), SPAN, "
+        "STEP. AXIS=DIAG runs both diagonals and reports the cross-term of "
+        "the 2D peak (diagnostic only). Requires homed axes, the coil "
+        "placed under the nozzle and the nozzle already lowered to the "
+        "measuring height (see approach_z / CALIBRATE_XY_OFFSETS).")
+
+    def cmd_LOCATE(self, gcmd):
+        axis = gcmd.get('AXIS', 'X').upper()
+        if axis not in ('X', 'Y', 'DIAG'):
+            raise gcmd.error("AXIS muss X, Y oder DIAG sein")
+        runs = gcmd.get_int('REPEATS', self.runs, minval=1)
+        span = gcmd.get_float('SPAN', self.sweep_span, above=0.)
+        step = gcmd.get_float('STEP', self.sweep_step, above=0.)
+        self._require_homed()
+
+        toolhead = self.printer.lookup_object('toolhead')
+        here = toolhead.get_position()
+        if here[2] < self._z_floor():
+            raise gcmd.error(
+                "nozzle_locator: Z %.3f liegt unter dem Z-Boden %.3f"
+                % (here[2], self._z_floor()))
+        # Basislinie: der Aufrufer steht schon ueber der Spule. Auf park_z
+        # ist die Spule praktisch unsichtbar -- also hoch, messen, wieder
+        # herunter. Kein seitliches Wegfahren noetig.
+        self._move([None, None, self.park_z], self.move_speed)
+        baseline = self.measure_baseline()
+        self._move([None, None, here[2]], self.approach_speed)
+        try:
+            if axis == 'DIAG':
+                r = self.measure_coupling(here[0], here[1], baseline,
+                                          runs=runs)
+                gcmd.respond_info(
+                    "nozzle_locator Kopplung: a=%.1f b=%.1f c=%.1f Hz/mm^2, "
+                    "rho=%.3f" % (r['a'], r['b'], r['c'], r['rho']))
+                gcmd.respond_info(self._coupling_advice(r['rho']))
+                return
+            center = here[0 if axis == 'X' else 1]
+            result = self.locate(axis, center, baseline, runs=runs,
+                                 span=span, step=step)
+            gcmd.respond_info(
+                "nozzle_locator %s: %.4f mm (hin %.4f, rueck %.4f, "
+                "Differenz %.1f um = gemessener Drift-Bias; Spannweite "
+                "ueber %d Laeufe %.1f um)"
+                % (axis, result['center'], result['fwd'], result['rev'],
+                   (result['fwd'] - result['rev']) * 1000., runs,
+                   result['spread'] * 1000.))
+            coord = [None, None, None]
+            coord[0 if axis == 'X' else 1] = result['center']
+            self._move(coord, self.move_speed)
+        finally:
+            self.state = 'idle'
 
 
 def load_config(config):

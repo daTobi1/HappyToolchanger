@@ -3508,6 +3508,59 @@ function xySendMounted(script, title) {
 // diese Aufforderung darf erst kommen, wenn der Drucker wirklich steht.
 // Also: warten, bis nichts mehr laeuft, DANN homed_axes erneut abfragen -
 // dieselbe Pruefung wie oben. Nur die beweist, dass das Homing fertig ist.
+// Leveling VOR dem Aufsetzen. CALIBRATE_XY_OFFSETS verlangt ein
+// geleveltes Gantry (_require_leveled) -- ohne diesen Schritt griffe
+// spaeter die Recovery und liesse QUAD_GANTRY_LEVEL mit der Halterung auf
+// dem Bett laufen. Ohne QGL/Z-Tilt-Sektion ist das ein No-op.
+function xyLevelingState() {
+  return Promise.resolve(
+    $.get(printerUrl(printerIp,
+      "/printer/objects/query?quad_gantry_level=applied&z_tilt=applied"))
+  ).then(function (data) {
+    var st = (data && data.result && data.result.status) || {};
+    if (st.quad_gantry_level) {
+      return { cmd: "QUAD_GANTRY_LEVEL", applied: !!st.quad_gantry_level.applied };
+    }
+    if (st.z_tilt) {
+      return { cmd: "Z_TILT_ADJUST", applied: !!st.z_tilt.applied };
+    }
+    return { cmd: null, applied: true };
+  });
+}
+
+function ensureLeveledBeforeSetup() {
+  return xyLevelingState().then(function (lv) {
+    if (!lv.cmd || lv.applied) return true;
+    if (typeof showToast === 'function') {
+      showToast("Gantry wird gelevelt (" + lv.cmd + "), Bett muss leer sein…",
+                "info");
+    }
+    return sendGcodeWithRecovery(lv.cmd, "Leveling vor dem Aufsetzen")
+      .then(function (r) {
+        if (!r || r.handled) return false;
+        // Leveling kippt das Gantry: Z danach neu referenzieren.
+        return sendGcodeWithRecovery("G28 Z", "Z nach dem Leveling");
+      })
+      .then(function (r) {
+        if (!r || r.handled) return false;
+        return waitForPrinterIdle(900000).then(function (idle) {
+          if (!idle) return false;
+          return xyLevelingState().then(function (lv2) {
+            return lv2.applied;
+          }).then(function (applied) {
+            if (!applied) return false;
+            return xyHomedAxes().then(xyIsHomed);
+          });
+        });
+      });
+  }).then(function (ok) {
+    if (!ok) throw new Error(
+      "Das Gantry-Leveling vor dem Aufsetzen ist nicht sauber durchgelaufen " +
+      "-- Abbruch, solange das Bett noch leer ist.");
+    return true;
+  });
+}
+
 function ensureHomedAfterActivate() {
   return xyHomedAxes()
     .then(function (homed) {
@@ -3713,6 +3766,8 @@ function xyWizard() {
         showToast("Klipper ist bereit, homt jetzt…", "info");
       }
       return ensureHomedAfterActivate();
+    }).then(function () {
+      return ensureLeveledBeforeSetup();
     }).then(function () {
       return sendGcodeWithRecovery("NOZZLE_LOCATOR_READ DURATION=1.0",
                                    "Sonde prüfen");

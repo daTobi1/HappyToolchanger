@@ -37,7 +37,7 @@ i2c_bus: i2c0f
 #park_y: 125
 park_z: 60
 search_span: 30
-holder_top_z: 8
+holder_top_z: 53
 min_gap: 0.5
 
 sweep_span: 8
