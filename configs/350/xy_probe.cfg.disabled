@@ -1,0 +1,48 @@
+# Vorlage der XY-Sonde. Serial-Pfad und Halterungsmasse hier EINMALIG
+# eintragen. Diese Datei wird nie von Klipper geladen -- die Webapp kopiert
+# ihren Inhalt beim Aktivieren nach xy_probe.cfg.
+#
+# Die Sonde haengt per USB und traegt die Standard-Klipper-Firmware (nicht
+# die von eddy-ng). Den Pfad einmal ermitteln, waehrend sie steckt:
+#   ls /dev/serial/by-id/
+# Immer den by-id-Pfad eintragen, nie /dev/ttyACM0 -- der wandert, sobald
+# ein anderes USB-Geraet frueher erkannt wird.
+[mcu xyprobe]
+serial: /dev/serial/by-id/HIER_EINTRAGEN
+restart_method: command
+
+# Beide Temperaturen nach der offiziellen BTT-Vorlage. Die Spulentemperatur
+# gehoert zu jeder Messung -- die Zeitdrift des Scheitels liegt bei ~19 um/K.
+[temperature_sensor xyprobe_mcu]
+sensor_type: temperature_mcu
+sensor_mcu: xyprobe
+min_temp: 0
+max_temp: 100
+
+[temperature_sensor xyprobe_coil]
+sensor_type: Generic 3950
+sensor_pin: xyprobe:gpio26
+min_temp: 0
+max_temp: 100
+
+[nozzle_locator]
+i2c_mcu: xyprobe
+i2c_bus: i2c0f
+
+search_x: 175
+search_y: 175
+search_span: 30
+safe_z: 15
+holder_top_z: 8
+min_gap: 0.5
+
+sweep_span: 8
+sweep_step: 1
+dwell_time: 0.5
+runs: 3
+runs_tolerance: 0.05
+xy_iterations: 1
+
+min_amplitude: 2000
+target_amplitude: 6000
+max_offset: 5.0

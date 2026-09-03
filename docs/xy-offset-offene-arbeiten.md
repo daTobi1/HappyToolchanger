@@ -11,9 +11,9 @@ Die XY-Offset-Kalibrierung per Eddy-Spule ist entworfen, geplant und zur Hälfte
 
 | Task | Zustand |
 |---|---|
-| 1 — Fit-Mathematik (`nozzle_locator_fit.py`) | **fertig**, 16 Zusicherungen, getestet |
-| 2 — Sensoranbindung (`nozzle_locator.py`) | offen, **braucht Hardware** |
-| 3 — Z-Anfahrt, Sweep, Ortung | offen, **braucht Hardware** |
+| 1 — Fit-Mathematik (`nozzle_locator_fit.py`) | **fertig**, 18 Zusicherungen, getestet |
+| 2 — Sensoranbindung (`nozzle_locator.py`) | **fertig**, am 250er verifiziert (2026-09-03), siehe 2.1 |
+| 3 — Z-Anfahrt, Sweep, Ortung | offen, **braucht die Halterung** |
 | 4 — Extraktion `_resolve_tool_run()` | **gestrichen** (siehe unten) |
 | 5 — `CALIBRATE_XY_OFFSETS` | offen, hängt an Task 3 |
 | 6 — Extraktion `updateConfigFile()` | **fertig**, Test grün |
@@ -36,9 +36,16 @@ Grund: eddy-ng bringt einen eigenen MCU-Befehlssatz mit (`config_ldc1612_ng`, `l
 
 Das ist kein Nachteil, sondern Absicht: beide Sensoren bleiben vollständig unabhängig, verschiedene Firmware, keine Kollision von Kommandos oder Config-Sektionen. Der Grund für diese Entscheidung war ohnehin ein anderer — eine zweite `[probe_eddy_ng]`-Sektion lässt Klipper gar nicht erst starten, weil `eddy-ng/probe_eddy_ng/probe.py:186` seine Kommandos global und nicht instanz-skopiert registriert.
 
-**Zu tun:** neue Spule mit Standard-Klipper flashen (USB-Variante, siehe 2.2).
+**Erledigt am 2026-09-03, und so lief es tatsächlich (BTT Eddy Duo, per USB am 250er):**
 
-**Früh verifizieren, bevor Zeit in Task 2 fließt:** dass Klippers `ldc1612` die neue Spule wirklich anspricht. Ein einzelnes `NOZZLE_LOCATOR_READ` mit plausibler Frequenz und ohne Fehlerflags reicht als Beweis.
+- **Die Werksfirmware spricht kein USB.** Rote LED an, blaue blinkt, USB/CAN-Schalter auf USB — und der Kernel sieht beim Einstecken *nichts*, nicht einmal einen fehlgeschlagenen Verbindungsversuch. Das sieht aus wie ein Ladekabel und ist keins. Welche Firmware ab Werk drauf ist, dokumentiert BTT nirgends.
+- **Der Beweis, dass Kabel und Port taugen, ist der BOOT-Taster:** halten, einstecken, loslassen → der feste RP2040-Bootloader meldet sich als `RP2 Boot` (2e8a:0003) mit einem Laufwerk `RPI-RP2`. Das verändert nichts und trennt Kabelproblem von Firmwareproblem in einem Schritt.
+- **Geflasht wurde Standard-Klipper** aus einem sauberen Worktree des Host-Klippers (`~/klipper-xyprobe` auf dem 250er, gleiche Version wie der Host): `MACH_RP2040`, `FLASH_START_0100`, `RPXXXX_USB`, `WANT_LDC1612`, und **`RP2040_FLASH_GENERIC_03` (CLKDIV 4)** — BTTs README warnt, dass die Sonde mit der CLKDIV-2-Vorgabe „nur sporadisch beim Einschalten startet". Laufwerk mounten, `klipper.uf2` kopieren, fertig; die Sonde meldet sich als `usb-Klipper_rp2040_504434041088E21C-if00`.
+- **Späteres Neuflashen ohne Taster:** die Klipper-Firmware geht per 1200-Baud-Request in den Bootloader (`serial.Serial(pfad, 1200)`), braucht dafür aber ein paar Sekunden mehr, als man erwartet — dann wieder mounten und kopieren.
+- **Config nach der offiziellen BTT-Vorlage** (`sample-bigtreetech-eddy.cfg`): `i2c_bus: i2c0f`, `restart_method: command`, dazu die beiden Temperatursensoren (MCU und Spulen-NTC an `gpio26`). Die Spulentemperatur gehört zu jeder Messung — der Drift-Bias hängt an ihr.
+- **Ergebnis:** `NOZZLE_LOCATOR_READ DURATION=1.0` → 3.132.430 Hz, sd 21 Hz, 480 Samples, 0 Fehler; Samplezahl skaliert mit der Dauer, der Sensor stoppt nach jeder Messung sauber (`LDC1612 finished` im Log). Spule 34 °C, MCU 39 °C.
+
+**Beim Bau gefallen, gegen Klippers Quelle geprüft:** `BatchBulkHelper._proc_batch` entfernt nur den Client, dessen *eigener* Callback `False` liefert — der Plan wollte per zweitem Lambda abmelden, das hätte den ersten Client nie losgelassen (Risiko 4.6, bestätigt). Und `errors` im Batch ist `last_error_count`, kumuliert seit Messstart, nicht pro Batch. Beides ist in `nozzle_locator.py` berücksichtigt und in `check_klipper_api.py` als Zusicherung festgenagelt (65 Zusicherungen, grün).
 
 ### 2.2 Sensor
 

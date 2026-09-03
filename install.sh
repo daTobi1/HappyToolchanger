@@ -171,6 +171,18 @@ if [ -n "$PRINTER" ]; then
     elif [ -f "${CONFIG_DST}/printer.cfg" ]; then
       echo "  Skipped printer.cfg (exists, contains SAVE_CONFIG data)"
     fi
+    # xy_probe.cfg / .disabled: nur initial anlegen.
+    # Die .disabled traegt serial-Pfad und Halterungsmasse des Nutzers -- die
+    # darf ein Update NIE ueberschreiben. Die aktive Datei traegt den
+    # Ein/Aus-Zustand, den die Webapp verwaltet.
+    for xy_file in xy_probe.cfg xy_probe.cfg.disabled; do
+      if [ -f "${CONFIG_SRC}/${xy_file}" ] && [ ! -f "${CONFIG_DST}/${xy_file}" ]; then
+        cp "${CONFIG_SRC}/${xy_file}" "${CONFIG_DST}/${xy_file}"
+        echo "  Copied ${xy_file} (initial)"
+      elif [ -f "${CONFIG_DST}/${xy_file}" ]; then
+        echo "  Skipped ${xy_file} (exists, contains user settings)"
+      fi
+    done
     # Read-only configs are always overwritten
     for cfg_file in HEXA.cfg happy_toolchanger.cfg eddy-ng.cfg; do
       if [ -f "${CONFIG_SRC}/${cfg_file}" ]; then

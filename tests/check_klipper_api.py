@@ -58,6 +58,7 @@ def main():
     sys.path.insert(0, klippy)
 
     from extras import probe, manual_probe, homing, gcode_macro  # noqa: F401
+    from extras import ldc1612, bulk_sensor  # noqa: F401
     import gcode as gcode_mod
 
     # --- probe.py: tool_probe.py und offset.py bauen direkt darauf auf ---
@@ -87,6 +88,45 @@ def main():
     if hasattr(probe, "run_single_probe"):
         ok(len(arg_names(probe.run_single_probe)) == 2,
            "probe.run_single_probe Signatur geaendert")
+
+    # --- ldc1612 / bulk_sensor: nozzle_locator.py baut direkt darauf auf ---
+    has_attrs(ldc1612, ["LDC1612"], "ldc1612")
+    if hasattr(ldc1612, "LDC1612"):
+        p = arg_names(ldc1612.LDC1612.__init__)
+        ok(p[:2] == ["self", "config"],
+           "ldc1612.LDC1612.__init__ Signatur geaendert",
+           "erwartet (self, config, calibration=None), ist %s" % p)
+        ok("calibration" in p,
+           "ldc1612.LDC1612 nimmt kein optionales calibration mehr",
+           "nozzle_locator laesst es weg -- es gibt keine Hoehenkarte fuer "
+           "einen aufwaerts gerichteten Sensor")
+        has_attrs(ldc1612.LDC1612, [
+            "add_client", "get_samples_per_second", "convert_raw_to_frequency",
+        ], "ldc1612.LDC1612")
+        # Samples sind (print_time, frequenz, dummy_z); nozzle_locator liest
+        # Index 1.
+        src = source_of(getattr(ldc1612.LDC1612, "_convert_samples", None))
+        ok("round(freq_conv * mv, 3)" in src or "freq_conv * mv" in src,
+           "ldc1612._convert_samples legt die Frequenz nicht mehr an Index 1 ab")
+        # 'errors' im Batch ist der kumulierte Zaehler seit Messstart, kein
+        # Wert pro Batch -- nozzle_locator nimmt deshalb den letzten Wert
+        # statt aufzusummieren.
+        src = source_of(getattr(ldc1612.LDC1612, "_process_batch", None))
+        ok("'errors': self.last_error_count" in src,
+           "ldc1612._process_batch meldet 'errors' nicht mehr als "
+           "kumulierten last_error_count",
+           "nozzle_locator.read_frequency() muesste dann aufsummieren")
+    has_attrs(bulk_sensor, ["BatchBulkHelper"], "bulk_sensor")
+    if hasattr(bulk_sensor, "BatchBulkHelper"):
+        has_attrs(bulk_sensor.BatchBulkHelper, ["add_client", "_proc_batch"],
+                  "bulk_sensor.BatchBulkHelper")
+        src = source_of(getattr(bulk_sensor.BatchBulkHelper,
+                                "_proc_batch", None))
+        ok("client_cbs" in src and ".remove(client_cb)" in src,
+           "bulk_sensor._proc_batch entfernt Clients nicht mehr, wenn ihr "
+           "Callback False liefert",
+           "nozzle_locator meldet sich ab, indem derselbe Callback nach dem "
+           "Messfenster False zurueckgibt")
 
     # --- manual_probe.ProbeResult: wir lesen .bed_z ---
     ok(hasattr(manual_probe, "ProbeResult"), "manual_probe.ProbeResult fehlt")

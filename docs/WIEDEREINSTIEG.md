@@ -3,7 +3,7 @@
 **Das hier zuerst lesen.** Danach weißt du, wo du stehst und was als Nächstes
 zu tun ist. Die Details stehen woanders — dieses Dokument sagt nur, wo.
 
-Stand: 2026-09-01, Commit `c6929699`, alles auf `main` und gepusht.
+Stand: 2026-09-03, alles auf `main` und gepusht. Die Spule ist da, haengt per USB am 250er und liefert Rohfrequenz.
 
 ---
 
@@ -12,8 +12,8 @@ Stand: 2026-09-01, Commit `c6929699`, alles auf `main` und gepusht.
 | Task | Zustand |
 |---|---|
 | 1 — Fit-Mathematik `nozzle_locator_fit.py` | **fertig**, 18 Zusicherungen |
-| 2 — Sensoranbindung `nozzle_locator.py` | offen — **braucht die Spule** |
-| 3 — Z-Anfahrt, Sweep, Ortung | offen — **braucht die Spule** |
+| 2 — Sensoranbindung `nozzle_locator.py` | **fertig**, am 250er verifiziert (3,13 MHz, sd 21 Hz, 0 Fehler) |
+| 3 — Z-Anfahrt, Sweep, Ortung | offen — **naechster Schritt**, braucht die Halterung |
 | 4 — Extraktion `_resolve_tool_run()` | **gestrichen**, siehe §4 |
 | 5 — `CALIBRATE_XY_OFFSETS` | offen, hängt an Task 3 |
 | 6 — Extraktion `updateConfigFile()` | **fertig** |
@@ -22,38 +22,41 @@ Stand: 2026-09-01, Commit `c6929699`, alles auf `main` und gepusht.
 Tests heute: 18 (Fit, Python) + 63 (Webapp, node) + 19 (Recovery, node).
 Ein Abschluss-Review über den gesamten Umfang ist gelaufen und sauber.
 
-**Blockiert ist alles Weitere an genau einer Sache: die zweite Eddy-Spule
-ist bestellt, aber noch nicht da.**
+**Blockiert ist Task 3 jetzt nur noch an der Halterung** (bekannte Bauhoehe, siehe
+`xy-offset-offene-arbeiten.md` §2.3). Die Spule selbst ist erledigt, siehe §2.**
 
 ---
 
-## 2. Das Erste, was du tust, wenn die Spule ankommt
+## 2. Was mit der Spule passiert ist (2026-09-03)
 
-In dieser Reihenfolge. Schritt 1 und 2 entscheiden, ob der Rest überhaupt
-Sinn hat.
+Die Spule ist ein BTT Eddy Duo, hängt per USB am 250er und ist erledigt.
+Was dabei zu lernen war, steht in `xy-offset-offene-arbeiten.md` §2.1 —
+kurz: **die Werksfirmware spricht kein USB**, der Kernel sieht beim
+Einstecken gar nichts, auch keinen Fehlversuch. Geflasht wurde
+Standard-Klipper per BOOT-Taster; der Pfad steht in
+`configs/250/xy_probe.cfg.disabled`.
 
-1. **Firmware prüfen, bevor irgendetwas anderes passiert.**
-   Die Spule braucht **Standard-Klipper-Firmware, nicht die von eddy-ng** —
-   die beiden sprechen verschiedene MCU-Befehlssätze. Falsche Firmware heißt:
-   Klippers `ldc1612` sieht das Gerät nicht, und niemand versteht warum.
-   Begründung in `xy-offset-offene-arbeiten.md` §2.1.
+`NOZZLE_LOCATOR_READ DURATION=1.0` am 250er:
 
-2. **`serial`-Pfad ermitteln und eintragen.** Mit gesteckter Sonde:
-   ```bash
-   ls /dev/serial/by-id/
-   ```
-   Den `by-id`-Pfad in `configs/<250|350>/xy_probe.cfg.disabled` eintragen —
-   nie `/dev/ttyACM0`, der wandert.
+| Wert | Ergebnis |
+|---|---|
+| Frequenz | 3.132.430 Hz (Freiluft, Bettmitte) |
+| Streuung | 21 Hz |
+| Samples | 480 in 1 s (400 Hz Rate, skaliert sauber mit der Dauer) |
+| Fehler | 0 |
 
-3. **Task 2 bauen** (Plan hat den vollständigen Code) und mit einem einzigen
-   `NOZZLE_LOCATOR_READ` beweisen, dass Klippers `ldc1612` die Spule
-   anspricht. Plausible Frequenz, keine Fehlerflags. **Das ist der Moment,
-   an dem sich entscheidet, ob der ganze Ansatz trägt** — vorher lohnt kein
-   weiterer Aufwand.
+Damit trägt der Ansatz. Der einzige offene Vorversuch aus dem Plan ist
+der Metalltest (Hand oder Düse über die Spule, Frequenz muss steigen).
 
-4. Dann Task 3, dann Task 5. Beide im Plan ausgeschrieben.
+**Nächste Schritte in dieser Reihenfolge:**
 
-5. **Erst danach die Webapp im Browser ansehen.** Sie ist nie geöffnet
+1. **Halterung** mit bekannter Bauhöhe, `holder_top_z` in der `.disabled`
+   eintragen (steht derzeit auf dem Plan-Default 8 mm).
+2. **Task 3 bauen** (Plan hat den vollständigen Code): Z-Anfahrt, Sweep,
+   `NOZZLE_LOCATE`. Zwei Planannahmen sind beim Bau von Task 2 gefallen
+   und gelten auch für Task 3 — siehe §3 d).
+3. Dann Task 5.
+4. **Erst danach die Webapp im Browser ansehen.** Sie ist nie geöffnet
    worden; siehe §3.
 
 ---
@@ -82,6 +85,17 @@ Z-Vergleich und Drift-Bias.
 dass jedes Homing bei leerem Bett passiert. Wer die Reihenfolge anfasst,
 muss diese Eigenschaft erhalten.
 → `xy-offset-offene-arbeiten.md` §5.1
+
+**d) Klippers `bulk_sensor` und `ldc1612` verhalten sich anders, als der
+Plan annahm.** Beim Bau von Task 2 an der Quelle nachgelesen: ein Client
+wird nur abgemeldet, wenn **sein eigener** Callback `False` liefert — ein
+zweiter Lambda-Client meldet den ersten nicht ab, der Sensor liefe endlos.
+Und `errors` im Batch ist ein **kumulierter** Zähler seit Messstart, kein
+Wert pro Batch. `nozzle_locator.read_frequency()` macht beides richtig
+(Flag im selben Callback, letzter statt summierter Fehlerwert); der Code
+für Task 3 im Plan ruft nur `read_frequency()` auf und ist davon nicht
+betroffen — aber wer dort direkt an den Sensor geht, muss es wissen.
+Der Wächtertest `check_klipper_api.py` nagelt beides fest.
 
 ---
 
