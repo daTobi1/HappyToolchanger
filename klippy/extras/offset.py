@@ -1750,6 +1750,17 @@ class Offset:
         # Nie selbst homen oder leveln: die Halterung steht auf dem Bett.
         locator._require_homed()
         self._require_leveled(gcmd)
+        # Jeder G-Code-Fehler setzt den Toolchanger auf 'uninitialized'
+        # (toolchanger._handle_command_error). Nach einem abgebrochenen Lauf
+        # muss er explizit neu initialisiert werden -- ohne Homing, das
+        # verbietet sich mit der Halterung auf dem Bett.
+        tc_status = getattr(self.toolchanger, 'status', 'ready')
+        if tc_status != 'ready':
+            raise gcmd.error(
+                "Toolchanger ist '%s', nicht bereit. INITIALIZE_TOOLCHANGER "
+                "ausfuehren (erkennt das montierte Tool, faehrt nicht) -- "
+                "NICHT homen, solange die Halterung auf dem Bett steht."
+                % tc_status)
 
         prev_timeout = self._current_idle_timeout()
         self.gcode.run_script_from_command("SET_IDLE_TIMEOUT TIMEOUT=3600")
@@ -1758,6 +1769,17 @@ class Offset:
             results = self._run_xy_calibration(
                 gcmd, locator, ref_tool, ordered_tools, dry_run, temp,
                 iterations)
+        except Exception as e:
+            # Bei Abbruch zurueck auf das Referenztool (Tobis Wunsch,
+            # 2026-09-04). Das muss HIER passieren, solange der Fehler das
+            # Kommando noch nicht verlassen hat: sobald er das tut, setzt
+            # toolchanger._handle_command_error den Toolchanger auf
+            # 'uninitialized', und ein Wechsel ginge nur noch nach
+            # INITIALIZE_TOOLCHANGER. Erst auf park_z -- der Kopf kann
+            # 0,5 mm ueber der Halterung stehen -- dann wechseln, dann den
+            # urspruenglichen Fehler weiterreichen.
+            self._xy_abort_to_ref_tool(gcmd, locator, ref_tool, e)
+            raise
         finally:
             self.gcode.run_script_from_command(
                 "SET_IDLE_TIMEOUT TIMEOUT=%d" % prev_timeout)
@@ -1774,6 +1796,29 @@ class Offset:
         self._report_xy_results(gcmd, results, ref_tool)
         self._return_to_ref_tool(ref_tool, gcmd)
 
+    def _xy_abort_to_ref_tool(self, gcmd, locator, ref_tool, err):
+        """Nach einem Abbruch: Kopf auf park_z, Referenztool aufnehmen.
+        Scheitert das selbst, bleibt der urspruengliche Fehler der
+        wichtigere -- der Rueckwechsel-Fehler wird nur gemeldet."""
+        try:
+            _, _, park_z = locator.parked or locator.park_position()
+            locator._move([None, None, park_z], locator.move_speed)
+            at = getattr(self.toolchanger, 'active_tool', None)
+            cur = getattr(at, 'tool_number', None) if at else None
+            if cur == ref_tool:
+                gcmd.respond_info(
+                    "XY-Abbruch: Referenztool T%d ist noch montiert."
+                    % ref_tool)
+                return
+            gcmd.respond_info(
+                "XY-Abbruch (%s) -- zurueck auf das Referenztool T%d"
+                % (str(err).splitlines()[0][:120], ref_tool))
+            self._xy_select_tool(gcmd, ref_tool)
+        except Exception as e2:
+            gcmd.respond_info(
+                "XY-Abbruch: Rueckwechsel auf T%d nicht moeglich: %s"
+                % (ref_tool, e2))
+
     def _xy_select_tool(self, gcmd, tool_nr):
         """Werkzeugwechsel wie bei CALIBRATE_ALL_Z_OFFSETS: ueber das
         T<n>-Makro samt der Pickup-Hooks. So laeuft der Trockenlauf exakt
@@ -1787,13 +1832,22 @@ class Offset:
         results = {}
         ref_pos = None
         baseline = None
-        window = None
         # Anfahrposition (Spec R-B'): dort steht das Referenztool, dort hat
         # der Nutzer die Sonde untergestellt. park_z ist die Fahrhoehe.
         # locator.parked ist die per NOZZLE_LOCATOR_PARK tatsaechlich
         # angefahrene Position -- sie gilt auch, wenn der Assistent die
         # Config geaendert hat und Klipper noch nicht neu gestartet wurde.
         park_x, park_y, park_z = locator.parked or locator.park_position()
+        # Vorhersage je Tool: der Scheitel des Referenztools plus die
+        # Differenz der Config-Offsets. Am 250er liegen T1-T3 rund 5 mm in
+        # Y neben T0 -- ein gemeinsames Fenster (erste Fassung) hat T1 dort
+        # schlicht nicht gefunden. Jedes Tool bekommt deshalb seine eigene
+        # Grobsuche, zentriert auf die Vorhersage; ohne bekannte Offsets ist
+        # die Vorhersage die Referenzposition, und search_span faengt den
+        # Rest. Das ist zugleich die Politik, die "gemessen gegen aktuell"
+        # in der Webapp sinnvoll macht.
+        ref_off = self._xy_tool_offset(ref_tool)
+        ref_peak = None
 
         for tool_nr in ordered_tools:
             # Erst auf park_z, DANN wechseln -- der Wechselweg ist damit
@@ -1814,33 +1868,33 @@ class Offset:
                 baseline = locator.measure_baseline()
                 gcmd.respond_info("XY: Basislinie %.0f Hz" % baseline)
 
-            if window is not None:
-                locator._move([window[0], window[1], None],
-                              locator.move_speed)
+            off = self._xy_tool_offset(tool_nr)
+            base = ref_peak if ref_peak is not None else (park_x, park_y)
+            pred = (base[0] + (off[0] - ref_off[0]),
+                    base[1] + (off[1] - ref_off[1]))
+            locator._move([pred[0], pred[1], None], locator.move_speed)
+            # Suchhoehe: bis zum Doppelten der Mindestamplitude herunter.
+            # Die Vorhersage kann Millimeter danebenliegen, dort ist das
+            # Signal schwaecher als am Scheitel -- die Zielamplitude kommt
+            # erst ueber dem Grobscheitel. Das Doppelte, nicht die
+            # Mindestamplitude selbst: sonst liegen die 2-mm-Sweeppunkte
+            # neben dem Scheitel eine Haaresbreite unter der Schwelle
+            # (250er: 1.987 Hz gegen 2.000 -- kein Kandidat).
+            locator.approach_z(baseline, 2.0 * locator.min_amplitude)
+            cx, amp_x = locator.coarse_locate('X', pred[0], baseline)
+            locator._move([cx, None, None], locator.move_speed)
+            cy, amp_y = locator.coarse_locate('Y', pred[1], baseline)
+            locator._move([None, cy, None], locator.move_speed)
+            # Messhoehe: ueber dem Grobscheitel auf die Zielamplitude --
+            # dieselbe fuer jedes Tool, nur so misst jedes bei gleichem
+            # Spalt und die Differenz im kommandierten Z ist ein
+            # Z-Vergleichswert.
             z_reached = locator.approach_z(baseline)
-            if window is None:
-                # Grobsuche nur einmal, mit dem Referenztool: sie legt das
-                # Fenster fuer alle folgenden Tools fest.
-                cx, cy = park_x, park_y
-                coarse_x = locator.locate(
-                    'X', cx, baseline, runs=1,
-                    span=locator.search_span, step=locator.sweep_step * 2.)
-                cx = coarse_x['center']
-                locator._move([cx, None, None], locator.move_speed)
-                coarse_y = locator.locate(
-                    'Y', cy, baseline, runs=1,
-                    span=locator.search_span, step=locator.sweep_step * 2.)
-                cy = coarse_y['center']
-                locator._move([None, cy, None], locator.move_speed)
-                # Feinanfahrt ueber dem Grobscheitel: diese Amplitude gilt
-                # fuer alle Tools des Laufs.
-                z_reached = locator.approach_z(baseline)
-                window = (cx, cy)
-                gcmd.respond_info(
-                    "XY: Grobscheitel X%.3f Y%.3f, Messhoehe Z%.3f"
-                    % (cx, cy, z_reached))
-            cx, cy = window
-            locator._move([cx, cy, None], locator.move_speed)
+            gcmd.respond_info(
+                "T%d: Vorhersage X%.2f Y%.2f, Grobsuche X%.2f (%+.0f Hz) "
+                "Y%.2f (%+.0f Hz), Messhoehe Z%.3f"
+                % (tool_nr, pred[0], pred[1], cx, amp_x, cy, amp_y,
+                   z_reached))
 
             # X -> Y -> X: Fixpunktiteration gegen die Kreuzkopplung.
             # Ein X-Sweep bei festem y liefert x0 - (c/a)*(y - y0); der
@@ -1860,19 +1914,22 @@ class Offset:
                 'y_fwd': ry['fwd'], 'y_rev': ry['rev'],
                 'spread_x': rx['spread'], 'spread_y': ry['spread'],
                 'z_reached': z_reached,
+                'pred_x': pred[0], 'pred_y': pred[1],
             }
             coil_temp = self._xy_coil_temp()
             if coil_temp is not None:
                 entry['coil_temp'] = coil_temp
             if tool_nr == ref_tool:
                 ref_pos = (rx['center'], ry['center'], z_reached)
+                ref_peak = (rx['center'], ry['center'])
             results[str(tool_nr)] = entry
             gcmd.respond_info(
                 "T%d: Scheitel X%.4f Y%.4f (Z %.3f, Drift-Bias X %+.1f / "
-                "Y %+.1f um)"
+                "Y %+.1f um, Spannweite X %.1f / Y %.1f um)"
                 % (tool_nr, rx['center'], ry['center'], z_reached,
                    (rx['fwd'] - rx['rev']) * 1000.,
-                   (ry['fwd'] - ry['rev']) * 1000.))
+                   (ry['fwd'] - ry['rev']) * 1000.,
+                   rx['spread'] * 1000., ry['spread'] * 1000.))
             locator._move([None, None, park_z], locator.move_speed)
 
         if dry_run or ref_pos is None:
@@ -1882,15 +1939,33 @@ class Offset:
             entry['x'] = entry['x_peak'] - ref_pos[0]
             entry['y'] = entry['y_peak'] - ref_pos[1]
             entry['z_compare'] = entry['z_reached'] - ref_pos[2]
-            if (abs(entry['x']) > locator.max_offset
-                    or abs(entry['y']) > locator.max_offset):
+            # Plausibilitaet: Abweichung von der VORHERSAGE, nicht vom
+            # Referenztool -- Offsets von 5 mm sind auf Tobis 250er normal
+            # und kein Fehler. Weit weg von der Vorhersage heisst dagegen:
+            # vermutlich ein falscher Scheitel (Heizblock, Nachbarmetall).
+            dev_x = entry['x_peak'] - entry['pred_x']
+            dev_y = entry['y_peak'] - entry['pred_y']
+            if (abs(dev_x) > locator.max_offset
+                    or abs(dev_y) > locator.max_offset):
                 raise gcmd.error(
-                    "T%s: Offset %.3f/%.3f ueberschreitet max_offset %.1f mm "
-                    "-- vermutlich wurde ein falscher Scheitel gefittet."
-                    % (key, entry['x'], entry['y'], locator.max_offset))
+                    "T%s: Scheitel weicht %.2f/%.2f mm von der Vorhersage "
+                    "ab (erlaubt %.1f) -- vermutlich wurde ein falscher "
+                    "Scheitel gefittet."
+                    % (key, dev_x, dev_y, locator.max_offset))
         results['ref_tool'] = ref_tool
         results['timestamp'] = int(time.time())
         return results
+
+    def _xy_tool_offset(self, tool_nr):
+        """(gcode_x_offset, gcode_y_offset) eines Tools aus der Config,
+        (0, 0) wenn unbekannt. Dient nur als Vorhersage fuer das
+        Suchfenster -- gemessen wird unabhaengig davon."""
+        try:
+            tool_obj = self.printer.lookup_object('tool T%d' % tool_nr)
+            return (float(tool_obj.gcode_x_offset or 0.0),
+                    float(tool_obj.gcode_y_offset or 0.0))
+        except Exception:
+            return (0.0, 0.0)
 
     def _xy_coil_temp(self):
         """Spulentemperatur, falls der Sensor aus der BTT-Vorlage da ist.

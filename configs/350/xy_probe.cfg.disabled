@@ -49,4 +49,4 @@ xy_iterations: 1
 
 min_amplitude: 2000
 target_amplitude: 6000
-max_offset: 5.0
+max_offset: 8.0

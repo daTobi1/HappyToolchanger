@@ -154,6 +154,37 @@ def main():
     ok(v == fit.parabola_vertex(pts),
        "parabola_vertex und parabola_fit()[0] weichen voneinander ab")
 
+    # --- 10: Grobsuche waehlt den Duesen-Buckel, nicht den Heizblock ---
+    # Echte Y-Grobsuche vom 250er (2026-09-03, Basislinie abgezogen): die
+    # Duese bei ~130 als Buckel von +6.000 Hz, ab Y 123 nach vorn der
+    # Heizblock mit bis zu +100.000 Hz am Fensterrand.
+    REAL_Y = [(115, 102596), (117, 74712), (119, 45577), (121, 25193),
+              (123, 6598), (125, 2523), (127, 4422), (129, 5928),
+              (131, 5972), (133, 4667), (135, 2859), (137, 1454),
+              (139, 626), (141, 172), (143, -90), (145, -245)]
+    pos, amp = fit.local_peak(REAL_Y, 130.0, 0.0, 2000.0)
+    ok(129.0 <= pos <= 131.5,
+       "Grobsuche trifft den Duesen-Buckel nicht", "pos=%.3f" % pos)
+    ok(pos < 120 or pos > 125,
+       "Grobsuche ist auf den Heizblock am Rand gesprungen")
+    ok(5000 <= amp <= 7000,
+       "Grobsuche meldet nicht die Amplitude des Buckels", "amp=%.0f" % amp)
+    # Liegt die Anfahrposition naeher am Blockrand, gilt trotzdem nur ein
+    # echter Buckel -- die Kante bei 115 ist keiner.
+    pos2, _ = fit.local_peak(REAL_Y, 118.0, 0.0, 2000.0)
+    ok(129.0 <= pos2 <= 131.5,
+       "Kante am Fensterrand wurde als Scheitel genommen", "pos=%.3f" % pos2)
+    # Reine Flanke ohne Buckel -> Fehler statt erfundenem Scheitel
+    try:
+        fit.local_peak([(x, 1000.0 * x) for x in range(10)], 5.0, 0.0, 2000.0)
+        ok(False, "local_peak akzeptiert eine monotone Flanke")
+    except ValueError:
+        ok(True, "")
+    # Synthetischer Buckel: Scheitel wird parabolisch verfeinert
+    pts = bell(124.3, AMPL, CURV, [118.0 + 2.0 * i for i in range(11)])
+    pos3, _ = fit.local_peak(pts, 125.0, 0.0, 2000.0)
+    close(pos3, 124.3, 0.05, "Grobsuche verfeinert den Scheitel nicht")
+
     print("%d Zusicherungen geprueft" % CHECKS[0])
     if FINDINGS:
         for f in FINDINGS:

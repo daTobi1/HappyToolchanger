@@ -60,7 +60,7 @@ class NozzleLocator:
         self.min_amplitude = config.getfloat('min_amplitude', 2000., above=0.)
         self.target_amplitude = config.getfloat('target_amplitude', 6000.,
                                                 above=0.)
-        self.max_offset = config.getfloat('max_offset', 5.0, above=0.)
+        self.max_offset = config.getfloat('max_offset', 8.0, above=0.)
         self.move_speed = config.getfloat('move_speed', 60., above=0.)
         self.approach_speed = config.getfloat('approach_speed', 5., above=0.)
 
@@ -287,19 +287,25 @@ class NozzleLocator:
         z = toolhead.get_position()[2]
         coarse_until = self.holder_top_z + 5.0
         step = 1.0
-        while z > floor:
+        while True:
+            # Erst lesen, dann senken: wer schon auf Zielamplitude steht
+            # (zweite Anfahrt ueber dem Grobscheitel), bleibt dort. Vorher
+            # ging jede Anfahrt blind einen Schritt tiefer und landete beim
+            # zweiten Aufruf direkt am Boden (250er, 2026-09-03).
+            mean, sd, n, errors = self.read_frequency()
+            if mean - baseline >= target_amplitude:
+                return z
+            if z <= floor:
+                break
+            # Naeher am Ziel feiner tasten
+            if mean - baseline >= target_amplitude * 0.5:
+                step = 0.25
             if z - 5.0 > coarse_until:
                 z = z - 5.0
                 self._move([None, None, z], self.move_speed)
             else:
                 z = max(floor, z - step)
                 self._move([None, None, z], self.approach_speed)
-            mean, sd, n, errors = self.read_frequency()
-            if mean - baseline >= target_amplitude:
-                return z
-            # Naeher am Ziel feiner tasten
-            if mean - baseline >= target_amplitude * 0.5:
-                step = 0.25
         raise self.printer.command_error(
             "nozzle_locator: Zielamplitude bei Z=%.3f nicht erreicht "
             "(Signal %.0f Hz, noetig %.0f). Steht die Sonde unter der "
@@ -387,6 +393,26 @@ class NozzleLocator:
             'spread': spread,
             'curvature': sum(curvs) / len(curvs),
         }
+
+    def coarse_locate(self, axis, center, baseline):
+        """Grobsuche: ein Sweep ueber search_span in doppelter Schrittweite,
+        Ergebnis ist der lokale Buckel, der `center` am naechsten liegt.
+
+        Kein Parabelfit ueber das ganze Fenster und kein globales Maximum:
+        das Fenster streift den Heizblock, und der liefert ein Vielfaches
+        der Duese (siehe nozzle_locator_fit.local_peak). Kein Ruecksweep --
+        der Drift-Bias ist hier egal, die Feinmessung folgt ohnehin.
+        Rueckgabe: (position, amplitude).
+        """
+        pts = self.sweep(axis, center, self.search_span,
+                         self.sweep_step * 2.0, descending=False)
+        try:
+            pos, amp = fit.local_peak(pts, center, baseline,
+                                      self.min_amplitude)
+        except ValueError as e:
+            raise self.printer.command_error(
+                "nozzle_locator Grobsuche %s: %s" % (axis, e))
+        return pos, amp
 
     def measure_coupling(self, center_x, center_y, baseline, runs=None):
         """Misst den Kreuzterm der 2D-Quadrik ueber zwei Diagonal-Sweeps.

@@ -89,6 +89,55 @@ def predicted_drift_shift(drift_per_mm, curvature):
     return drift_per_mm / (2.0 * curvature)
 
 
+def local_peak(points, near, baseline, min_amplitude):
+    """Grobsuche: der lokale Buckel, der `near` am naechsten liegt.
+
+    Das globale Maximum taugt hier nicht. Am 250er (2026-09-03) lag die
+    Duese bei Y 130 als Buckel von +6.000 Hz -- und 8 mm weiter vorn stieg
+    das Signal auf +100.000 Hz, weil dort der Heizblock ueber die Spule
+    kam. Ein Sweepfenster, das den Block streift, hat sein Maximum am Rand
+    und trotzdem einen brauchbaren Duesen-Buckel in der Mitte.
+
+    Kandidaten sind innere Punkte, die groesser als beide Nachbarn sind
+    (Plateau auf einer Seite erlaubt) und mindestens min_amplitude ueber
+    der Basislinie liegen. Gewaehlt wird der Kandidat mit dem kleinsten
+    Abstand zu `near`; sein Scheitel wird ueber die drei Punkte um ihn
+    herum parabolisch verfeinert. Rueckgabe: (position, amplitude).
+    Wirft ValueError, wenn es keinen Buckel gibt.
+    """
+    n = len(points)
+    if n < 3:
+        raise ValueError("Grobsuche braucht mindestens 3 Punkte, hat %d" % n)
+    amps = [v - baseline for _, v in points]
+    best = None
+    for i in range(1, n - 1):
+        a = amps[i]
+        if a < min_amplitude:
+            continue
+        left, right = amps[i - 1], amps[i + 1]
+        if not ((a > left and a >= right) or (a >= left and a > right)):
+            continue
+        dist = abs(points[i][0] - near)
+        if best is None or dist < best[0]:
+            best = (dist, i)
+    if best is None:
+        raise ValueError(
+            "Kein lokaler Scheitel ueber %.0f Hz im Fenster -- steht die "
+            "Sonde unter der Duese?" % min_amplitude)
+    i = best[1]
+    trio = points[i - 1:i + 2]
+    try:
+        pos = parabola_vertex(trio)
+    except ValueError:
+        pos = points[i][0]
+    # Der Scheitel muss zwischen den Nachbarn bleiben; sonst ist das Trio
+    # kein Buckel, sondern eine Kante, und der Rohpunkt ist ehrlicher.
+    lo, hi = min(trio[0][0], trio[2][0]), max(trio[0][0], trio[2][0])
+    if not (lo <= pos <= hi):
+        pos = points[i][0]
+    return pos, amps[i]
+
+
 def sweep_quality(points, baseline, min_amplitude):
     """Preflight, den jeder Sweep bestehen muss. -> (ok, begruendung)
 
