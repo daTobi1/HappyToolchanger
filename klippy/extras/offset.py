@@ -1731,7 +1731,9 @@ class Offset:
         "REF_TOOL, TOOLS (subset), DRY_RUN (1 = travel only, never descend), "
         "TEMP (nozzle temperature, 0 = cold), XY_ITERATIONS (X-Y rounds "
         "against cross-coupling, default from config; run NOZZLE_LOCATE "
-        "AXIS=DIAG once to find out whether 2 is needed). Requires homed, "
+        "AXIS=DIAG once to find out whether 2 is needed), Z_MODE (switch = "
+        "same gap for every tool from the Z-switch data, default; "
+        "amplitude = same signal amplitude). Requires homed, "
         "levelled axes, the reference tool parked with NOZZLE_LOCATOR_PARK "
         "and the coil placed under the nozzle. Results are only shown and "
         "stored -- nothing is written to the tool configs.")
@@ -1746,6 +1748,9 @@ class Offset:
         temp = gcmd.get_float('TEMP', 0., minval=0.)
         iterations = gcmd.get_int('XY_ITERATIONS', locator.xy_iterations,
                                   minval=1, maxval=4)
+        z_mode = (gcmd.get('Z_MODE', 'switch') or 'switch').strip().lower()
+        if z_mode not in ('switch', 'amplitude'):
+            raise gcmd.error("Z_MODE muss switch oder amplitude sein")
         ref_tool, ordered_tools = self._xy_tool_run(gcmd)
         # Nie selbst homen oder leveln: die Halterung steht auf dem Bett.
         locator._require_homed()
@@ -1768,7 +1773,7 @@ class Offset:
         try:
             results = self._run_xy_calibration(
                 gcmd, locator, ref_tool, ordered_tools, dry_run, temp,
-                iterations)
+                iterations, z_mode)
         except Exception as e:
             # Bei Abbruch zurueck auf das Referenztool (Tobis Wunsch,
             # 2026-09-04). Das muss HIER passieren, solange der Fehler das
@@ -1827,11 +1832,48 @@ class Offset:
         self.gcode.run_script_from_command("T%d" % tool_nr)
         self.cmd_OFFSET_AFTER_PICKUP_GCODE(gcmd)
 
+    def _xy_zswitch_triggers(self, tools):
+        """z_trigger je Tool aus dem letzten Z-Switch-Lauf, oder None, wenn
+        eines fehlt. Der rohe Ausloesepunkt genuegt: die Differenz zweier
+        Tools ist der Unterschied ihrer Duesenlaengen, unabhaengig davon,
+        welches Tool im Z-Switch-Lauf Referenz war."""
+        out = {}
+        for t in tools:
+            e = self.probe_results.get(str(t)) or {}
+            z = e.get('z_trigger')
+            if z is None:
+                return None
+            out[t] = float(z)
+        return out
+
     def _run_xy_calibration(self, gcmd, locator, ref_tool, ordered_tools,
-                            dry_run, temp, iterations):
+                            dry_run, temp, iterations, z_mode='switch'):
         results = {}
         ref_pos = None
+        ref_z = None
         baseline = None
+        # Gleicher Spalt statt gleicher Amplitude (Tobi, 2026-09-04): die
+        # Spule sieht den Metallschwerpunkt, und der Heizblock zieht den
+        # Scheitel um ~240 um je mm Spalt (T0 am 250er in drei Hoehen
+        # gemessen). Gleiche Amplitude heisst aber NICHT gleicher Spalt,
+        # sobald Duesen verschieden viel Signal geben -- T1 stand bei 0,7 mm,
+        # T0 bei 1,5 mm. Die Z-Switch-Ausloesepunkte kennen die
+        # Duesenlaengen; damit bekommt jedes Tool dieselbe Hoehe ueber der
+        # Spule wie das Referenztool, und die Amplitude wird zur Auskunft
+        # ueber die Duese statt zur Stoergroesse.
+        zs = None
+        if z_mode == 'switch' and not dry_run:
+            zs = self._xy_zswitch_triggers(ordered_tools)
+            if zs is None:
+                gcmd.respond_info(
+                    "XY: keine vollstaendigen Z-Switch-Daten fuer %s -- "
+                    "Messhoehe ueber gleiche Amplitude (Z_MODE=amplitude). "
+                    "Vorher CALIBRATE_ALL_Z_OFFSETS fahren, dann misst "
+                    "jedes Tool bei gleichem Spalt."
+                    % ", ".join("T%d" % t for t in ordered_tools))
+            else:
+                gcmd.respond_info("XY: Messhoehe je Tool aus den Z-Switch-"
+                                  "Daten (gleicher Spalt wie T%d)" % ref_tool)
         # Anfahrposition (Spec R-B'): dort steht das Referenztool, dort hat
         # der Nutzer die Sonde untergestellt. park_z ist die Fahrhoehe.
         # locator.parked ist die per NOZZLE_LOCATOR_PARK tatsaechlich
@@ -1885,16 +1927,40 @@ class Offset:
             locator._move([cx, None, None], locator.move_speed)
             cy, amp_y = locator.coarse_locate('Y', pred[1], baseline)
             locator._move([None, cy, None], locator.move_speed)
-            # Messhoehe: ueber dem Grobscheitel auf die Zielamplitude --
-            # dieselbe fuer jedes Tool, nur so misst jedes bei gleichem
-            # Spalt und die Differenz im kommandierten Z ist ein
-            # Z-Vergleichswert.
-            z_reached = locator.approach_z(baseline)
+            # Messhoehe ueber dem Grobscheitel. Referenztool: auf die
+            # Zielamplitude, das legt den Spalt fest. Weitere Tools: bei
+            # Z-Switch-Daten auf denselben Spalt (ref_z plus Differenz der
+            # Ausloesepunkte -- ein hoeherer Ausloesepunkt heisst laengere
+            # Duese, also hoeher fahren), sonst ebenfalls auf die
+            # Zielamplitude.
+            if tool_nr == ref_tool or zs is None:
+                z_reached = locator.approach_z(baseline)
+                z_note = "Zielamplitude"
+            else:
+                dz = zs[tool_nr] - zs[ref_tool]
+                z_target = ref_z + dz
+                if z_target < locator._z_floor():
+                    raise gcmd.error(
+                        "T%d: gleicher Spalt verlangt Z%.3f, das liegt unter "
+                        "dem Z-Boden %.3f (holder_top_z + min_gap)"
+                        % (tool_nr, z_target, locator._z_floor()))
+                locator._move([None, None, z_target], locator.approach_speed)
+                z_reached = z_target
+                z_note = "gleicher Spalt, dz %+.3f" % dz
+            amp, amp_sd, _, _ = locator.read_frequency()
+            amp -= baseline
+            if amp < locator.min_amplitude:
+                raise gcmd.error(
+                    "T%d: nur %+.0f Hz auf der Messhoehe Z%.3f (mindestens "
+                    "%.0f noetig) -- Duese ohne brauchbares Signal?"
+                    % (tool_nr, amp, z_reached, locator.min_amplitude))
+            if tool_nr == ref_tool:
+                ref_z = z_reached
             gcmd.respond_info(
                 "T%d: Vorhersage X%.2f Y%.2f, Grobsuche X%.2f (%+.0f Hz) "
-                "Y%.2f (%+.0f Hz), Messhoehe Z%.3f"
+                "Y%.2f (%+.0f Hz), Messhoehe Z%.3f (%s), Amplitude %+.0f Hz"
                 % (tool_nr, pred[0], pred[1], cx, amp_x, cy, amp_y,
-                   z_reached))
+                   z_reached, z_note, amp))
 
             # X -> Y -> X: Fixpunktiteration gegen die Kreuzkopplung.
             # Ein X-Sweep bei festem y liefert x0 - (c/a)*(y - y0); der
@@ -1915,6 +1981,8 @@ class Offset:
                 'spread_x': rx['spread'], 'spread_y': ry['spread'],
                 'z_reached': z_reached,
                 'pred_x': pred[0], 'pred_y': pred[1],
+                'amplitude': amp,
+                'z_mode': 'switch' if (zs is not None) else 'amplitude',
             }
             coil_temp = self._xy_coil_temp()
             if coil_temp is not None:
@@ -1986,9 +2054,10 @@ class Offset:
         for key in sorted((k for k in results if str(k).isdigit()), key=int):
             e = results[key]
             gcmd.respond_info(
-                "  T%s  X=%+.4f  Y=%+.4f  (Z-Vergleich %+.3f, "
-                "Drift-Bias X %+.1f um / Y %+.1f um)"
+                "  T%s  X=%+.4f  Y=%+.4f  (Z-Vergleich %+.3f, Amplitude "
+                "%+.0f Hz, Drift-Bias X %+.1f um / Y %+.1f um)"
                 % (key, e['x'], e['y'], e['z_compare'],
+                   e.get('amplitude', 0.0),
                    (e['x_fwd'] - e['x_rev']) * 1000.,
                    (e['y_fwd'] - e['y_rev']) * 1000.))
         gcmd.respond_info(
