@@ -68,6 +68,14 @@ Heizblock mitsieht (240 µm je mm Spalt) und T0 die Eddy-NG-Sonde trägt.
 Gegenmaßnahmen gebaut, aber **noch nicht gefahren**: gleicher Spalt aus
 den Z-Switch-Daten (`Z_MODE=switch`) und kleiner Feinspalt (`fine_gap`).
 
+**Zustand des 250ers beim Verlassen am 2026-09-04:** Klipper läuft auf
+Commit `7d5f5c5` (Spaltmodus, Bootstrap, `fine_gap` drin, nie gefahren).
+**Ungehomt**, weil der Service für den Deploy neu gestartet wurde.
+**Halterung und Sonde stehen noch auf dem Bett** — vor dem Homen runter.
+Sonde ist in `xy_probe.cfg` aktiv und steckt; vor dem Abstecken über den
+Assistenten deaktivieren. Die Ergebnisse des Amplituden-Laufs liegen in
+`printer.offset.xy_results` und `.offset_xy_results.json`.
+
 **Nächste Schritte in dieser Reihenfolge:**
 
 1. **Den Spaltmodus-Lauf fahren.** Klipper läuft schon auf dem Stand.
