@@ -58,7 +58,7 @@ def main():
     sys.path.insert(0, klippy)
 
     from extras import probe, manual_probe, homing, gcode_macro  # noqa: F401
-    from extras import ldc1612, bulk_sensor  # noqa: F401
+    from extras import ldc1612, bulk_sensor, motion_report  # noqa: F401
     import gcode as gcode_mod
 
     # --- probe.py: tool_probe.py und offset.py bauen direkt darauf auf ---
@@ -116,6 +116,33 @@ def main():
            "ldc1612._process_batch meldet 'errors' nicht mehr als "
            "kumulierten last_error_count",
            "nozzle_locator.read_frequency() muesste dann aufsummieren")
+        # Der Scanmodus ordnet jedes Sample ueber seinen Zeitstempel einer
+        # Position zu -- der Zeitstempel muss an Index 0 liegen.
+        src = source_of(getattr(ldc1612.LDC1612, "_convert_samples", None))
+        ok("(round(ptime, 6), round(freq_conv * mv, 3)" in src,
+           "ldc1612._convert_samples legt print_time nicht mehr an Index 0 ab",
+           "nozzle_locator._scan liest sample[0] als print_time")
+    # --- motion_report: der Scanmodus holt sich die Sollposition zum
+    # Zeitstempel aus der Bewegungswarteschlange, wie Klippers eigener
+    # Eddy-Scan (probe_eddy_current). ---
+    has_attrs(motion_report, ["PrinterMotionReport", "DumpTrapQ"],
+              "motion_report")
+    if hasattr(motion_report, "DumpTrapQ"):
+        has_attrs(motion_report.DumpTrapQ, ["get_trapq_position"],
+                  "motion_report.DumpTrapQ")
+        src = source_of(getattr(motion_report.DumpTrapQ,
+                                "get_trapq_position", None))
+        ok("return pos, velocity" in src and "return None, None" in src,
+           "motion_report.DumpTrapQ.get_trapq_position liefert nicht mehr "
+           "(pos, velocity) bzw. (None, None)",
+           "nozzle_locator_fit.samples_to_track verlaesst sich auf beides")
+    if hasattr(motion_report, "PrinterMotionReport"):
+        src = source_of(getattr(motion_report.PrinterMotionReport,
+                                "_connect", None))
+        ok("self.dtrapqs['toolhead']" in src,
+           "motion_report registriert die toolhead-Warteschlange nicht mehr "
+           "unter dtrapqs['toolhead']",
+           "nozzle_locator._scan greift genau darauf zu")
     has_attrs(bulk_sensor, ["BatchBulkHelper"], "bulk_sensor")
     if hasattr(bulk_sensor, "BatchBulkHelper"):
         has_attrs(bulk_sensor.BatchBulkHelper, ["add_client", "_proc_batch"],

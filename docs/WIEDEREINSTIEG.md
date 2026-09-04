@@ -11,7 +11,7 @@ Stand: 2026-09-03, alles auf `main` und gepusht. Die Spule ist da, haengt per US
 
 | Task | Zustand |
 |---|---|
-| 1 — Fit-Mathematik `nozzle_locator_fit.py` | **fertig**, 18 Zusicherungen |
+| 1 — Fit-Mathematik `nozzle_locator_fit.py` | **fertig**, 51 Zusicherungen (Scan-Bausteine seit 2026-09-04) |
 | 2 — Sensoranbindung `nozzle_locator.py` | **fertig**, am 250er verifiziert (3,13 MHz, sd 21 Hz, 0 Fehler) |
 | 3 — Z-Anfahrt, Sweep, Ortung | **fertig**, `NOZZLE_LOCATE X/Y/DIAG`, am 250er verifiziert |
 | 4 — Extraktion `_resolve_tool_run()` | **gestrichen**, siehe §4 |
@@ -19,7 +19,7 @@ Stand: 2026-09-03, alles auf `main` und gepusht. Die Spule ist da, haengt per US
 | 6 — Extraktion `updateConfigFile()` | **fertig** |
 | 7–9 — Webapp (Block, Assistent, Kamera) | **fertig gebaut, nie im Browser gesehen** |
 
-Tests heute: 18 (Fit, Python) + 63 (Webapp, node) + 19 (Recovery, node).
+Tests heute: 51 (Fit, Python) + 71 (Klipper-API, Python, auf dem Pi) + 63 (Webapp, node) + 19 (Recovery, node).
 Ein Abschluss-Review über den gesamten Umfang ist gelaufen und sauber.
 
 **Blockiert ist Task 3 jetzt nur noch an der Halterung** (bekannte Bauhoehe, siehe
@@ -68,29 +68,47 @@ Heizblock mitsieht (240 µm je mm Spalt) und T0 die Eddy-NG-Sonde trägt.
 Gegenmaßnahmen gebaut, aber **noch nicht gefahren**: gleicher Spalt aus
 den Z-Switch-Daten (`Z_MODE=switch`) und kleiner Feinspalt (`fine_gap`).
 
-**Zustand des 250ers beim Verlassen am 2026-09-04:** Klipper läuft auf
-Commit `7d5f5c5` (Spaltmodus, Bootstrap, `fine_gap` drin, nie gefahren).
-**Ungehomt**, weil der Service für den Deploy neu gestartet wurde.
-**Halterung und Sonde stehen noch auf dem Bett** — vor dem Homen runter.
-Sonde ist in `xy_probe.cfg` aktiv und steckt; vor dem Abstecken über den
-Assistenten deaktivieren. Die Ergebnisse des Amplituden-Laufs liegen in
-`printer.offset.xy_results` und `.offset_xy_results.json`.
+**Abends am 2026-09-04 dazugekommen: der Scanmodus** (offene Arbeiten
+§9, **nie gefahren**). Der Sweep ist jetzt ein Zug mit 5 mm/s durch das
+Fenster, ~600 Samples je Richtung statt 9 Punkte, 2 s statt 8; auch die
+Diagonalen. Dazu Sensor-Haltung über die ganze Ortung (Klippers
+Zeitstempel-Regression braucht 2 s zum Einschwingen), `NOZZLE_LOCATOR_DUMP`
+für Rohdaten und `NOZZLE_LOCATE GAPS=…` als Höhenserie. `scan_speed: 0` in
+`xy_probe.cfg` ist der Rückfall auf den Punktmodus. Motiv: Tobis Frage nach
+Bewegungsformen gegen den Heizblock — Kreisbahn und Flankenmitte helfen
+nicht (entartet mit dem Scheitel), Zwei-Höhen-Differenz und aufgelöste
+Buckelform schon, und beide brauchen den Scan und erst einmal Rohdaten.
 
-**Nächste Schritte in dieser Reihenfolge:**
+**Zustand des 250ers beim Verlassen:** Klipper läuft auf dem Commit mit
+dem Scanmodus (Service neu gestartet, daher **ungehomt**). **Halterung und
+Sonde stehen noch auf dem Bett** — vor dem Homen runter. `xy_probe.cfg` auf
+dem Drucker hat `scan_speed` noch **nicht** eingetragen, der Code-Default 5
+gilt; die Vorlage `xy_probe.cfg.disabled` hat die Zeile. Sonde ist aktiv und
+steckt; vor dem Abstecken über den Assistenten deaktivieren. Die Ergebnisse
+des Amplituden-Laufs liegen in `printer.offset.xy_results` und
+`.offset_xy_results.json`.
 
-1. **Den Spaltmodus-Lauf fahren.** Klipper läuft schon auf dem Stand.
-   Ablauf: Bett leer → `G28`, `QUAD_GANTRY_LEVEL`, `G28 Z`,
+**Nächste Schritte in dieser Reihenfolge** (Details §9.4 der offenen Arbeiten):
+
+1. Bett leer → `G28`, `QUAD_GANTRY_LEVEL`, `G28 Z`,
    `SET_IDLE_TIMEOUT TIMEOUT=3600`, `T0`, `NOZZLE_LOCATOR_PARK` → Sonde
-   unter die Düse → `CALIBRATE_XY_OFFSETS`. Erwartung: Y-Fehler schrumpft
-   auf den T0-Sonden-Anteil (~0,45 mm). Beobachten per `gcode_store`,
-   nicht auf die HTTP-Antwort warten.
-2. Bleibt der T0-Anteil: Lauf mit `REF_TOOL=1` und die Differenzen
-   T2−T1, T3−T1 gegen die Kamera stellen. Stimmen die, ist T0 der
-   Störer, nicht das Verfahren.
-3. **Webapp im Browser öffnen** — jetzt liegen echte Daten in
-   `printer.offset.xy_results`. Tabelle, Δ-Spalte, Sparkline prüfen;
-   `amplitude` und `zswitch_run_id` fehlen dort noch (§8.4).
-4. `NOZZLE_LOCATE AXIS=DIAG` einmal fahren (Kreuzkopplung, ρ).
+   unter die Düse → auf Messhöhe (z. B. `G1 Z54 F300`).
+2. **Scan prüfen:** `NOZZLE_LOCATE AXIS=X`, dann `SPEED=10`. Hin-Rück-
+   Differenz sollte ~2·v·Δt sein und sich verdoppeln. Geht der Scan nicht
+   durch („nur N Samples im Fenster"): `scan_speed: 0` und weiter im
+   Punktmodus.
+3. **Höhenserie** `NOZZLE_LOCATE AXIS=Y GAPS=3,2,1.5,1,0.75,0.5`, danach
+   `NOZZLE_LOCATOR_DUMP`. Die JSON-Datei aus `~/printer_data/logs/` holen —
+   sie entscheidet zwischen Feinspalt, Extrapolation und Zwei-Höhen-Differenz.
+4. `NOZZLE_LOCATE AXIS=DIAG` (jetzt billig).
+5. **Den Spaltmodus-Lauf fahren:** `CALIBRATE_XY_OFFSETS`. Erwartung:
+   Y-Fehler schrumpft auf den T0-Sonden-Anteil (~0,45 mm). Beobachten per
+   `gcode_store`, nicht auf die HTTP-Antwort warten.
+6. Bleibt der T0-Anteil: Lauf mit `REF_TOOL=1` und die Differenzen
+   T2−T1, T3−T1 gegen die Kamera stellen.
+7. **Webapp im Browser öffnen** — Tabelle, Δ-Spalte, Sparkline (jetzt
+   Körbe statt Punkte) prüfen; `amplitude` und `zswitch_run_id` fehlen
+   dort noch (§8.4).
 
 ---
 
@@ -143,6 +161,13 @@ Heizblock liegt in +Y hinter der Düse und zieht den Y-Scheitel um
 gleicher Spalt aus den Z-Switch-Daten und ein kleiner Feinspalt — und
 deshalb ist die Grobsuche ein *lokaler* Buckel, nie das globale Maximum.
 → `xy-offset-offene-arbeiten.md` §8.3
+
+**g) Die Zeitstempel des Sensors sind nach dem Start zwei Sekunden lang
+unzuverlässig.** Klippers `FixedFreqReader` setzt seine Regression bei
+jedem Sensorstart zurück, und `BatchBulkHelper` stoppt den Sensor, sobald
+der letzte Client weg ist. Im Scanmodus sind 5 ms Zeitfehler 25 µm. Deshalb
+hält `_hold_sensor()` den Sensor über die ganze Ortung; wer neue Messwege
+baut, muss durch diese Haltung hindurch. → §9.2
 
 ---
 

@@ -21,7 +21,10 @@
 #
 # Copyright (C) 2026  HappyToolchanger
 # This file may be distributed under the terms of the GNU GPLv3 license.
+import json
 import logging
+import os
+import time
 
 from . import ldc1612
 from . import nozzle_locator_fit as fit
@@ -55,6 +58,21 @@ class NozzleLocator:
         self.sweep_span = config.getfloat('sweep_span', 8.0, above=0.)
         self.sweep_step = config.getfloat('sweep_step', 1.0, above=0.)
         self.dwell_time = config.getfloat('dwell_time', 0.5, above=0.)
+        # Kontinuierlicher Scan: der Kopf faehrt mit scan_speed durch das
+        # Fenster, der Sensor laeuft mit (~400 Samples/s), jedes Sample wird
+        # ueber seinen Zeitstempel der Bahnposition zugeordnet. Bei 5 mm/s
+        # sind das ~80 Samples je mm statt einem Punkt je sweep_step, und
+        # ein Sweep dauert 2 s statt 8. scan_speed: 0 schaltet auf den
+        # alten Punktmodus (anfahren, verweilen, mitteln) zurueck.
+        self.scan_speed = config.getfloat('scan_speed', 5.0, minval=0.)
+        # Der LDC1612 integriert VOR seinem Zeitstempel (Wandlung 2,5 ms
+        # bei 400 Hz). Im Hinsweep erscheint der Scheitel dadurch um
+        # v*latency zu weit vorn, im Ruecksweep zu weit hinten -- der
+        # bidirektionale Mittelwert hebt das auf. Wer die Latenz kennt
+        # (Hin-Rueck-Differenz bei zwei Geschwindigkeiten), traegt sie hier
+        # ein; dann stimmen auch die Einzelsweeps.
+        self.sample_latency = config.getfloat('sample_latency', 0.0,
+                                              minval=0.)
         self.runs = config.getint('runs', 3, minval=1)
         self.runs_tolerance = config.getfloat('runs_tolerance', 0.05, above=0.)
         # X->Y-Runden gegen die Kreuzkopplung der 2D-Glocke. 1 genuegt, wenn
@@ -94,6 +112,14 @@ class NozzleLocator:
         self.last_freq = 0.0
         self.last_errors = 0
         self.last_points = []
+        # Rohdaten der letzten Sweeps fuer NOZZLE_LOCATOR_DUMP: jeder
+        # Eintrag ein Sweep mit allen Samples. Bewusst nicht im Status --
+        # 600 Samples je Sweep haben in Moonrakers Polling nichts verloren.
+        self.sweep_log = []
+        self.sweep_log_limit = 64
+        # Sensor-Haltung im Scanmodus (siehe _hold_sensor)
+        self._hold_count = 0
+        self._hold_flag = None
         # Zuletzt per NOZZLE_LOCATOR_PARK angefahrene Position. Der
         # Messlauf nimmt sie, damit eine im Assistenten geaenderte Position
         # ohne FIRMWARE_RESTART gilt.
@@ -101,6 +127,8 @@ class NozzleLocator:
 
         self.gcode.register_command(
             'NOZZLE_LOCATOR_READ', self.cmd_READ, desc=self.cmd_READ_help)
+        self.gcode.register_command(
+            'NOZZLE_LOCATOR_DUMP', self.cmd_DUMP, desc=self.cmd_DUMP_help)
         self.gcode.register_command(
             'NOZZLE_LOCATOR_PARK', self.cmd_PARK, desc=self.cmd_PARK_help)
         self.gcode.register_command(
@@ -122,6 +150,8 @@ class NozzleLocator:
             'parked': list(self.parked) if self.parked else None,
             'min_amplitude': self.min_amplitude,
             'target_amplitude': self.target_amplitude,
+            'scan_speed': self.scan_speed,
+            'sweeps_logged': len(self.sweep_log),
         }
 
     # ------------------------------------------------------------------
@@ -250,6 +280,36 @@ class NozzleLocator:
         self.last_errors = errors[0]
         return mean, sd, n, errors[0]
 
+    cmd_DUMP_help = ("Write the raw samples of the last sweeps (up to 64) "
+                     "as JSON into the log directory and clear the buffer. "
+                     "Parameters: FILE (name, default nozzle_locator_"
+                     "<timestamp>.json), KEEP=1 keeps the buffer")
+
+    def cmd_DUMP(self, gcmd):
+        if not self.sweep_log:
+            gcmd.respond_info("nozzle_locator: keine Sweeps im Puffer")
+            return
+        name = gcmd.get('FILE', None)
+        if not name:
+            name = "nozzle_locator_%s.json" % time.strftime("%Y%m%d_%H%M%S")
+        log_file = self.printer.get_start_args().get('log_file')
+        log_dir = os.path.dirname(log_file) if log_file else "/tmp"
+        path = os.path.join(log_dir, os.path.basename(name))
+        try:
+            with open(path, "w") as f:
+                json.dump({'sweeps': self.sweep_log,
+                           'scan_speed': self.scan_speed,
+                           'sweep_step': self.sweep_step,
+                           'holder_top_z': self.holder_top_z}, f)
+        except (IOError, OSError) as e:
+            raise gcmd.error("nozzle_locator: Dump nach %s fehlgeschlagen: %s"
+                             % (path, e))
+        n = len(self.sweep_log)
+        if not gcmd.get_int('KEEP', 0):
+            del self.sweep_log[:]
+        gcmd.respond_info("nozzle_locator: %d Sweeps nach %s geschrieben"
+                          % (n, path))
+
     cmd_READ_help = ("Read the raw frequency of the XY nozzle locator coil. "
                      "Parameters: DURATION (seconds, default dwell_time)")
 
@@ -317,21 +377,169 @@ class NozzleLocator:
             "Duese, und stimmt holder_top_z?"
             % (floor, self.last_freq - baseline, target_amplitude))
 
-    def sweep(self, axis, center, span, step, descending=False):
+    def _hold_sensor(self, speed=None):
+        """Haelt den Sensor ueber mehrere Sweeps hinweg am Laufen.
+
+        Klippers FixedFreqReader setzt seine Zeitstempel-Regression bei
+        jedem Sensorstart zurueck und braucht ~20 Batches (2 s), bis die
+        Zuordnung Sample -> print_time stabil ist. Ohne Haltung stoppt
+        BatchBulkHelper den Sensor, sobald der letzte Client weg ist --
+        also nach jedem Sweep -- und der naechste Scan begaenne mit frischer,
+        noch ungenauer Zeitbasis (5 mm/s: 5 um je ms). Der Halte-Client
+        bleibt, bis _release_sensor den Zaehler auf 0 bringt; beim ersten
+        Halten wartet der Kopf 1 s, damit die Regression einschwingt.
+        Nur im Scanmodus noetig; der Punktmodus mittelt ohne Zeitstempel.
+        """
+        if not self._scanning(speed):
+            return
+        self._hold_count += 1
+        if self._hold_count > 1:
+            return
+        flag = [True]
+        self._hold_flag = flag
+        self.sensor.add_client(lambda msg: flag[0])
+        toolhead = self.printer.lookup_object('toolhead')
+        toolhead.dwell(1.0)
+        toolhead.wait_moves()
+
+    def _release_sensor(self, speed=None):
+        if not self._scanning(speed):
+            return
+        self._hold_count = max(0, self._hold_count - 1)
+        if self._hold_count == 0 and self._hold_flag is not None:
+            self._hold_flag[0] = False
+            self._hold_flag = None
+
+    def _scan(self, label, origin, direction, lo, hi, lead, speed=None):
+        """Ein kontinuierlicher Scan entlang einer Bahn.
+        Rueckgabe: [(bogenlaenge, frequenz), ...] in Fahrreihenfolge.
+
+        Bahn: s = <(x, y) - origin, direction>, direction Einheitsvektor.
+        Faehrt erst auf s = lo - lead (Vorlauf, gleiche Richtung wie der
+        Scan, damit das Achsspiel draussen bleibt), dann in EINEM Zug mit
+        `speed` bis hi + lead; Beschleunigen und Bremsen liegen so
+        ausserhalb des Fensters. Waehrenddessen laeuft der Sensor; danach
+        bekommt jedes Sample ueber seinen Zeitstempel die Sollposition aus
+        der Bewegungswarteschlange (motion_report, wie Klippers eigener
+        Eddy-Scan) und wird auf die Bahn projiziert. Fuer lo > hi laeuft
+        der Scan rueckwaerts.
+        """
+        if speed is None:
+            speed = self.scan_speed
+        self.state = 'sweeping'
+        toolhead = self.printer.lookup_object('toolhead')
+        motion = self.printer.lookup_object('motion_report')
+        dtrapq = motion.dtrapqs.get('toolhead')
+        if dtrapq is None:
+            raise self.printer.command_error(
+                "nozzle_locator: motion_report kennt keine toolhead-"
+                "Bewegungswarteschlange -- Scan nicht moeglich, "
+                "scan_speed: 0 setzen")
+        ox, oy = origin
+        dx, dy = direction
+        sign = 1.0 if hi >= lo else -1.0
+        s_start = lo - sign * lead
+        s_end = hi + sign * lead
+        self._move([ox + dx * s_start, oy + dy * s_start, None],
+                   self.move_speed)
+
+        collected = []
+        errors = [0]
+        active = [True]
+
+        def handle_batch(msg):
+            if not active[0]:
+                return False
+            errors[0] = max(errors[0], msg.get('errors', 0))
+            for sample in msg['data']:
+                collected.append((sample[0], sample[1]))
+            return True
+
+        self.sensor.add_client(handle_batch)
+        try:
+            pos = toolhead.get_position()
+            target = [ox + dx * s_end, oy + dy * s_end, pos[2]]
+            toolhead.manual_move(target, speed)
+            t_end = toolhead.get_last_move_time()
+            toolhead.wait_moves()
+            # Die letzten Samples kommen batchweise nach; warten, bis der
+            # Sensor die Bewegung ganz abgedeckt hat.
+            reactor = self.printer.get_reactor()
+            deadline = reactor.monotonic() + 2.0
+            while not collected or collected[-1][0] < t_end:
+                if reactor.monotonic() > deadline:
+                    raise self.printer.command_error(
+                        "nozzle_locator: Sensor liefert keine Samples bis "
+                        "zum Ende des Scans (%d empfangen) -- steckt die "
+                        "Sonde?" % len(collected))
+                reactor.pause(reactor.monotonic() + 0.05)
+        finally:
+            active[0] = False
+        self.last_errors = errors[0]
+
+        def lookup(print_time):
+            return dtrapq.get_trapq_position(print_time)
+
+        s_lo, s_hi = min(lo, hi), max(lo, hi)
+        track = fit.samples_to_track(collected, lookup, origin, direction,
+                                     s_lo, s_hi, latency=self.sample_latency)
+        if len(track) < 3:
+            raise self.printer.command_error(
+                "nozzle_locator %s: nur %d Samples im Fenster (%d insgesamt) "
+                "-- Zeitstempel und Bewegung passen nicht zusammen"
+                % (label, len(track), len(collected)))
+        if track:
+            self.last_freq = track[-1][1]
+        # Kompakt fuer Status und Webapp: Koerbe in sweep_step-Breite.
+        try:
+            self.last_points = [(round(p, 4), round(v, 1)) for p, v in
+                                fit.bin_points(track, s_lo, s_hi,
+                                               self.sweep_step)]
+        except ValueError:
+            self.last_points = [(round(p, 4), round(v, 1))
+                                for p, v in track]
+        self.sweep_log.append({
+            'label': label, 'x': round(pos[0], 3), 'y': round(pos[1], 3),
+            'z': round(pos[2], 3), 'origin': [ox, oy],
+            'direction': [dx, dy], 'speed': speed,
+            'latency': self.sample_latency, 'errors': errors[0],
+            'time': time.time(),
+            'samples': [(round(s, 5), round(v, 1)) for s, v in track],
+        })
+        del self.sweep_log[:-self.sweep_log_limit]
+        return track
+
+    def sweep(self, axis, center, span, step, descending=False, speed=None):
         """Ein gerichteter Sweep. Rueckgabe: [(position, frequenz), ...].
 
         Wird immer aus derselben Richtung ANGEFAHREN (Vorlauf ausserhalb des
         Fensters), damit das Spiel der Achse nicht in die Messung geht.
+
+        Mit scan_speed > 0 ein kontinuierlicher Scan (siehe _scan), sonst
+        Punkt fuer Punkt anfahren, verweilen, mitteln. Die Punktliste ist
+        im Scanmodus dicht (~80 je mm) -- wer Gitterpunkte braucht
+        (Grobsuche), legt fit.bin_points darueber.
         """
-        self.state = 'sweeping'
         half = span / 2.0
+        lo, hi = center - half, center + half
+        idx = 0 if axis == 'X' else 1
+        use_scan = self.scan_speed > 0. if speed is None else speed > 0.
+        if use_scan:
+            direction = (1.0, 0.0) if idx == 0 else (0.0, 1.0)
+            label = "%s %s" % (axis, "rueck" if descending else "hin")
+            if descending:
+                return self._scan(label, (0.0, 0.0), direction, hi, lo,
+                                  step * 3.0, speed)
+            return self._scan(label, (0.0, 0.0), direction, lo, hi,
+                              step * 3.0, speed)
+
+        self.state = 'sweeping'
         n_steps = int(round(span / step)) + 1
-        positions = [center - half + i * step for i in range(n_steps)]
+        positions = [lo + i * step for i in range(n_steps)]
         if descending:
             positions = list(reversed(positions))
         # Vorlauf: 3 Schritte vor den ersten Punkt, gleiche Richtung
         lead = positions[0] - (step * 3.0 if not descending else -step * 3.0)
-        idx = 0 if axis == 'X' else 1
         coord = [None, None, None]
         coord[idx] = lead
         self._move(coord, self.move_speed)
@@ -347,40 +555,52 @@ class NozzleLocator:
             self.last_points.append((round(p, 4), round(mean, 1)))
         return points
 
-    def locate(self, axis, center, baseline, runs=None, span=None, step=None):
+    def locate(self, axis, center, baseline, runs=None, span=None, step=None,
+               speed=None):
         """Bidirektionale Ortung. Rueckgabe: dict mit center/fwd/rev/spread.
 
         Jeder Lauf besteht aus Hin- UND Ruecksweep. Ein einzelner gerichteter
         Sweep ist nie ein Ergebnis: ein zeitlinearer Drift verschoebe seinen
         Scheitel um m/(2a), und weil alle Laeufe dieselbe Richtung haetten,
-        wuerde die Streuung diesen Fehler nicht zeigen.
+        wuerde die Streuung diesen Fehler nicht zeigen. Im Scanmodus kommt
+        die Sensorlatenz als zweiter gerichteter Anteil dazu (v*latency);
+        auch sie faellt im Mittel heraus, die Hin-Rueck-Differenz zeigt sie.
         """
         runs = self.runs if runs is None else runs
         span = self.sweep_span if span is None else span
         step = self.sweep_step if step is None else step
 
         centers, fwds, revs, curvs = [], [], [], []
-        for _ in range(runs):
-            fwd = self.sweep(axis, center, span, step, descending=False)
-            good, reason = fit.sweep_quality(fwd, baseline, self.min_amplitude)
-            if not good:
-                raise self.printer.command_error(
-                    "nozzle_locator %s-Hinsweep: %s" % (axis, reason))
-            rev = self.sweep(axis, center, span, step, descending=True)
-            good, reason = fit.sweep_quality(rev, baseline, self.min_amplitude)
-            if not good:
-                raise self.printer.command_error(
-                    "nozzle_locator %s-Ruecksweep: %s" % (axis, reason))
-            try:
-                v_fwd, k_fwd = fit.parabola_fit(fwd)
-                v_rev, k_rev = fit.parabola_fit(rev)
-            except ValueError as e:
-                raise self.printer.command_error(
-                    "nozzle_locator %s: Fit fehlgeschlagen: %s" % (axis, e))
-            centers.append((v_fwd + v_rev) / 2.0)
-            fwds.append(v_fwd)
-            revs.append(v_rev)
-            curvs.append((k_fwd + k_rev) / 2.0)
+        self._hold_sensor(speed)
+        try:
+            for _ in range(runs):
+                fwd = self.sweep(axis, center, span, step, descending=False,
+                                 speed=speed)
+                good, reason = fit.sweep_quality(fwd, baseline,
+                                                 self.min_amplitude)
+                if not good:
+                    raise self.printer.command_error(
+                        "nozzle_locator %s-Hinsweep: %s" % (axis, reason))
+                rev = self.sweep(axis, center, span, step, descending=True,
+                                 speed=speed)
+                good, reason = fit.sweep_quality(rev, baseline,
+                                                 self.min_amplitude)
+                if not good:
+                    raise self.printer.command_error(
+                        "nozzle_locator %s-Ruecksweep: %s" % (axis, reason))
+                try:
+                    v_fwd, k_fwd = fit.parabola_fit(fwd)
+                    v_rev, k_rev = fit.parabola_fit(rev)
+                except ValueError as e:
+                    raise self.printer.command_error(
+                        "nozzle_locator %s: Fit fehlgeschlagen: %s"
+                        % (axis, e))
+                centers.append((v_fwd + v_rev) / 2.0)
+                fwds.append(v_fwd)
+                revs.append(v_rev)
+                curvs.append((k_fwd + k_rev) / 2.0)
+        finally:
+            self._release_sensor(speed)
 
         spread = max(centers) - min(centers)
         if spread > self.runs_tolerance:
@@ -409,8 +629,22 @@ class NozzleLocator:
         der Drift-Bias ist hier egal, die Feinmessung folgt ohnehin.
         Rueckgabe: (position, amplitude).
         """
-        pts = self.sweep(axis, center, self.search_span,
-                         self.sweep_step * 2.0, descending=False)
+        step = self.sweep_step * 2.0
+        self._hold_sensor()
+        try:
+            pts = self.sweep(axis, center, self.search_span, step,
+                             descending=False)
+        finally:
+            self._release_sensor()
+        if self.scan_speed > 0.:
+            # Scan liefert ~80 Samples je mm; local_peak braucht Nachbarn
+            # mit festem Abstand -> Koerbe in doppelter Schrittweite.
+            half = self.search_span / 2.0
+            try:
+                pts = fit.bin_points(pts, center - half, center + half, step)
+            except ValueError as e:
+                raise self.printer.command_error(
+                    "nozzle_locator Grobsuche %s: %s" % (axis, e))
         try:
             pos, amp = fit.local_peak(pts, center, baseline,
                                       self.min_amplitude)
@@ -432,15 +666,19 @@ class NozzleLocator:
         Diagnose, kein Teil der Messroutine: einmal fahren, rho ansehen,
         danach entscheiden ob die Routine aufwendiger werden muss.
         """
-        rx = self.locate('X', center_x, baseline, runs=runs)
-        self._move([rx['center'], None, None], self.move_speed)
-        ry = self.locate('Y', center_y, baseline, runs=runs)
-        self._move([None, ry['center'], None], self.move_speed)
-        a, b = rx['curvature'], ry['curvature']
-        k45 = self._diagonal_curvature(rx['center'], ry['center'],
-                                       baseline, +1)
-        k135 = self._diagonal_curvature(rx['center'], ry['center'],
-                                        baseline, -1)
+        self._hold_sensor()
+        try:
+            rx = self.locate('X', center_x, baseline, runs=runs)
+            self._move([rx['center'], None, None], self.move_speed)
+            ry = self.locate('Y', center_y, baseline, runs=runs)
+            self._move([None, ry['center'], None], self.move_speed)
+            a, b = rx['curvature'], ry['curvature']
+            k45 = self._diagonal_curvature(rx['center'], ry['center'],
+                                           baseline, +1)
+            k135 = self._diagonal_curvature(rx['center'], ry['center'],
+                                            baseline, -1)
+        finally:
+            self._release_sensor()
         c = (k45 - k135) / 2.0   # (a+b+2c)/2 - (a+b-2c)/2 = 2c
         denom = (a * b) ** 0.5 if a > 0 and b > 0 else 0.0
         rho = c / denom if denom > 0 else 0.0
@@ -454,24 +692,29 @@ class NozzleLocator:
         Bogenlaenge entlang der Diagonalen, nicht x oder y allein -- sonst
         stimmt die Kruemmung um Faktor 2 nicht.
         """
-        self.state = 'sweeping'
         half = self.sweep_span / 2.0
-        n_steps = int(round(self.sweep_span / self.sweep_step)) + 1
         root2 = 2.0 ** 0.5
-        # Vorlauf in Sweeprichtung, wie bei den achsparallelen Sweeps
-        s0 = -half - 3.0 * self.sweep_step
-        self._move([cx + s0 / root2, cy + sign * s0 / root2, None],
-                   self.move_speed)
-        pts = []
-        self.last_points = []
-        for i in range(n_steps):
-            s = -half + i * self.sweep_step          # Bogenlaenge
-            dx = s / root2
-            dy = sign * s / root2
-            self._move([cx + dx, cy + dy, None], self.move_speed)
-            mean, sd, n, errors = self.read_frequency()
-            pts.append((s, mean))
-            self.last_points.append((round(s, 4), round(mean, 1)))
+        direction = (1.0 / root2, sign / root2)
+        if self.scan_speed > 0.:
+            pts = self._scan("Diagonale %s45" % ("+" if sign > 0 else "-"),
+                             (cx, cy), direction, -half, half,
+                             3.0 * self.sweep_step)
+        else:
+            self.state = 'sweeping'
+            n_steps = int(round(self.sweep_span / self.sweep_step)) + 1
+            # Vorlauf in Sweeprichtung, wie bei den achsparallelen Sweeps
+            s0 = -half - 3.0 * self.sweep_step
+            self._move([cx + s0 * direction[0], cy + s0 * direction[1],
+                        None], self.move_speed)
+            pts = []
+            self.last_points = []
+            for i in range(n_steps):
+                s = -half + i * self.sweep_step          # Bogenlaenge
+                self._move([cx + s * direction[0], cy + s * direction[1],
+                            None], self.move_speed)
+                mean, sd, n, errors = self.read_frequency()
+                pts.append((s, mean))
+                self.last_points.append((round(s, 4), round(mean, 1)))
         good, reason = fit.sweep_quality(pts, baseline, self.min_amplitude)
         if not good:
             raise self.printer.command_error(
@@ -509,7 +752,10 @@ class NozzleLocator:
     cmd_LOCATE_help = (
         "Locate a nozzle laterally over the XY probe coil. Parameters: "
         "AXIS (X, Y or DIAG), REPEATS (runs, default from config), SPAN, "
-        "STEP. AXIS=DIAG runs both diagonals and reports the cross-term of "
+        "STEP, SPEED (scan speed mm/s, 0 = point mode), GAPS (comma-"
+        "separated gaps above holder_top_z: repeats the X/Y locate at each "
+        "height and reports the peak per gap -- height series diagnostic). "
+        "AXIS=DIAG runs both diagonals and reports the cross-term of "
         "the 2D peak (diagnostic only). Requires homed axes, the coil "
         "placed under the nozzle and the nozzle already lowered to the "
         "measuring height (see approach_z / CALIBRATE_XY_OFFSETS).")
@@ -521,6 +767,21 @@ class NozzleLocator:
         runs = gcmd.get_int('REPEATS', self.runs, minval=1)
         span = gcmd.get_float('SPAN', self.sweep_span, above=0.)
         step = gcmd.get_float('STEP', self.sweep_step, above=0.)
+        speed = gcmd.get_float('SPEED', None, minval=0.)
+        gaps_raw = gcmd.get('GAPS', None)
+        gaps = None
+        if gaps_raw:
+            try:
+                gaps = [float(g) for g in gaps_raw.split(',') if g.strip()]
+            except ValueError:
+                raise gcmd.error("GAPS muss eine Liste von Zahlen sein")
+            if axis == 'DIAG':
+                raise gcmd.error("GAPS geht nur mit AXIS=X oder Y")
+            for g in gaps:
+                if self.holder_top_z + g < self._z_floor():
+                    raise gcmd.error(
+                        "GAPS: Spalt %.2f liegt unter min_gap %.2f"
+                        % (g, self.min_gap))
         self._require_homed()
 
         toolhead = self.printer.lookup_object('toolhead')
@@ -536,6 +797,10 @@ class NozzleLocator:
         baseline = self.measure_baseline()
         self._move([None, None, here[2]], self.approach_speed)
         try:
+            if gaps:
+                self._height_series(gcmd, axis, here, baseline, gaps, runs,
+                                    span, step, speed)
+                return
             if axis == 'DIAG':
                 r = self.measure_coupling(here[0], here[1], baseline,
                                           runs=runs)
@@ -546,19 +811,69 @@ class NozzleLocator:
                 return
             center = here[0 if axis == 'X' else 1]
             result = self.locate(axis, center, baseline, runs=runs,
-                                 span=span, step=step)
+                                 span=span, step=step, speed=speed)
             gcmd.respond_info(
                 "nozzle_locator %s: %.4f mm (hin %.4f, rueck %.4f, "
-                "Differenz %.1f um = gemessener Drift-Bias; Spannweite "
-                "ueber %d Laeufe %.1f um)"
+                "Differenz %.1f um = gemessener Drift-Bias%s; Spannweite "
+                "ueber %d Laeufe %.1f um, Kruemmung %.0f Hz/mm^2)"
                 % (axis, result['center'], result['fwd'], result['rev'],
-                   (result['fwd'] - result['rev']) * 1000., runs,
-                   result['spread'] * 1000.))
+                   (result['fwd'] - result['rev']) * 1000.,
+                   " + 2*v*Latenz" if self._scanning(speed) else "",
+                   runs, result['spread'] * 1000., result['curvature']))
             coord = [None, None, None]
             coord[0 if axis == 'X' else 1] = result['center']
             self._move(coord, self.move_speed)
         finally:
             self.state = 'idle'
+
+    def _scanning(self, speed=None):
+        return self.scan_speed > 0. if speed is None else speed > 0.
+
+    def _height_series(self, gcmd, axis, here, baseline, gaps, runs, span,
+                       step, speed):
+        """Hoehenserie: dieselbe Achse bei mehreren Spalten ueber der
+        Halterung orten. Zeigt, wie der Scheitel mit dem Spalt wandert
+        (Heizblock-Anteil, ~240 um/mm am 250er) und ob er zum kleinen
+        Spalt hin konvergiert. Die Rohdaten jedes Sweeps liegen danach im
+        Puffer fuer NOZZLE_LOCATOR_DUMP. Faehrt am Ende auf die
+        Ausgangshoehe zurueck; das Fenster folgt dem jeweils letzten
+        Scheitel.
+        """
+        idx = 0 if axis == 'X' else 1
+        center = here[idx]
+        rows = []
+        gcmd.respond_info(
+            "nozzle_locator Hoehenserie %s ueber %d Spalte (Halterung %.2f, "
+            "Basislinie %.0f Hz)" % (axis, len(gaps), self.holder_top_z,
+                                     baseline))
+        try:
+            for gap in gaps:
+                z = self.holder_top_z + gap
+                self._move([None, None, z], self.approach_speed)
+                r = self.locate(axis, center, baseline, runs=runs,
+                                span=span, step=step, speed=speed)
+                amp = max(v for _, v in self.last_points) - baseline
+                rows.append((gap, z, r))
+                gcmd.respond_info(
+                    "  Spalt %.2f (Z %.3f): %s %.4f  hin-rueck %+.1f um  "
+                    "Spannweite %.1f um  Kruemmung %.0f Hz/mm^2  "
+                    "Amplitude %+.0f Hz"
+                    % (gap, z, axis, r['center'],
+                       (r['fwd'] - r['rev']) * 1000., r['spread'] * 1000.,
+                       r['curvature'], amp))
+                center = r['center']
+        finally:
+            self._move([None, None, here[2]], self.approach_speed)
+        if len(rows) >= 2:
+            g0, _, r0 = rows[0]
+            g1, _, r1 = rows[-1]
+            if abs(g1 - g0) > 1e-6:
+                slope = (r1['center'] - r0['center']) / (g1 - g0)
+                gcmd.respond_info(
+                    "  Scheitel wandert %.0f um je mm Spalt (von %.2f nach "
+                    "%.2f); Extrapolation auf Spalt 0: %.4f"
+                    % (slope * 1000., g0, g1,
+                       r1['center'] - slope * g1))
 
 
 def load_config(config):

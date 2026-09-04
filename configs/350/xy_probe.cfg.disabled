@@ -44,6 +44,16 @@ fine_gap: 0.75
 sweep_span: 8
 sweep_step: 1
 dwell_time: 0.5
+# Kontinuierlicher Scan: der Kopf faehrt mit scan_speed (mm/s) durch das
+# Fenster, der Sensor laeuft mit (~80 Samples je mm bei 5 mm/s). 0 = alter
+# Punktmodus (anfahren, dwell_time verweilen, mitteln). sweep_step ist im
+# Scanmodus die Korbbreite der Grobsuche und des Status.
+scan_speed: 5
+# Sekunden, um die der LDC1612 VOR seinem Zeitstempel misst. Der
+# bidirektionale Sweep hebt den Fehler auf; wer ihn kennt (Hin-Rueck-
+# Differenz bei zwei Geschwindigkeiten, NOZZLE_LOCATE SPEED=), traegt ihn
+# hier ein.
+#sample_latency: 0.0
 runs: 3
 runs_tolerance: 0.05
 xy_iterations: 1

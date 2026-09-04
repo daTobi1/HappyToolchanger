@@ -158,3 +158,74 @@ def sweep_quality(points, baseline, min_amplitude):
         return False, ("Scheitel liegt am Rand des Fensters (%.3f) -- "
                        "Bereich verfehlt" % points[peak_idx][0])
     return True, ""
+
+
+def bin_points(points, lo, hi, step):
+    """Koerbe: fasst dicht liegende Samples eines Scans zu Gitterpunkten
+    zusammen. -> [(mittlere_position, mittelwert), ...] in Sweep-Reihenfolge.
+
+    Ein kontinuierlicher Scan liefert ~80 Samples je mm. Die Grobsuche
+    (local_peak) braucht Nachbarn mit festem Abstand, und der Status soll
+    kompakt bleiben. Die Koerbe liegen GANZ im Fenster: [lo, lo+step),
+    [lo+step, lo+2step), ..., Mitten bei lo+step/2, ..., hi-step/2. Ein
+    halber Randkorb waere schief: auf der Flanke der Glocke zieht der
+    Steigungsterm den Mittelwert um ~200 Hz vom Wert in der Korbmitte weg.
+    Jeder Korb meldet die MITTLERE Position seiner Samples, nicht die
+    geometrische Korbmitte: liegen die Samples im Korb nicht symmetrisch,
+    verschoebe die Korbmitte den Fit (6 um Schwerpunktversatz gaben im Test
+    4 um am Scheitel). Leere Koerbe fehlen, statt mit 0 gefuellt zu werden;
+    Samples ausserhalb [lo, hi] zaehlen nicht. Die Reihenfolge ist die des ersten Samples je
+    Korb, damit ein Ruecksweep absteigend bleibt (sweep_quality prueft die
+    Listenenden).
+    """
+    n_bins = int(round((hi - lo) / step))
+    if n_bins < 1:
+        raise ValueError("Fenster %.3f..%.3f kleiner als ein Korb (%.3f)"
+                         % (lo, hi, step))
+    sums = {}
+    order = []
+    for pos, val in points:
+        if pos < lo - 1e-9 or pos > hi + 1e-9:
+            continue
+        k = int((pos - lo) / step)
+        if k >= n_bins:           # pos == hi gehoert in den letzten Korb
+            k = n_bins - 1
+        if k not in sums:
+            sums[k] = [0.0, 0.0, 0]
+            order.append(k)
+        sums[k][0] += pos
+        sums[k][1] += val
+        sums[k][2] += 1
+    return [(sums[k][0] / sums[k][2], sums[k][1] / sums[k][2])
+            for k in order]
+
+
+def samples_to_track(samples, lookup, origin, direction, lo, hi,
+                     latency=0.0):
+    """Ordnet Sensor-Samples ihrer Bahnposition zu.
+    -> [(bogenlaenge, wert), ...] in Zeitreihenfolge.
+
+    samples: [(print_time, wert), ...]
+    lookup:  print_time -> ((x, y, z), geschwindigkeit) oder (None, None)
+    origin/direction: Bahn s = <(x, y) - origin, direction>; direction ist
+             ein Einheitsvektor, fuer achsparallele Sweeps (1,0)/(0,1) mit
+             origin (0,0), fuer Diagonalen (1, +-1)/sqrt2 ab dem Zentrum.
+    lo/hi:   nur Samples mit lo <= s <= hi bleiben.
+    latency: Sekunden, um die der Sensor VOR seinem Zeitstempel misst;
+             das Sample gehoert zur Position bei t - latency.
+
+    Samples im Stillstand (geschwindigkeit <= 0) fallen weg: Vor- und
+    Nachlauf, Verweilzeiten. Zeiten ohne bekannte Bewegung ebenfalls.
+    """
+    track = []
+    dx, dy = direction
+    ox, oy = origin
+    for t, val in samples:
+        pos, vel = lookup(t - latency)
+        if pos is None or vel is None or vel <= 0.0:
+            continue
+        s = (pos[0] - ox) * dx + (pos[1] - oy) * dy
+        if s < lo or s > hi:
+            continue
+        track.append((s, val))
+    return track

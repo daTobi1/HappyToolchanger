@@ -213,6 +213,12 @@ scp tests/check_nozzle_locator_fit.py klippy/extras/nozzle_locator_fit.py biqu@<
 ssh biqu@<IP> 'cd /tmp && python3 check_nozzle_locator_fit.py'
 ```
 
+Seit dem Scanmodus (2026-09-04) prüft er außerdem die Bausteine des
+kontinuierlichen Sweeps: `bin_points` (Körbe ganz im Fenster, mittlere
+Sample-Position statt Korbmitte, leere Körbe fehlen) und `samples_to_track`
+(Zeitstempel → Bahnposition, Stillstand und Fensterfremdes fallen weg,
+Diagonale als Bogenlänge, Latenz wird vom Zeitstempel abgezogen).
+
 Der Anlass ist ein Denkfehler, der beinahe ins Verfahren eingebaut worden
 wäre. Der ursprüngliche Schluss lautete: ein Peak-Fit ist gegen additive
 Ablagen invariant, also stört der Temperaturgang der Basislinie nicht. Das

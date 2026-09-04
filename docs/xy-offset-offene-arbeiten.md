@@ -1,6 +1,6 @@
 # XY-Offset-Kalibrierung: offene Arbeiten und Befunde der ersten Messläufe
 
-Die XY-Offset-Kalibrierung per Eddy-Spule ist entworfen, gebaut und am 250er einmal komplett gelaufen (Stand 2026-09-04, Abschnitt 8). Dieses Issue hält fest, was noch zu tun ist, was beim Bauen zu beachten war, welche Stellen ohne Hardware entstanden sind, und was die ersten echten Messläufe gelehrt haben. Die Abschnitte 1–7 sind die Vorgeschichte, Abschnitt 8 der aktuelle Stand.
+Die XY-Offset-Kalibrierung per Eddy-Spule ist entworfen, gebaut und am 250er einmal komplett gelaufen (Stand 2026-09-04, Abschnitt 8; Scanmodus und Bewegungsformen in Abschnitt 9). Dieses Issue hält fest, was noch zu tun ist, was beim Bauen zu beachten war, welche Stellen ohne Hardware entstanden sind, und was die ersten echten Messläufe gelehrt haben. Die Abschnitte 1–7 sind die Vorgeschichte, Abschnitt 8 der aktuelle Stand.
 
 **Design:** `docs/superpowers/specs/2026-08-31-eddy-xy-offset-design.md`
 **Plan:** `docs/superpowers/plans/2026-08-31-eddy-xy-offset.md`
@@ -11,7 +11,7 @@ Die XY-Offset-Kalibrierung per Eddy-Spule ist entworfen, gebaut und am 250er ein
 
 | Task | Zustand |
 |---|---|
-| 1 — Fit-Mathematik (`nozzle_locator_fit.py`) | **fertig**, 18 Zusicherungen, getestet |
+| 1 — Fit-Mathematik (`nozzle_locator_fit.py`) | **fertig**, 51 Zusicherungen, getestet (Scan-Bausteine seit 2026-09-04, Abschnitt 9) |
 | 2 — Sensoranbindung (`nozzle_locator.py`) | **fertig**, am 250er verifiziert (2026-09-03), siehe 2.1 |
 | 3 — Z-Anfahrt, Sweep, Ortung | **fertig**, am 250er verifiziert (2026-09-04), siehe Abschnitt 8 |
 | 4 — Extraktion `_resolve_tool_run()` | **gestrichen** (siehe unten) |
@@ -20,7 +20,7 @@ Die XY-Offset-Kalibrierung per Eddy-Spule ist entworfen, gebaut und am 250er ein
 | 7 — XY-Block in der Webapp | **vorgebaut ohne Hardware**, Node-Tests gruen, siehe Abschnitt 4 |
 | 8–9 — Assistent, Kamera-Position | **vorgebaut ohne Hardware**, siehe Abschnitt 4 |
 
-Die Webapp-Tests umfassen 63 Zusicherungen (`tests/check_xy_offset_ui.js`), der Fit 18 (`tests/check_nozzle_locator_fit.py`). Ein Abschluss-Review über den gesamten Umfang ist gelaufen; sein einziger blockierender Befund (`transport` als Erfolg behandelt) ist behoben, siehe 4.5.
+Die Webapp-Tests umfassen 63 Zusicherungen (`tests/check_xy_offset_ui.js`), der Fit 51 (`tests/check_nozzle_locator_fit.py`). Ein Abschluss-Review über den gesamten Umfang ist gelaufen; sein einziger blockierender Befund (`transport` als Erfolg behandelt) ist behoben, siehe 4.5.
 
 **Task 4 wurde bewusst gestrichen.** Die Annahme, `CALIBRATE_ALL_Z_OFFSETS` und `CALIBRATE_PROBE_OFFSETS` lösten dieselbe Tool-Auswahl doppelt, war falsch — sie haben absichtlich verschiedene Politiken (u. a. wählt das zweite ohne `TOOLS` nur Tools mit vorhandenen Z-Switch-Daten und erzwingt das Referenztool weder in die Liste noch an deren Anfang). Ein gemeinsamer Helfer hätte das zweite Kommando im Normalfall verändert. Details in Task 4 des Plans.
 
@@ -336,3 +336,60 @@ Daraus erklärt sich die Tabelle in 8.2 fast vollständig:
 - Die Basislinie auf `park_z` liegt ~1.400 Hz über der echten Freiluft — die Düse ist 7 mm über der Spule schon schwach sichtbar. Für Amplituden-Schwellen unerheblich, für absolute Vergleiche mit dem Vorversuch nicht vergessen.
 - `_return_to_ref_tool` läuft bei den Z-Kalibrierungen bewusst *nicht* bei Abbruch (Tool zum Nachsehen montiert lassen). Der XY-Lauf macht es anders, weil bei ihm eine Halterung auf dem Bett steht und ein unbekanntes Tool im Kopf gefährlicher ist als ein verlorener Befund.
 
+
+---
+
+## 9. Scanmodus und die Frage nach der Bewegungsform (2026-09-04, abends)
+
+Gebaut nach dem ersten Durchlauf, **noch nicht gefahren**. Anlass war Tobis Frage, ob eine geschickte Bewegungsform den Heizblock aus der Messung herausbekommt.
+
+### 9.1 Warum die naheliegenden Bewegungsformen nichts bringen
+
+Die Spule misst die Summe aus Düsenbuckel und Block-Hintergrund. Der Block liegt weit weg und ist im Messfenster nur eine schiefe Ebene, also ein linearer Anstieg nach +Y. Buckel plus Gerade ist wieder ein Buckel, nur verschoben — aus einer einzelnen Y-Kurve kann kein Parabelfit die Verschiebung vom wahren Scheitel trennen. Deshalb helfen nicht:
+
+- **Kreisbahn um die Düse** — der Gradient erzeugt exakt dieselbe Grundschwingung wie ein versetzter Kreismittelpunkt.
+- **Flankenmitte statt Scheitel** (Halbwertspunkte mitteln) — beide Flanken wandern in dieselbe Richtung, die Mitte ist sogar doppelt so empfindlich wie der Scheitel (nachgerechnet für eine Gaußglocke: Scheitel `b·σ²/H`, Flankenmitte `2·b·σ²/H`).
+- **2D-Raster mit X-Krümmung als Referenz** — X liefert die Krümmung, aber die Y-Gerade bleibt mit dem Scheitel entartet.
+
+Was Düse und Block physikalisch unterscheidet, ist ihr **Abstand zur Spule**, und 8.3 beweist, dass die beiden Anteile mit Z verschieden skalieren. Zwei Wege bleiben:
+
+1. **Zwei-Höhen-Differenz:** denselben Sweep auf dem Feinspalt und 1–2 mm höher fahren, den Fit auf die *Differenz* legen. Düse ändert sich stark, Block schwach, die T0-Sonde in 16 mm Entfernung fast gar nicht. Zeitdrift kürzt sich weg. **Noch nicht gebaut** — erst die Rohdaten ansehen (9.4).
+2. **Aufgelöste Buckelform** statt Parabel: mit ~600 Punkten je Sweep lässt sich ein Peak mit linearem Untergrund fitten; die Entartung gilt nur für die Parabel. Braucht den Scanmodus (9.2).
+
+Die drei Höhenpunkte aus 8.3 sind **nicht linear**: 168 µm/mm zwischen 2,5 und 1,5 mm, 333 µm/mm zwischen 1,5 und 0,75 mm — die Kurve wird zum kleinen Spalt hin *steiler*, physikalisch wäre das Gegenteil zu erwarten. Entweder ist die Form nichtlinear, oder der Parabelfit über 8 mm verzerrt bei kleinem Spalt, weil der Buckel dann schmaler als das Fenster ist. Beides klärt die Höhenserie (9.4).
+
+### 9.2 Kontinuierlicher Scan statt Punkt für Punkt
+
+Jedes LDC1612-Sample trägt einen `print_time`; Klippers `motion_report` liefert zu jedem Zeitstempel die Sollposition aus der Bewegungswarteschlange (so macht es auch Klippers eigener Eddy-Scan). Der Sweep ist jetzt **ein Zug** durch das Fenster mit `scan_speed` (Default 5 mm/s), Vor- und Nachlauf `3·sweep_step` außerhalb, damit Beschleunigen und Bremsen nicht ins Fenster fallen. `scan_speed: 0` schaltet auf den alten Punktmodus zurück.
+
+| | Punktmodus | Scan (5 mm/s) |
+|---|---|---|
+| Punkte je Richtung | 9 | ~600 |
+| Dauer je Richtung | ~8 s | ~2 s |
+| Feinmessung je Tool, beide Achsen, 3 Läufe | ~100 s | ~25 s |
+
+Gebaut (`nozzle_locator.py`, `nozzle_locator_fit.py`):
+
+- `_scan()` als Primitiv für achsparallele Sweeps **und die Diagonalen** (`AXIS=DIAG`): Bahn `s = ⟨(x,y) − origin, direction⟩`, Fit über die Bogenlänge.
+- `fit.samples_to_track()` — Zeitstempel → Bahnposition, Stillstand und Fensterfremdes fallen weg, optional `sample_latency`.
+- `fit.bin_points()` — Körbe in `sweep_step`-Breite für die Grobsuche (`local_peak` braucht Nachbarn) und den Status. Jeder Korb liegt ganz im Fenster (halbe Randkörbe mitteln auf der Flanke schief) und meldet die **mittlere Sample-Position**, nicht die geometrische Mitte (6 µm Schwerpunktversatz gaben im Test 4 µm am Scheitel).
+- **Sensor-Haltung:** Klippers `FixedFreqReader` setzt seine Zeitstempel-Regression bei jedem Sensorstart zurück und braucht ~2 s, bis sie stabil ist. Ohne Gegenmaßnahme stoppt der Sensor nach jedem Sweep. `_hold_sensor()` hält ihn über die ganze Ortung am Laufen, mit 1 s Einschwingzeit beim ersten Halten.
+- **Latenz:** der Sensor integriert vor seinem Zeitstempel (Wandlung 2,5 ms bei 400 Hz). Bei 5 mm/s verschiebt das den Hinsweep um `v·Δt` nach vorn, den Rücksweep nach hinten; der bidirektionale Mittelwert hebt es auf, die Hin-Rück-Differenz zeigt es. `NOZZLE_LOCATE SPEED=` bei zwei Geschwindigkeiten bestimmt Δt, `sample_latency` in der Config verrechnet es.
+- `NOZZLE_LOCATOR_DUMP [FILE=] [KEEP=1]` schreibt die Rohsamples der letzten 64 Sweeps als JSON ins Log-Verzeichnis. Der Status trägt nur die Körbe (`points`) und `sweeps_logged`.
+- `NOZZLE_LOCATE AXIS=Y GAPS=3,2,1.5,1,0.75,0.5` — Höhenserie: dieselbe Achse bei mehreren Spalten über der Halterung, je Zeile Scheitel, Hin-Rück-Differenz, Spannweite, Krümmung, Amplitude; am Ende Steigung und Extrapolation auf Spalt 0. Fährt auf die Ausgangshöhe zurück.
+
+Tests: `check_nozzle_locator_fit.py` jetzt 51 Zusicherungen (Körbe, Projektion, Diagonale, Latenz, Stillstand); `check_klipper_api.py` 71 (dazu `motion_report.DumpTrapQ.get_trapq_position`, `dtrapqs['toolhead']`, `print_time` an Index 0).
+
+### 9.3 Was am Drucker zu prüfen ist (ohne Hardware entstanden)
+
+- Ob `get_trapq_position` zu den Sample-Zeiten wirklich Bewegung liefert (`vel > 0`). Fehlermeldung „nur N Samples im Fenster" heißt: Zeitstempel und Bewegung passen nicht zusammen — dann `scan_speed: 0` als Rückfall.
+- Die Hin-Rück-Differenz im Scanmodus: erwartet `2·v·Δt` plus Drift, also bei 5 mm/s etwa 15–30 µm, gleiches Vorzeichen bei X und Y. Deutlich mehr → Zeitbasis wackelt (Haltung greift nicht).
+- Ob die Sparkline der Webapp mit den Körben (8 Punkte je Feinsweep, 15 je Grobsuche) noch etwas Sinnvolles zeigt.
+
+### 9.4 Reihenfolge am Drucker
+
+1. `NOZZLE_LOCATE AXIS=X` einmal — Scan geht durch, Differenz plausibel.
+2. `NOZZLE_LOCATE AXIS=X SPEED=10` — Differenz sollte sich verdoppeln; daraus Δt.
+3. **Höhenserie** `AXIS=Y GAPS=3,2,1.5,1,0.75,0.5`, dann `NOZZLE_LOCATOR_DUMP`. Die Rohdaten beantworten offline: konvergiert der Feinspalt, taugt die Extrapolation, wie gut wird die Zwei-Höhen-Differenz.
+4. `AXIS=DIAG` einmal (Kreuzkopplung, jetzt billig).
+5. Erst dann der Spaltmodus-Lauf `CALIBRATE_XY_OFFSETS` aus 8.4.

@@ -185,6 +185,129 @@ def main():
     pos3, _ = fit.local_peak(pts, 125.0, 0.0, 2000.0)
     close(pos3, 124.3, 0.05, "Grobsuche verfeinert den Scheitel nicht")
 
+    # --- 11: Koerbe -- ein kontinuierlicher Scan wird zu Gitterpunkten ---
+    # Der Scan liefert ~80 Samples je mm. Die Grobsuche (local_peak) braucht
+    # Nachbarn mit festem Abstand; bin_points mittelt je Korb. Die Koerbe
+    # liegen ganz im Fenster (ein halber Randkorb mittelt auf der Flanke
+    # schief), die Mitten also bei lo+step/2 ... hi-step/2.
+    fine_pos = [120.0 + 0.0125 * i for i in range(641)]      # 120..128
+    raw = bell(CENTER, AMPL, CURV, fine_pos)
+    bins = fit.bin_points(raw, 120.0, 128.0, 1.0)
+    CENTERS = [120.5 + i for i in range(8)]
+    # Je Korb die mittlere Sample-Position (hier 6 um unter der Korbmitte,
+    # weil die Samples bei 120.0 beginnen), nicht die geometrische Mitte.
+    ok(len(bins) == 8 and all(abs(p - c) < 0.01
+                              for (p, _), c in zip(bins, CENTERS)),
+       "bin_points legt die Koerbe nicht ins Fenster",
+       str([p for p, _ in bins]))
+    # Der Mittelwert einer Parabel ueber einen Korb liegt curv*step^2/12
+    # unter dem Wert in der Korbmitte -- das ist die erlaubte Abweichung.
+    for p, v in bins:
+        close(v, AMPL - CURV * (p - CENTER) ** 2, CURV / 12.0 + 1.0,
+              "Korbmittel weicht vom Glockenwert ab", "bei %.1f" % p)
+    close(fit.parabola_vertex(bins), CENTER, 1e-3,
+          "Fit ueber die Koerbe trifft das Zentrum nicht")
+    pos_b, _ = fit.local_peak(bins, 125.0, 0.0, 2000.0)
+    close(pos_b, CENTER, 0.05, "Grobsuche auf Koerben verfehlt den Buckel")
+    # Rueckwaerts gescannt -> Koerbe in Sweep-Reihenfolge (absteigend), damit
+    # sweep_quality den Rand weiter am Listenende erkennt.
+    bins_rev = fit.bin_points(list(reversed(raw)), 120.0, 128.0, 1.0)
+    ok(len(bins_rev) == 8 and all(
+        abs(p - q) < 1e-9
+        for (p, _), (q, _) in zip(bins_rev, reversed(bins))),
+       "bin_points haelt die Sweep-Reihenfolge nicht ein")
+    # Leere Koerbe werden ausgelassen, nicht mit 0 gefuellt.
+    gappy = [(p, v) for p, v in raw if not (123.0 <= p < 124.0)]
+    bins_gap = fit.bin_points(gappy, 120.0, 128.0, 1.0)
+    ok(not any(123.0 <= p < 124.0 for p, _ in bins_gap),
+       "bin_points fuellt einen leeren Korb")
+    ok(len(bins_gap) == 7, "bin_points verliert mehr als den leeren Korb",
+       str(len(bins_gap)))
+    # Samples ausserhalb des Fensters gehoeren in keinen Korb.
+    wide = bell(CENTER, AMPL, CURV, [118.0 + 0.0125 * i for i in range(961)])
+    bins_wide = fit.bin_points(wide, 120.0, 128.0, 1.0)
+    ok([p for p, _ in bins_wide] == [p for p, _ in bins],
+       "bin_points nimmt Samples ausserhalb des Fensters mit")
+    # Ein Sample genau auf hi landet im letzten Korb, nicht in einem neuen.
+    edge = fit.bin_points([(128.0, 1.0), (127.9, 3.0)], 120.0, 128.0, 1.0)
+    ok(len(edge) == 1 and abs(edge[0][0] - 127.95) < 1e-9
+       and edge[0][1] == 2.0, "Sample auf hi wird falsch einsortiert",
+       str(edge))
+
+    # --- 12: Zeitstempel -> Bahnposition entlang einer Richtung ---
+    # Ein Scan liefert (print_time, frequenz). Die Position kommt aus der
+    # Bewegungswarteschlange: lookup(t) -> ((x, y, z), geschwindigkeit) oder
+    # (None, None), wenn keine Bewegung bekannt ist. samples_to_track
+    # projiziert auf die Bahn (Bogenlaenge ab origin in Richtung direction)
+    # und behaelt nur Samples in Bewegung innerhalb des Fensters [lo, hi].
+    V = 5.0                       # mm/s
+    T0 = 100.0                    # Bewegungsbeginn
+    X0, X1 = 117.0, 131.0         # Vorlauf 3 mm vor 120, Nachlauf bis 131
+
+    def lookup_x(t):
+        if t < T0 - 1.0:
+            return None, None
+        if t < T0:
+            return (X0, 50.0, 10.0), 0.0
+        if t > T0 + (X1 - X0) / V:
+            return (X1, 50.0, 10.0), 0.0
+        return (X0 + V * (t - T0), 50.0, 10.0), V
+
+    samples = [(T0 - 1.5 + 0.0025 * i, 1000.0) for i in range(2000)]
+    track = fit.samples_to_track(samples, lookup_x, (0.0, 0.0), (1.0, 0.0),
+                                 120.0, 128.0)
+    ok(len(track) > 0, "samples_to_track liefert nichts")
+    ok(all(120.0 <= s <= 128.0 for s, _ in track),
+       "samples_to_track laesst Positionen ausserhalb des Fensters durch")
+    ok(all(v == 1000.0 for _, v in track),
+       "samples_to_track veraendert die Frequenzwerte")
+    # Stillstand (Vorlaufposition vor T0) darf nicht auftauchen, auch wenn
+    # sie ausserhalb des Fensters liegt -- und auch nicht, wenn sie drin
+    # laege: geprueft ueber einen Stillstand mitten im Fenster.
+    def lookup_stop(t):
+        return (124.0, 50.0, 10.0), 0.0
+    ok(fit.samples_to_track(samples, lookup_stop, (0.0, 0.0), (1.0, 0.0),
+                            120.0, 128.0) == [],
+       "samples_to_track nimmt Samples im Stillstand")
+    # Die Bahnposition ist die Projektion: x bei Richtung (1,0)
+    s_first = track[0][0]
+    t_first = [t for t, _ in samples
+               if (lookup_x(t)[1] or 0) > 0 and 120.0 <= lookup_x(t)[0][0]][0]
+    close(s_first, X0 + V * (t_first - T0), 1e-9,
+          "samples_to_track projiziert nicht auf x")
+    # Reihenfolge = Zeitreihenfolge = Sweep-Reihenfolge
+    ok(all(track[i][0] <= track[i + 1][0] for i in range(len(track) - 1)),
+       "samples_to_track haelt die Sweep-Reihenfolge nicht ein")
+
+    # Diagonale: Richtung (1, -1)/sqrt2 ab origin (cx, cy). Ein Punkt 2 mm
+    # weiter in x und 2 mm weniger in y hat Bogenlaenge 2*sqrt2.
+    root2 = 2.0 ** 0.5
+    def lookup_diag(t):
+        return (124.0 + 2.0, 130.0 - 2.0, 10.0), V
+    track_d = fit.samples_to_track([(T0, 1.0)], lookup_diag, (124.0, 130.0),
+                                   (1.0 / root2, -1.0 / root2), -4.0, 4.0)
+    ok(len(track_d) == 1, "Diagonal-Sample verloren")
+    close(track_d[0][0], 2.0 * root2, 1e-9,
+          "Bogenlaenge auf der Diagonalen falsch")
+
+    # Latenz: der Sensor integriert VOR dem Zeitstempel. Mit latency=L wird
+    # das Sample der Position zur Zeit t-L zugeordnet -- also weiter hinten
+    # auf der Bahn (kleineres x im Hinsweep).
+    track_lat = fit.samples_to_track(samples, lookup_x, (0.0, 0.0),
+                                     (1.0, 0.0), 120.0, 128.0, latency=0.010)
+    t_l = [t for t, _ in samples
+           if (lookup_x(t - 0.010)[1] or 0) > 0
+           and 120.0 <= lookup_x(t - 0.010)[0][0]][0]
+    close(track_lat[0][0], X0 + V * (t_l - 0.010 - T0), 1e-9,
+          "Latenz wird nicht vom Zeitstempel abgezogen")
+    ok(track_lat[0][0] < track[0][0] + 1e-9 and len(track_lat) == len(track),
+       "Latenz verschiebt die Bahn nicht wie erwartet")
+
+    # Unbekannte Zeiten (lookup -> (None, None)) werden still uebergangen.
+    ok(fit.samples_to_track([(T0 - 5.0, 1.0)], lookup_x, (0.0, 0.0),
+                            (1.0, 0.0), 120.0, 128.0) == [],
+       "samples_to_track stolpert ueber unbekannte Zeiten")
+
     print("%d Zusicherungen geprueft" % CHECKS[0])
     if FINDINGS:
         for f in FINDINGS:
