@@ -2906,6 +2906,13 @@ function xyOffsetSection() {
           escapeHtml(_xyFineGapStored()) + '">' +
           '<span class="input-group-text">mm</span>' +
         '</div>' +
+        // Fit-Radius (FIT_RADIUS), leer = 2,0 mm. Sweep ueber Lauf 12: <= 20 um Wirkung.
+        '<div class="input-group input-group-sm flex-nowrap" style="width:13.5em" title="Radius des Paraboloid-Fits um die Rastermitte (FIT_RADIUS); leer = 2,0 mm. Kleiner haelt den Fit auf der Spitze, hat an Lauf 12 aber nur <= 20 um geaendert. 0,75 bis 3 mm.">' +
+          '<span class="input-group-text">Fit-Radius</span>' +
+          '<input type="number" class="form-control" id="xy-fit-radius" min="0.75" max="3" step="0.25" placeholder="2.0" value="' +
+          escapeHtml(_xyFitRadiusStored()) + '">' +
+          '<span class="input-group-text">mm</span>' +
+        '</div>' +
         // Nur sichtbar, solange die Sonde aktiv ist (nozzle_locator geladen):
         // direkter Lauf ohne Neustart/Homen/Aufsetzen und das Deaktivieren
         // fuer den Fall "Sonde aktiv lassen" am Ende des Assistenten.
@@ -4325,7 +4332,28 @@ function xyCalibrateCommand(selectedTools, refTool, opts) {
     }
     cmd += " FINE_GAP=" + String(+g.toFixed(3));
   }
+  // Fit-Radius (Tobi, 2026-09-05): Radius des Paraboloid-Fits um die
+  // Rastermitte. Der Sweep ueber Lauf 12 zeigte <= 20 um Wirkung, Default
+  // bleibt 2,0 mm (mehr Punkte, robuster gegen Rauschen).
+  var rr = opts.fitRadius;
+  if (rr !== undefined && rr !== null && String(rr).trim() !== '') {
+    var fr = parseFloat(String(rr).replace(',', '.'));
+    if (!isFinite(fr) || fr < 0.75 || fr > 3) {
+      throw new Error("Fit-Radius muss zwischen 0,75 und 3 mm liegen");
+    }
+    cmd += " FIT_RADIUS=" + String(+fr.toFixed(3));
+  }
   return cmd;
+}
+
+function xyFitRadiusValue() {
+  var v = $('#xy-fit-radius').val();
+  try { localStorage.setItem('offset_xy_fit_radius', v || ''); } catch (e) { /* egal */ }
+  return v;
+}
+
+function _xyFitRadiusStored() {
+  try { return localStorage.getItem('offset_xy_fit_radius') || ''; } catch (e) { return ''; }
 }
 
 function xySelectedTools() {
@@ -4345,7 +4373,7 @@ function xyFineGapValue() {
 // Meldung statt eines Laufs.
 function xyBuildRunCommand() {
   return xyCalibrateCommand(xySelectedTools(), getSelectedReferenceTool(0),
-                            { fineGap: xyFineGapValue() });
+                            { fineGap: xyFineGapValue(), fitRadius: xyFitRadiusValue() });
 }
 
 function xyWizard() {
@@ -4430,7 +4458,7 @@ function xyWizard() {
         try {
           cmd = xyBuildRunCommand();
         } catch (e) {
-          if (/Feinspalt/.test(e.message)) {
+          if (/Feinspalt|Fit-Radius/.test(e.message)) {
             e.xyHolderMounted = true;
             throw e;
           }
@@ -4554,7 +4582,7 @@ function xyRunDirect() {
   try {
     cmd = xyBuildRunCommand();
   } catch (e) {
-    if (/Feinspalt/.test(e.message)) return alertDialog("Feinspalt", escapeHtml(e.message));
+    if (/Feinspalt|Fit-Radius/.test(e.message)) return alertDialog("Messlauf", escapeHtml(e.message));
     cmd = "CALIBRATE_XY_OFFSETS";
   }
   return confirmDialog({

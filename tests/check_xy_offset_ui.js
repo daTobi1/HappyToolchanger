@@ -1094,6 +1094,15 @@ function runParkTest() {
   try { xyCalibrateCommand([1], 0, { fineGap: 'abc' }); } catch (e) { threwGap = true; }
   check('xyCalibrateCommand: Feinspalt als Unsinn wirft', threwGap);
   check('XY-Block: Feld fuer den Feinspalt', /id="xy-fine-gap"/.test(grab('xyOffsetSection')));
+  // Fit-Radius (Tobi, 2026-09-05): Feld, geht als FIT_RADIUS mit; Default 2,0.
+  check('xyCalibrateCommand: Fit-Radius wird angehaengt',
+        xyCalibrateCommand([1], 0, { fitRadius: 1.5 }) === 'CALIBRATE_XY_OFFSETS REF_TOOL=0 TOOLS=0,1 FIT_RADIUS=1.5');
+  check('xyCalibrateCommand: Feinspalt und Radius zusammen',
+        xyCalibrateCommand([1], 0, { fineGap: 0.4, fitRadius: '2' }) === 'CALIBRATE_XY_OFFSETS REF_TOOL=0 TOOLS=0,1 FINE_GAP=0.4 FIT_RADIUS=2');
+  var threwR = false;
+  try { xyCalibrateCommand([1], 0, { fitRadius: 0.5 }); } catch (e) { threwR = /Fit-Radius/.test(e.message); }
+  check('xyCalibrateCommand: Fit-Radius unter 0,75 wirft', threwR);
+  check('XY-Block: Feld fuer den Fit-Radius', /id="xy-fit-radius"/.test(grab('xyOffsetSection')));
 }
 
 // --------------------------------------------------------------------
@@ -1122,8 +1131,9 @@ function runParkTest() {
   global.xySelectedToolsRD = function () { return [0, 1]; };
   global.getSelectedReferenceToolRD = function () { return 0; };
   global.xyFineGapValueRD = function () { return ''; };
+  global.xyFitRadiusValueRD = function () { return ''; };
   var rd = (grab('xyBuildRunCommand') + grab('xyRunDirect')).replace(
-    /\b(confirmDialog|alertDialog|xyRunProgressDialog|xySendMounted|waitForPrinterIdle|updateAllProbeResults|xySelectedTools|getSelectedReferenceTool|xyFineGapValue|xyBuildRunCommand)\(/g,
+    /\b(confirmDialog|alertDialog|xyRunProgressDialog|xySendMounted|waitForPrinterIdle|updateAllProbeResults|xySelectedTools|getSelectedReferenceTool|xyFineGapValue|xyFitRadiusValue|xyBuildRunCommand)\(/g,
     '$1RD(');
   eval(grab('escapeHtml') + grab('gcodeErrorMessage') + grab('xyCalibrateCommand') + rd);
   xyRunDirect().then(function () {
