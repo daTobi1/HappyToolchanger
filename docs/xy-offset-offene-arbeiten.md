@@ -692,3 +692,28 @@ Tobis Einwand: „Ich kann nicht garantieren, dass die Sonde immer an derselben 
 **Nächste Kandidaten für T0:** kleinerer Spalt für alle (`FINE_GAP=0.4`, Spitze dominiert stärker, der Z-Boden hebt das kürzeste Tool automatisch), oder Platinen-Abzug aus einem weiten Raster je Lauf.
 
 **Feinspalt-Default 0,4 mm (Tobi, nach Lauf 11):** `fine_gap` in `xy_probe.cfg.disabled` (250 und 350) und im Modul-Default von 0,75 auf 0,4 mm, `min_gap` von 0,5 auf 0,2 mm (Boden; `holder_top_z` ist auf ~0,1–0,2 mm bekannt). Das Feld „Feinspalt" im XY-Block überschreibt je Lauf per `FINE_GAP`. Auf dem 250er in der aktiven `xy_probe.cfg` nachgezogen — wirkt ab dem nächsten Klipper-Neustart (der Assistent macht ihn beim Aktivieren).
+
+### 10.13 Feinspalt 0,4 mm, Lauf 12/13, Blockform und Fit-Radius (2026-09-05, 0 Uhr)
+
+**Lauf 12 und 13** (23:51 und 0:02, `FINE_GAP` 0,4 → vom Z-Boden auf 0,415 mm angehoben, Halterung unverändert, T0 je einmal nachzentriert):
+
+| Tool | Lauf 12 | Lauf 13 | Differenz (µm) | Kamera |
+|---|---|---|---|---|
+| T1 | +0,3897 / −5,0533 | +0,3805 / −5,0486 | −9 / +5 | +0,330 / −5,050 |
+| T2 | +0,5823 / −4,2809 | +0,5832 / −4,2662 | +1 / +15 | +0,440 / −4,560 |
+| T3 | +0,1423 / −5,7592 | +0,1437 / −5,7568 | +1 / +2 | −0,180 / −5,840 |
+
+**Bei gleicher Halterungsposition ist der Lauf auf 15 µm reproduzierbar, T0 eingeschlossen.** Gegen Lauf 11 (0,75 mm) sind alle Werte gegen T0 gemeinsam um −0,14 / +0,18 mm gewandert — T0s Spaltabhängigkeit; die Tools untereinander blieben auf 10 µm. T1 liegt bei 0,4 mm nur 60 / 3 µm neben der Kamera, T2 142 / 279, T3 322 / 81.
+
+**Blockform (Tobis Frage zum 3D-Bild von T0):** Das Profil durch den Scheitel ist bei allen Tools in X ein breiter, flacher Rücken (T0: 1080 Hz Abfall auf ±3 mm, Krümmung 276 Hz/mm²) und in Y ein schmaler, steiler Buckel (5570 Hz, 575 Hz/mm²) — der Block ist in X lang. Die X-Asymmetrie (links minus rechts bei ±2,5 mm) kippt exakt mit der 180°-Drehung der Hotends: T0 +353, T3 +538, T1 −355, T2 −426 Hz. Das ist die einseitige Blockform (Heizpatronenseite).
+
+**Fit-Radius als Parameter** (`FIT_RADIUS`, Default 2,0 mm, 0,75–3) eingebaut und an den gespeicherten Rastern von Lauf 12 auf dem Pi durchgerechnet (`paraboloid_fit` über das gebinnte Gitter, Radius 2,0/1,5/1,25/1,0/0,8):
+
+| Radius | T2−T1 | T3−T1 |
+|---|---|---|
+| 2,0 | +0,194 / +0,770 | −0,244 / −0,707 |
+| 1,5 | +0,193 / +0,782 | −0,246 / −0,703 |
+| 1,0 | +0,187 / +0,787 | −0,237 / −0,706 |
+| 0,8 | +0,172 / +0,780 | −0,250 / −0,710 |
+
+**Ergebnis: der Radius ändert die Scheitel um höchstens 10–20 µm.** Die Vermutung „Blockausläufer kippt den Fit um 0,25 mm je Tool" hat sich damit nicht bestätigt; der Buckel ist als Ganzes dort, wo er ist, nicht nur sein Rand. Die Abweichung zur Kamera in X (T3−T1: Sonde −0,24, Kamera −0,51) bleibt ungeklärt — Kandidaten: die Kamera-Messung von T3, oder ein echter Unterschied zwischen dem, was die Spule (Metallschwerpunkt bei 0,4 mm) und die Kamera (Bohrung) sehen. Default bleibt 2,0 mm.

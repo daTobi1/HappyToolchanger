@@ -1763,7 +1763,9 @@ class Offset:
         "higher and extrapolation to gap 0 = the nozzle tip; default OFF "
         "since 2026-09-04, it costs repeatability), RECENTER (max. repeats "
         "of the raster centred on the found vertex, default 2) and "
-        "RECENTER_TOL (mm, default 0.3), FIT2D (1 = 6x6 mm raster with paraboloid fit instead of two "
+        "RECENTER_TOL (mm, default 0.3), FIT_RADIUS (mm radius of the "
+        "paraboloid fit around the raster centre, default 2.0; smaller "
+        "keeps the fit on the nozzle tip instead of the heater block), FIT2D (1 = 6x6 mm raster with paraboloid fit instead of two "
         "lines, default on since 2026-09-04 -- the raster is also the image "
         "the webapp shows and overlays), QUAD_SLOPE (mm per mm gap from which a third gap and a "
         "quadratic extrapolation are used, default 0 = always). Requires "
@@ -1818,6 +1820,14 @@ class Offset:
         tip_extrapolate = gcmd.get_int('TIP_EXTRAPOLATE', 0) != 0
         # Nachzentrieren des Rasters (RECENTER = maximale Wiederholungen,
         # RECENTER_TOL in mm), siehe measure() unten.
+        # Fit-Radius des Paraboloids um die Rastermitte (Tobi, 2026-09-05):
+        # der Heizblock ist in X lang und einseitig (Heizpatrone), sein
+        # Ausläufer kippt den Fit bei 2 mm Radius um ~0,25 mm je Tool, mit
+        # der 180-Grad-Drehung der Hotends wechselt das Vorzeichen. Ein
+        # kleinerer Radius haelt den Fit auf der Duesenspitze. Untergrenze
+        # so, dass bei 0,5-mm-Raster noch >= 6 Punkte im Kreis liegen.
+        fit_radius = gcmd.get_float('FIT_RADIUS', 2.0, minval=0.75,
+                                    maxval=3.0)
         recenter = gcmd.get_int('RECENTER', 2, minval=0, maxval=5)
         recenter_tol = gcmd.get_float('RECENTER_TOL', 0.3, minval=0.05,
                                       maxval=3.0)
@@ -1912,7 +1922,7 @@ class Offset:
                 iterations, z_mode, tip_extrapolate=tip_extrapolate,
                 extrapolate_dz=extrapolate_dz, fit2d=fit2d,
                 quad_slope=quad_slope, recenter=recenter,
-                recenter_tol=recenter_tol)
+                recenter_tol=recenter_tol, fit_radius=fit_radius)
         except Exception as e:
             # Bei Abbruch zurueck auf das Referenztool (Tobis Wunsch,
             # 2026-09-04). Das muss HIER passieren, solange der Fehler das
@@ -2046,7 +2056,7 @@ class Offset:
                             dry_run, temp, iterations, z_mode='switch',
                             tip_extrapolate=False, extrapolate_dz=0.5,
                             fit2d=False, quad_slope=0.1,
-                            recenter=2, recenter_tol=0.3):
+                            recenter=2, recenter_tol=0.3, fit_radius=2.0):
         results = {}
         ref_pos = None
         ref_gap = None
@@ -2060,7 +2070,8 @@ class Offset:
             Gitter, bei Linien die Koerbe des letzten X- und Y-Sweeps."""
             self._xy_progress(step='Feinmessung %s' % label)
             if fit2d:
-                r = locator.locate2d(cx0, cy0, baseline, label=label)
+                r = locator.locate2d(cx0, cy0, baseline, radius=fit_radius,
+                                     label=label)
                 # Erst zentrieren, dann messen (Tobi, 2026-09-04, nach
                 # Lauf 9/10: T0s Raster stand bis 0,85 mm neben dem
                 # Scheitel, weil die Grobsuche in Y durch den Ausläufer
@@ -2085,7 +2096,8 @@ class Offset:
                     self._xy_progress(step='Feinmessung %s, nachzentriert %d'
                                       % (label, n_re))
                     cx0, cy0 = target
-                    r = locator.locate2d(cx0, cy0, baseline, label=label)
+                    r = locator.locate2d(cx0, cy0, baseline,
+                                         radius=fit_radius, label=label)
                 rx = {'center': r['x'], 'fwd': r['x'], 'rev': r['x'],
                       'spread': 0.0}
                 ry = {'center': r['y'], 'fwd': r['y'], 'rev': r['y'],
@@ -2097,7 +2109,7 @@ class Offset:
                          'pitch': lm.get('pitch'), 'z': lm.get('z')}
                 return rx, ry, {'rho': r['rho'], 'fit': '2d',
                                 'axx': r['axx'], 'ayy': r['ayy'],
-                                'recentered': n_re,
+                                'recentered': n_re, 'fit_radius': fit_radius,
                                 'window_x': cx0, 'window_y': cy0,
                                 'image': image}
             rx = ry = None
