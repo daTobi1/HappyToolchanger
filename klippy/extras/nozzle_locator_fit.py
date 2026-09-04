@@ -229,3 +229,63 @@ def samples_to_track(samples, lookup, origin, direction, lo, hi,
             continue
         track.append((s, val))
     return track
+
+
+def scan_line(origin, direction, lo, hi, lead, through):
+    """Start- und Endpunkt eines Scans in Bettkoordinaten.
+    -> ((x_start, y_start), (x_end, y_end))
+
+    Die Bahn laeuft in `direction` (Einheitsvektor) und geht durch den
+    Punkt `through`; die Bogenlaenge s zaehlt ab `origin` (wie in
+    samples_to_track). Start bei lo - lead, Ende bei hi + lead; fuer
+    lo > hi laeuft der Scan rueckwaerts, der Vorlauf liegt dann auf der
+    anderen Seite.
+
+    Die Senkrechtkomponente kommt von `through`, nie von origin: ein
+    X-Sweep mit origin (0, 0) muss auf seiner aktuellen Y-Position
+    bleiben. Der erste Scan-Entwurf haette Y auf 0 gefahren.
+    """
+    dx, dy = direction
+    ox, oy = origin
+    tx, ty = through
+    # Fusspunkt von `through` auf der Linie durch origin, plus dessen
+    # Senkrechtabstand -> Basispunkt fuer s = 0.
+    s_through = (tx - ox) * dx + (ty - oy) * dy
+    base_x = tx - dx * s_through
+    base_y = ty - dy * s_through
+    sign = 1.0 if hi >= lo else -1.0
+    s_start = lo - sign * lead
+    s_end = hi + sign * lead
+    return ((base_x + dx * s_start, base_y + dy * s_start),
+            (base_x + dx * s_end, base_y + dy * s_end))
+
+
+def raster_grid(rows, x_lo, x_hi, pitch):
+    """C-Scan: Zeilen eines Rasters zu einem Gitter zusammenfassen.
+
+    rows: [(y, [(x, wert), ...]), ...] -- je Zeile die Samples eines Scans,
+          Reihenfolge beliebig (Serpentine).
+    -> {'xs': Spaltenmitten, 'ys': aufsteigend, 'values': [[...], ...]}
+       values[j][i] gehoert zu (xs[i], ys[j]); fehlende Spalten sind None.
+
+    Jede Zeile wird mit bin_points in Spalten der Breite pitch gemittelt;
+    die Spaltenmitte ist die geometrische Mitte (nicht die mittlere
+    Sample-Position wie bei bin_points), damit alle Zeilen dasselbe
+    x-Gitter teilen.
+    """
+    n_cols = int(round((x_hi - x_lo) / pitch))
+    if n_cols < 1:
+        raise ValueError("Raster schmaler als eine Spalte")
+    xs = [x_lo + (i + 0.5) * pitch for i in range(n_cols)]
+    ys = []
+    values = []
+    for y, samples in sorted(rows, key=lambda r: r[0]):
+        row = [None] * n_cols
+        for pos, val in bin_points(samples, x_lo, x_hi, pitch):
+            i = int((pos - x_lo) / pitch)
+            if i >= n_cols:
+                i = n_cols - 1
+            row[i] = val
+        ys.append(y)
+        values.append(row)
+    return {'xs': xs, 'ys': ys, 'values': values}

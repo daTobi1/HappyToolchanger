@@ -11,7 +11,7 @@ Die XY-Offset-Kalibrierung per Eddy-Spule ist entworfen, gebaut und am 250er ein
 
 | Task | Zustand |
 |---|---|
-| 1 — Fit-Mathematik (`nozzle_locator_fit.py`) | **fertig**, 51 Zusicherungen, getestet (Scan-Bausteine seit 2026-09-04, Abschnitt 9) |
+| 1 — Fit-Mathematik (`nozzle_locator_fit.py`) | **fertig**, 71 Zusicherungen, getestet (Scan- und Raster-Bausteine seit 2026-09-04, Abschnitt 9) |
 | 2 — Sensoranbindung (`nozzle_locator.py`) | **fertig**, am 250er verifiziert (2026-09-03), siehe 2.1 |
 | 3 — Z-Anfahrt, Sweep, Ortung | **fertig**, am 250er verifiziert (2026-09-04), siehe Abschnitt 8 |
 | 4 — Extraktion `_resolve_tool_run()` | **gestrichen** (siehe unten) |
@@ -20,7 +20,7 @@ Die XY-Offset-Kalibrierung per Eddy-Spule ist entworfen, gebaut und am 250er ein
 | 7 — XY-Block in der Webapp | **vorgebaut ohne Hardware**, Node-Tests gruen, siehe Abschnitt 4 |
 | 8–9 — Assistent, Kamera-Position | **vorgebaut ohne Hardware**, siehe Abschnitt 4 |
 
-Die Webapp-Tests umfassen 63 Zusicherungen (`tests/check_xy_offset_ui.js`), der Fit 51 (`tests/check_nozzle_locator_fit.py`). Ein Abschluss-Review über den gesamten Umfang ist gelaufen; sein einziger blockierender Befund (`transport` als Erfolg behandelt) ist behoben, siehe 4.5.
+Die Webapp-Tests umfassen 63 Zusicherungen (`tests/check_xy_offset_ui.js`), der Fit 71 (`tests/check_nozzle_locator_fit.py`). Ein Abschluss-Review über den gesamten Umfang ist gelaufen; sein einziger blockierender Befund (`transport` als Erfolg behandelt) ist behoben, siehe 4.5.
 
 **Task 4 wurde bewusst gestrichen.** Die Annahme, `CALIBRATE_ALL_Z_OFFSETS` und `CALIBRATE_PROBE_OFFSETS` lösten dieselbe Tool-Auswahl doppelt, war falsch — sie haben absichtlich verschiedene Politiken (u. a. wählt das zweite ohne `TOOLS` nur Tools mit vorhandenen Z-Switch-Daten und erzwingt das Referenztool weder in die Liste noch an deren Anfang). Ein gemeinsamer Helfer hätte das zweite Kommando im Normalfall verändert. Details in Task 4 des Plans.
 
@@ -393,3 +393,25 @@ Tests: `check_nozzle_locator_fit.py` jetzt 51 Zusicherungen (Körbe, Projektion,
 3. **Höhenserie** `AXIS=Y GAPS=3,2,1.5,1,0.75,0.5`, dann `NOZZLE_LOCATOR_DUMP`. Die Rohdaten beantworten offline: konvergiert der Feinspalt, taugt die Extrapolation, wie gut wird die Zwei-Höhen-Differenz.
 4. `AXIS=DIAG` einmal (Kreuzkopplung, jetzt billig).
 5. Erst dann der Spaltmodus-Lauf `CALIBRATE_XY_OFFSETS` aus 8.4.
+
+### 9.5 Raster (C-Scan): `NOZZLE_LOCATOR_MAP` und `webapp/map.html`
+
+Tobis Einwurf: mit einem Wirbelstromsensor lässt sich per Raster ein Bild des Metalls erzeugen (C-Scan). Mit dem Scanmodus ist das billig — ein Raster sind viele Scan-Züge in Y-Abständen, Serpentine, 20 × 20 mm in ~1 min bei 10 mm/s.
+
+**Was es uns bringt, in dieser Reihenfolge:**
+
+1. **T0 minus T1 zeigt die Eddy-NG-Sonde direkt.** Zwei Raster beim gleichen Spalt, voneinander abgezogen — übrig bleibt das Metall, das nur T0 trägt. Die 0,45-mm-Hypothese aus 8.3 wird damit gemessen statt vermutet, und die Differenzkarte liefert den Korrekturterm.
+2. **Der Block-Hintergrund wird modellierbar.** Im 2D-Bild ist die Block-Ebene nicht mehr mit dem Scheitel entartet: Plateau mit Kante gegen rotationssymmetrischen Buckel. Ein Fit „Buckel plus Kante" trennt beide. Noch nicht gebaut — erst Bilder ansehen.
+3. **Diagnose-Ansicht:** sitzt die Spule mittig, wo liegt der Block, ist anderes Metall im Feld.
+
+**Grenze:** die Auflösung ist die Feldbreite der Spule (~10 mm). Die Düse erscheint als weicher Fleck, die Blockkante als Rampe — das Bild ist eine Faltung mit der Spulenantwort. Für Schwerpunkte und Kanten reicht das, für Konturen nicht.
+
+**Gebaut:**
+
+- `NOZZLE_LOCATOR_MAP [WIDTH=20] [HEIGHT=20] [PITCH=1] [SPEED=2·scan_speed] [X= Y=] [BASELINE=1] [LABEL=T0] [FILE=]` — Raster um die aktuelle Position auf der aktuellen Höhe. Basislinie wie bei `NOZZLE_LOCATE` (hoch auf `park_z`, lesen, zurück). Schreibt `nozzle_locator_map_<Zeit>.json` ins Log-Verzeichnis (Moonraker: `/server/files/logs/…`): Gitter (`fit.raster_grid`, Spaltenmitten fest, fehlende Zellen `null`), dazu die Rohzeilen, Spalt, Geschwindigkeit, Basislinie, Spulentemperatur. Meldet Maximum und Dateiname; `printer.nozzle_locator.last_map_file` trägt den Namen.
+- `webapp/map.html` (+ `js/map.js`): lädt ein oder zwei Raster (Datei oder direkt vom Drucker, Liste per Knopf), Heatmap mit Achsen in Bettkoordinaten, Kreuz auf der Rastermitte, Kreis auf dem Maximum, Hover-Werte, **A − B** auf gleichem Gitter (divergierende Farbskala), lineare oder vorzeichenbehaftet-logarithmische Skala (der Block bei +100.000 Hz überstrahlt die Düse bei +6.000 sonst). Aufruf auch mit `map.html?ip=…&a=…&b=…`.
+- `fit.scan_line()` — **behebt einen Fehler des Scan-Entwurfs vom Nachmittag:** die Bahn eines X-Sweeps mit origin (0,0) hätte Y auf 0 gefahren. Die Linie geht jetzt durch `through` (Default: aktuelle Position), die Bogenlänge zählt ab origin. Getestet, nie gefahren, deshalb ist Schritt 1 in 9.4 (`NOZZLE_LOCATE AXIS=X`) jetzt noch wichtiger.
+
+Tests: Fit 71 Zusicherungen (Bahn, Raster-Gitter), `tests/check_nozzle_map.js` 17 (Viewer-Logik ohne DOM).
+
+**Reihenfolge am Drucker, ergänzt:** nach dem Scan-Test (9.4 Schritt 1–2) auf Messhöhe `NOZZLE_LOCATOR_MAP LABEL=T0`, dann `T1`, `NOZZLE_LOCATOR_PARK`-Höhe, gleicher Spalt (Z aus `z_trigger`-Differenz), `NOZZLE_LOCATOR_MAP LABEL=T1`, und beide in `map.html` als A − B ansehen. Erst danach die Höhenserie.

@@ -11,7 +11,7 @@ Stand: 2026-09-03, alles auf `main` und gepusht. Die Spule ist da, haengt per US
 
 | Task | Zustand |
 |---|---|
-| 1 — Fit-Mathematik `nozzle_locator_fit.py` | **fertig**, 51 Zusicherungen (Scan-Bausteine seit 2026-09-04) |
+| 1 — Fit-Mathematik `nozzle_locator_fit.py` | **fertig**, 71 Zusicherungen (Scan- und Raster-Bausteine seit 2026-09-04) |
 | 2 — Sensoranbindung `nozzle_locator.py` | **fertig**, am 250er verifiziert (3,13 MHz, sd 21 Hz, 0 Fehler) |
 | 3 — Z-Anfahrt, Sweep, Ortung | **fertig**, `NOZZLE_LOCATE X/Y/DIAG`, am 250er verifiziert |
 | 4 — Extraktion `_resolve_tool_run()` | **gestrichen**, siehe §4 |
@@ -19,7 +19,7 @@ Stand: 2026-09-03, alles auf `main` und gepusht. Die Spule ist da, haengt per US
 | 6 — Extraktion `updateConfigFile()` | **fertig** |
 | 7–9 — Webapp (Block, Assistent, Kamera) | **fertig gebaut, nie im Browser gesehen** |
 
-Tests heute: 51 (Fit, Python) + 71 (Klipper-API, Python, auf dem Pi) + 63 (Webapp, node) + 19 (Recovery, node).
+Tests heute: 71 (Fit, Python) + 71 (Klipper-API, Python, auf dem Pi) + 63 (Webapp, node) + 19 (Recovery, node) + 17 (Raster-Viewer, node).
 Ein Abschluss-Review über den gesamten Umfang ist gelaufen und sauber.
 
 **Blockiert ist Task 3 jetzt nur noch an der Halterung** (bekannte Bauhoehe, siehe
@@ -78,6 +78,10 @@ für Rohdaten und `NOZZLE_LOCATE GAPS=…` als Höhenserie. `scan_speed: 0` in
 Bewegungsformen gegen den Heizblock — Kreisbahn und Flankenmitte helfen
 nicht (entartet mit dem Scheitel), Zwei-Höhen-Differenz und aufgelöste
 Buckelform schon, und beide brauchen den Scan und erst einmal Rohdaten.
+Dazu noch später: **Raster (C-Scan)** per `NOZZLE_LOCATOR_MAP` und Viewer
+`webapp/map.html` mit Differenzbild — T0 minus T1 zeigt die Eddy-NG-Sonde
+direkt (§9.5). Beim Bau fiel ein Fehler der Scan-Bahn vom Nachmittag auf
+(X-Sweep hätte Y auf 0 gefahren), behoben in `fit.scan_line`, nie gefahren.
 
 **Zustand des 250ers beim Verlassen:** Klipper läuft auf dem Commit mit
 dem Scanmodus (Service neu gestartet, daher **ungehomt**). **Halterung und
@@ -96,17 +100,21 @@ des Amplituden-Laufs liegen in `printer.offset.xy_results` und
 2. **Scan prüfen:** `NOZZLE_LOCATE AXIS=X`, dann `SPEED=10`. Hin-Rück-
    Differenz sollte ~2·v·Δt sein und sich verdoppeln. Geht der Scan nicht
    durch („nur N Samples im Fenster"): `scan_speed: 0` und weiter im
-   Punktmodus.
-3. **Höhenserie** `NOZZLE_LOCATE AXIS=Y GAPS=3,2,1.5,1,0.75,0.5`, danach
+   Punktmodus. **Dabei zusehen, ob Y stehen bleibt** — die Bahngeometrie
+   (`fit.scan_line`) wurde abends korrigiert und ist nie gefahren.
+3. **Raster:** `NOZZLE_LOCATOR_MAP LABEL=T0` auf Messhöhe, dann dasselbe
+   mit T1 beim gleichen Spalt; in `webapp/map.html` als A − B ansehen.
+   Zeigt die T0-Sonde direkt (§9.5).
+4. **Höhenserie** `NOZZLE_LOCATE AXIS=Y GAPS=3,2,1.5,1,0.75,0.5`, danach
    `NOZZLE_LOCATOR_DUMP`. Die JSON-Datei aus `~/printer_data/logs/` holen —
    sie entscheidet zwischen Feinspalt, Extrapolation und Zwei-Höhen-Differenz.
-4. `NOZZLE_LOCATE AXIS=DIAG` (jetzt billig).
-5. **Den Spaltmodus-Lauf fahren:** `CALIBRATE_XY_OFFSETS`. Erwartung:
+5. `NOZZLE_LOCATE AXIS=DIAG` (jetzt billig).
+6. **Den Spaltmodus-Lauf fahren:** `CALIBRATE_XY_OFFSETS`. Erwartung:
    Y-Fehler schrumpft auf den T0-Sonden-Anteil (~0,45 mm). Beobachten per
    `gcode_store`, nicht auf die HTTP-Antwort warten.
-6. Bleibt der T0-Anteil: Lauf mit `REF_TOOL=1` und die Differenzen
+7. Bleibt der T0-Anteil: Lauf mit `REF_TOOL=1` und die Differenzen
    T2−T1, T3−T1 gegen die Kamera stellen.
-7. **Webapp im Browser öffnen** — Tabelle, Δ-Spalte, Sparkline (jetzt
+8. **Webapp im Browser öffnen** — Tabelle, Δ-Spalte, Sparkline (jetzt
    Körbe statt Punkte) prüfen; `amplitude` und `zswitch_run_id` fehlen
    dort noch (§8.4).
 

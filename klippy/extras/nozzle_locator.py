@@ -120,6 +120,8 @@ class NozzleLocator:
         # Sensor-Haltung im Scanmodus (siehe _hold_sensor)
         self._hold_count = 0
         self._hold_flag = None
+        # Dateiname des letzten Rasters (NOZZLE_LOCATOR_MAP), fuer den Viewer
+        self.last_map_file = None
         # Zuletzt per NOZZLE_LOCATOR_PARK angefahrene Position. Der
         # Messlauf nimmt sie, damit eine im Assistenten geaenderte Position
         # ohne FIRMWARE_RESTART gilt.
@@ -129,6 +131,8 @@ class NozzleLocator:
             'NOZZLE_LOCATOR_READ', self.cmd_READ, desc=self.cmd_READ_help)
         self.gcode.register_command(
             'NOZZLE_LOCATOR_DUMP', self.cmd_DUMP, desc=self.cmd_DUMP_help)
+        self.gcode.register_command(
+            'NOZZLE_LOCATOR_MAP', self.cmd_MAP, desc=self.cmd_MAP_help)
         self.gcode.register_command(
             'NOZZLE_LOCATOR_PARK', self.cmd_PARK, desc=self.cmd_PARK_help)
         self.gcode.register_command(
@@ -152,6 +156,7 @@ class NozzleLocator:
             'target_amplitude': self.target_amplitude,
             'scan_speed': self.scan_speed,
             'sweeps_logged': len(self.sweep_log),
+            'last_map_file': self.last_map_file,
         }
 
     # ------------------------------------------------------------------
@@ -289,26 +294,141 @@ class NozzleLocator:
         if not self.sweep_log:
             gcmd.respond_info("nozzle_locator: keine Sweeps im Puffer")
             return
-        name = gcmd.get('FILE', None)
-        if not name:
-            name = "nozzle_locator_%s.json" % time.strftime("%Y%m%d_%H%M%S")
-        log_file = self.printer.get_start_args().get('log_file')
-        log_dir = os.path.dirname(log_file) if log_file else "/tmp"
-        path = os.path.join(log_dir, os.path.basename(name))
-        try:
-            with open(path, "w") as f:
-                json.dump({'sweeps': self.sweep_log,
-                           'scan_speed': self.scan_speed,
-                           'sweep_step': self.sweep_step,
-                           'holder_top_z': self.holder_top_z}, f)
-        except (IOError, OSError) as e:
-            raise gcmd.error("nozzle_locator: Dump nach %s fehlgeschlagen: %s"
-                             % (path, e))
+        path = self._write_json(gcmd, gcmd.get('FILE', None), "nozzle_locator",
+                                {'sweeps': self.sweep_log,
+                                 'scan_speed': self.scan_speed,
+                                 'sweep_step': self.sweep_step,
+                                 'holder_top_z': self.holder_top_z})
         n = len(self.sweep_log)
         if not gcmd.get_int('KEEP', 0):
             del self.sweep_log[:]
         gcmd.respond_info("nozzle_locator: %d Sweeps nach %s geschrieben"
                           % (n, path))
+
+    def _write_json(self, gcmd, name, prefix, data):
+        """Schreibt data als JSON ins Log-Verzeichnis (Moonraker liefert es
+        unter /server/files/logs/<name> aus). Rueckgabe: voller Pfad."""
+        if not name:
+            name = "%s_%s.json" % (prefix, time.strftime("%Y%m%d_%H%M%S"))
+        log_file = self.printer.get_start_args().get('log_file')
+        log_dir = os.path.dirname(log_file) if log_file else "/tmp"
+        path = os.path.join(log_dir, os.path.basename(name))
+        try:
+            with open(path, "w") as f:
+                json.dump(data, f)
+        except (IOError, OSError) as e:
+            raise gcmd.error("nozzle_locator: Schreiben nach %s "
+                             "fehlgeschlagen: %s" % (path, e))
+        return path
+
+    cmd_MAP_help = (
+        "Raster scan (C-scan) of the metal above the coil, centred on the "
+        "current position. Parameters: WIDTH, HEIGHT (mm, default 20), "
+        "PITCH (line spacing, default 1), SPEED (mm/s, default 2x "
+        "scan_speed), X, Y (centre, default current), BASELINE=0 skips the "
+        "free-air reading at park_z, LABEL (e.g. T0), FILE (name in the log "
+        "directory). Writes JSON for webapp/map.html. Requires homed axes "
+        "and the nozzle already at measuring height.")
+
+    def cmd_MAP(self, gcmd):
+        if not self._scanning():
+            raise gcmd.error("NOZZLE_LOCATOR_MAP braucht den Scanmodus "
+                             "(scan_speed > 0)")
+        width = gcmd.get_float('WIDTH', 20., above=0.)
+        height = gcmd.get_float('HEIGHT', 20., above=0.)
+        pitch = gcmd.get_float('PITCH', 1.0, above=0.)
+        speed = gcmd.get_float('SPEED', self.scan_speed * 2.0, above=0.)
+        label = gcmd.get('LABEL', '')
+        name = gcmd.get('FILE', None)
+        self._require_homed()
+        toolhead = self.printer.lookup_object('toolhead')
+        here = toolhead.get_position()
+        cx = gcmd.get_float('X', here[0])
+        cy = gcmd.get_float('Y', here[1])
+        z = here[2]
+        if z < self._z_floor():
+            raise gcmd.error(
+                "nozzle_locator: Z %.3f liegt unter dem Z-Boden %.3f"
+                % (z, self._z_floor()))
+        baseline = None
+        if gcmd.get_int('BASELINE', 1):
+            self._move([None, None, self.park_z], self.move_speed)
+            baseline = self.measure_baseline()
+            self._move([cx, cy, None], self.move_speed)
+            self._move([None, None, z], self.approach_speed)
+        else:
+            self._move([cx, cy, None], self.move_speed)
+
+        n_rows = int(round(height / pitch)) + 1
+        x_lo, x_hi = cx - width / 2.0, cx + width / 2.0
+        y_lo = cy - height / 2.0
+        lead = 3.0 * self.sweep_step
+        rows = []
+        t_start = time.time()
+        self._hold_sensor()
+        try:
+            for j in range(n_rows):
+                y = y_lo + j * pitch
+                # Serpentine: gerade Zeilen +X, ungerade -X. Der Vorlauf der
+                # naechsten Zeile ist dann nur ein Y-Schritt entfernt.
+                lo, hi = (x_lo, x_hi) if j % 2 == 0 else (x_hi, x_lo)
+                track = self._scan("Raster y=%.2f" % y, (0.0, 0.0),
+                                   (1.0, 0.0), lo, hi, lead, speed,
+                                   through=(cx, y), log=False)
+                rows.append((y, track))
+        finally:
+            self._release_sensor()
+            self.state = 'idle'
+        self._move([cx, cy, None], self.move_speed)
+        duration = time.time() - t_start
+
+        try:
+            grid = fit.raster_grid(rows, x_lo, x_hi, pitch)
+        except ValueError as e:
+            raise gcmd.error("nozzle_locator Raster: %s" % e)
+        peak = None
+        for j, row in enumerate(grid['values']):
+            for i, v in enumerate(row):
+                if v is not None and (peak is None or v > peak[0]):
+                    peak = (v, grid['xs'][i], grid['ys'][j])
+        n_samples = sum(len(t) for _, t in rows)
+        data = {
+            'kind': 'nozzle_locator_map',
+            'label': label, 'time': time.time(),
+            'x': cx, 'y': cy, 'z': z, 'gap': z - self.holder_top_z,
+            'width': width, 'height': height, 'pitch': pitch,
+            'speed': speed, 'baseline': baseline,
+            'holder_top_z': self.holder_top_z,
+            'coil_temp': self._coil_temp(),
+            'grid': grid,
+            'rows': [{'y': y, 'samples': [(round(x, 4), round(v, 1))
+                                          for x, v in t]}
+                     for y, t in rows],
+        }
+        path = self._write_json(gcmd, name, "nozzle_locator_map", data)
+        self.last_map_file = os.path.basename(path)
+        gcmd.respond_info(
+            "nozzle_locator Raster %s: %d Zeilen x %.0f mm, %d Samples in "
+            "%.0f s, Spalt %.2f mm%s. Maximum %+.0f Hz bei X%.1f Y%.1f. "
+            "Datei %s -- ansehen in webapp/map.html"
+            % (label or "", n_rows, width, n_samples, duration,
+               z - self.holder_top_z,
+               (", Basislinie %.0f Hz" % baseline) if baseline else "",
+               peak[0] - (baseline or 0.0), peak[1], peak[2],
+               self.last_map_file))
+
+    def _coil_temp(self):
+        """Spulentemperatur, wenn ein [temperature_sensor xyprobe_coil]
+        existiert (Vorlage xy_probe.cfg); sonst None."""
+        sensor = self.printer.lookup_object(
+            'temperature_sensor xyprobe_coil', None)
+        if sensor is None:
+            return None
+        try:
+            now = self.printer.get_reactor().monotonic()
+            return sensor.get_status(now).get('temperature')
+        except Exception:
+            return None
 
     cmd_READ_help = ("Read the raw frequency of the XY nozzle locator coil. "
                      "Parameters: DURATION (seconds, default dwell_time)")
@@ -410,19 +530,23 @@ class NozzleLocator:
             self._hold_flag[0] = False
             self._hold_flag = None
 
-    def _scan(self, label, origin, direction, lo, hi, lead, speed=None):
+    def _scan(self, label, origin, direction, lo, hi, lead, speed=None,
+              through=None, log=True):
         """Ein kontinuierlicher Scan entlang einer Bahn.
         Rueckgabe: [(bogenlaenge, frequenz), ...] in Fahrreihenfolge.
 
-        Bahn: s = <(x, y) - origin, direction>, direction Einheitsvektor.
-        Faehrt erst auf s = lo - lead (Vorlauf, gleiche Richtung wie der
-        Scan, damit das Achsspiel draussen bleibt), dann in EINEM Zug mit
-        `speed` bis hi + lead; Beschleunigen und Bremsen liegen so
-        ausserhalb des Fensters. Waehrenddessen laeuft der Sensor; danach
-        bekommt jedes Sample ueber seinen Zeitstempel die Sollposition aus
-        der Bewegungswarteschlange (motion_report, wie Klippers eigener
-        Eddy-Scan) und wird auf die Bahn projiziert. Fuer lo > hi laeuft
-        der Scan rueckwaerts.
+        Bahn: s = <(x, y) - origin, direction>, direction Einheitsvektor;
+        die Linie geht durch `through` (Default: aktuelle Position -- ein
+        X-Sweep bleibt so auf seinem Y). Faehrt erst auf s = lo - lead
+        (Vorlauf, gleiche Richtung wie der Scan, damit das Achsspiel
+        draussen bleibt), dann in EINEM Zug mit `speed` bis hi + lead;
+        Beschleunigen und Bremsen liegen so ausserhalb des Fensters.
+        Waehrenddessen laeuft der Sensor; danach bekommt jedes Sample ueber
+        seinen Zeitstempel die Sollposition aus der Bewegungswarteschlange
+        (motion_report, wie Klippers eigener Eddy-Scan) und wird auf die
+        Bahn projiziert. Fuer lo > hi laeuft der Scan rueckwaerts.
+        log=False haelt den Sweep aus dem Puffer fuer NOZZLE_LOCATOR_DUMP
+        heraus (Raster schreiben ihre eigene Datei).
         """
         if speed is None:
             speed = self.scan_speed
@@ -437,11 +561,11 @@ class NozzleLocator:
                 "scan_speed: 0 setzen")
         ox, oy = origin
         dx, dy = direction
-        sign = 1.0 if hi >= lo else -1.0
-        s_start = lo - sign * lead
-        s_end = hi + sign * lead
-        self._move([ox + dx * s_start, oy + dy * s_start, None],
-                   self.move_speed)
+        if through is None:
+            cur = toolhead.get_position()
+            through = (cur[0], cur[1])
+        start, end = fit.scan_line(origin, direction, lo, hi, lead, through)
+        self._move([start[0], start[1], None], self.move_speed)
 
         collected = []
         errors = [0]
@@ -458,7 +582,7 @@ class NozzleLocator:
         self.sensor.add_client(handle_batch)
         try:
             pos = toolhead.get_position()
-            target = [ox + dx * s_end, oy + dy * s_end, pos[2]]
+            target = [end[0], end[1], pos[2]]
             toolhead.manual_move(target, speed)
             t_end = toolhead.get_last_move_time()
             toolhead.wait_moves()
@@ -498,15 +622,16 @@ class NozzleLocator:
         except ValueError:
             self.last_points = [(round(p, 4), round(v, 1))
                                 for p, v in track]
-        self.sweep_log.append({
-            'label': label, 'x': round(pos[0], 3), 'y': round(pos[1], 3),
-            'z': round(pos[2], 3), 'origin': [ox, oy],
-            'direction': [dx, dy], 'speed': speed,
-            'latency': self.sample_latency, 'errors': errors[0],
-            'time': time.time(),
-            'samples': [(round(s, 5), round(v, 1)) for s, v in track],
-        })
-        del self.sweep_log[:-self.sweep_log_limit]
+        if log:
+            self.sweep_log.append({
+                'label': label, 'x': round(pos[0], 3),
+                'y': round(pos[1], 3), 'z': round(pos[2], 3),
+                'origin': [ox, oy], 'direction': [dx, dy], 'speed': speed,
+                'latency': self.sample_latency, 'errors': errors[0],
+                'time': time.time(),
+                'samples': [(round(s, 5), round(v, 1)) for s, v in track],
+            })
+            del self.sweep_log[:-self.sweep_log_limit]
         return track
 
     def sweep(self, axis, center, span, step, descending=False, speed=None):
@@ -698,7 +823,7 @@ class NozzleLocator:
         if self.scan_speed > 0.:
             pts = self._scan("Diagonale %s45" % ("+" if sign > 0 else "-"),
                              (cx, cy), direction, -half, half,
-                             3.0 * self.sweep_step)
+                             3.0 * self.sweep_step, through=(cx, cy))
         else:
             self.state = 'sweeping'
             n_steps = int(round(self.sweep_span / self.sweep_step)) + 1

@@ -340,3 +340,14 @@ extruder 'extruder'`.
 **Deckt nicht ab:** ob die Zuordnung *physisch* stimmt. Dass T3 auf
 `extruder3` zeigt heißt nicht, dass an T3 auch das Kabel von `extruder3`
 steckt.
+
+## `check_nozzle_map.js`
+
+Prüft die reinen Funktionen des Raster-Viewers `webapp/js/map.js`
+(C-Scan aus `NOZZLE_LOCATOR_MAP`): Basislinien-Abzug, Differenzbild nur auf
+gleichem Gitter, `null`-Zellen, Wertebereich, vorzeichenbehaftete Log-Skala,
+Farbrampe. Läuft lokal ohne DOM:
+
+```bash
+node tests/check_nozzle_map.js
+```

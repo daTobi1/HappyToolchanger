@@ -308,6 +308,70 @@ def main():
                             (1.0, 0.0), 120.0, 128.0) == [],
        "samples_to_track stolpert ueber unbekannte Zeiten")
 
+    # --- 13: Bahn eines Scans -- Start und Ende in Bettkoordinaten ---
+    # scan_line(origin, direction, lo, hi, lead, through) liefert
+    # (start_xy, end_xy). Die Bahn laeuft in `direction` und geht durch
+    # `through` -- die Senkrechtkomponente kommt also von `through`, nicht
+    # von origin. Genau das war der Fehler des ersten Scan-Entwurfs: ein
+    # X-Sweep mit origin (0,0) haette Y auf 0 gefahren.
+    start, end = fit.scan_line((0.0, 0.0), (1.0, 0.0), 120.0, 128.0, 3.0,
+                               through=(124.0, 130.0))
+    close(start[0], 117.0, 1e-9, "X-Scan startet nicht bei lo - lead")
+    close(end[0], 131.0, 1e-9, "X-Scan endet nicht bei hi + lead")
+    close(start[1], 130.0, 1e-9, "X-Scan verlaesst die aktuelle Y-Position")
+    close(end[1], 130.0, 1e-9, "X-Scan verlaesst die aktuelle Y-Position")
+    # Rueckwaerts (lo > hi): Vorlauf auf der anderen Seite
+    start, end = fit.scan_line((0.0, 0.0), (0.0, 1.0), 134.0, 126.0, 3.0,
+                               through=(124.0, 130.0))
+    close(start[1], 137.0, 1e-9, "Y-Ruecksweep startet nicht bei hi + lead")
+    close(end[1], 123.0, 1e-9, "Y-Ruecksweep endet nicht bei lo - lead")
+    close(start[0], 124.0, 1e-9, "Y-Scan verlaesst die aktuelle X-Position")
+    # Diagonale durch das Zentrum: through == origin, Bogenlaenge ab dort
+    start, end = fit.scan_line((124.0, 130.0), (1.0 / root2, -1.0 / root2),
+                               -4.0, 4.0, 3.0, through=(124.0, 130.0))
+    close(start[0], 124.0 - 7.0 / root2, 1e-9, "Diagonale: Start x falsch")
+    close(start[1], 130.0 + 7.0 / root2, 1e-9, "Diagonale: Start y falsch")
+    close(end[0], 124.0 + 7.0 / root2, 1e-9, "Diagonale: Ende x falsch")
+    close(end[1], 130.0 - 7.0 / root2, 1e-9, "Diagonale: Ende y falsch")
+    # Liegt `through` neben der Linie durch origin, bleibt der Abstand
+    # senkrecht zur Richtung erhalten, die Bogenlaenge zaehlt ab origin.
+    start, end = fit.scan_line((124.0, 130.0), (1.0, 0.0), -4.0, 4.0, 0.0,
+                               through=(200.0, 131.0))
+    close(start[0], 120.0, 1e-9, "Bogenlaenge zaehlt nicht ab origin")
+    close(start[1], 131.0, 1e-9, "Senkrechtabstand von through geht verloren")
+
+    # --- 14: Raster -> Gitter (C-Scan) ---
+    # Zeilen sind Scans mit dichten Samples; das Gitter fasst jede Zeile in
+    # Spalten der Breite pitch zusammen (bin_points), Zeilen nach y sortiert.
+    rows = [
+        (131.0, [(120.0 + 0.1 * i, 3.0 + i * 0.01) for i in range(81)]),
+        (129.0, [(128.0 - 0.1 * i, 1.0) for i in range(81)]),   # rueckwaerts
+        (130.0, [(120.0 + 0.1 * i, 2.0) for i in range(81)]),
+    ]
+    grid = fit.raster_grid(rows, 120.0, 128.0, 2.0)
+    ok(grid['ys'] == [129.0, 130.0, 131.0], "raster_grid sortiert die Zeilen "
+       "nicht nach y", str(grid['ys']))
+    ok(len(grid['xs']) == 4 and all(abs(x - (121.0 + 2.0 * i)) < 0.05
+                                    for i, x in enumerate(grid['xs'])),
+       "raster_grid legt die Spalten nicht auf pitch-Mitten",
+       str(grid['xs']))
+    ok(len(grid['values']) == 3 and all(len(r) == 4 for r in grid['values']),
+       "raster_grid hat nicht 3x4 Werte")
+    ok(all(v == 1.0 for v in grid['values'][0]),
+       "raster_grid: Rueckwaerts-Zeile falsch einsortiert",
+       str(grid['values'][0]))
+    ok(all(v == 2.0 for v in grid['values'][1]),
+       "raster_grid: mittlere Zeile falsch", str(grid['values'][1]))
+    ok(grid['values'][2][0] < grid['values'][2][3],
+       "raster_grid: Steigung der obersten Zeile verloren")
+    # Fehlende Spalte -> None, nicht 0 und kein Abbruch
+    sparse = [(130.0, [(120.5, 5.0), (127.5, 6.0)])]
+    g2 = fit.raster_grid(sparse, 120.0, 128.0, 2.0)
+    ok(g2['values'][0][0] == 5.0 and g2['values'][0][1] is None
+       and g2['values'][0][3] == 6.0,
+       "raster_grid fuellt fehlende Spalten nicht mit None",
+       str(g2['values']))
+
     print("%d Zusicherungen geprueft" % CHECKS[0])
     if FINDINGS:
         for f in FINDINGS:
