@@ -632,3 +632,19 @@ T1–T3 untereinander bleiben in den 30–40 µm der früheren Läufe (T2−T1 +
 **Was jetzt noch offen ist**
 - Übernahme in die Config: erst entscheiden, ob Kamera oder Sonde für T0 recht hat. Nächster Schritt dafür: T0s Düse unter der Kamera (Bohrung) gegen den Sonden-Scheitel legen; oder T0-Düse tauschen und Lauf 8 wiederholen.
 - Wenn T0 gerade sitzt (Steigung < 0,05), sollte der Lauf die Kamera-Werte auf ~0,1 mm treffen (Referenz: T1-Läufe §10.2, §10.8).
+
+### 10.11 Assistenten-Lauf, Übernahme, und drei Webapp-Wünsche (2026-09-04, 21 Uhr)
+
+**Was passiert ist.** Tobi hat den Assistenten aus einer noch gecachten Webapp-Version gestartet (die alte Fassung mit „Trockenlauf überspringen"; die Seite braucht nach einem Deploy einen harten Reload). Der Lauf selbst lief mit den Standardwerten von `CALIBRATE_XY_OFFSETS` (Spaltmodus über die Z-Switch-Daten, Spalte 0,75/1,25/1,75 mm, damals noch Linien statt Raster) und lieferte T1 +0,5848/−5,2378, T2 +0,7801/−4,5121, T3 +0,3152/−5,9594. Danach Sonde deaktiviert (FIRMWARE_RESTART) und **die Werte über „+ schreiben" in die `T<n>.cfg` übernommen** — die Kamera-Werte sind gesichert in `docs/backups/250-tools-2026-09-04/` und auf dem Drucker unter `tools.bak-2026-09-04-vor-eddy-xy/`.
+
+Gegen Lauf 8 (Amplitudenmodus, Raster) weichen diese Werte bis 0,65 mm in Y ab (T1: −5,238 gegen −4,583). Beide Läufe teilen sich T0 als Referenz mit dessen steiler Spitze; welcher Spalt T0 bekommt (Amplitude 11 kHz gegen Feinspalt 0,75 mm) verschiebt den extrapolierten T0-Scheitel und damit alle Offsets gemeinsam. Gegen die Kamera liegt der Assistenten-Lauf mit 0,19–0,5 mm sogar näher. Solange T0s Düse so sitzt, ist das die Bandbreite.
+
+**Drei Wünsche, umgesetzt:**
+
+1. **Der Dialog bleibt während des Laufs offen.** Klipper führt `printer.offset.xy_progress` nach (`running`, `tool`, `step`, `done`, `error`, `started`); die Webapp öffnet vor dem Senden `xyRunProgressDialog()`, das alle 2 s Status, die letzten Konsolenzeilen des Laufs (`// T<n>:`, `// XY:`) und das Live-Raster aus `nozzle_locator.map` zeichnet. „Weiter" wird erst frei, wenn Klipper `running=false` meldet (Fallback ohne `xy_progress`: Drucker 20 s idle). Der Assistent wartet danach wie bisher zusätzlich auf idle, bevor er deaktiviert.
+2. **Messbild wie das Live-Raster.** Der Dialog hinter dem Toolnamen hat den Umschalter „Höhe logarithmisch" (Default an, wie im XY-Block), je Raster einen Link „2D-Ansicht" (`map.html?ip=…&src=xy&t=…&i=…`, lädt aus `xy_results` statt aus einer Datei) und den Knopf „Mit anderem Tool überlagern…".
+3. **Überlagerungs-Editor** (`webapp/js/overlay.js`, Dialog `xyShowOverlay`): Ebene A und B je Tool und Spalt wählen; B wird auf den gemessenen Scheitel von A gelegt (Scheiteldifferenz = gemessener Offset) und kann zusätzlich in µm verschoben werden; Höhe auf Spitze 1 normierbar; 2D als Höhenlinien (Marching Squares, A blau, B rot, Kreuz = Scheitel des 2D-Fits) oder 3D als zwei Flächen mit einstellbarer Deckkraft. Liegen die Buckel nach dem Verschieben um den gemessenen Offset nicht aufeinander, zeigt die Handverschiebung, um wie viel die Form abweicht.
+
+Dazu **`FIT2D` jetzt standardmäßig an** — es ist die gewählte Methode, und nur das Raster liefert das Messbild für Dialog und Editor. Der Assistenten-Lauf vom Abend hat deshalb nur Profile (Linien), keine Raster; der Editor meldet das und braucht einen neuen Lauf.
+
+Im Browser geprüft: Messbild-Dialog (Profile des Abendlaufs), Editor in 2D und 3D mit synthetischen Rastern (echte Raster gibt es erst nach dem nächsten Lauf), Fortschrittsdialog ohne laufende Messung (zeigt „startet …" und gibt nach 20 s idle frei). Der Fortschrittsdialog **mit** laufender Messung ist noch nicht gesehen.
