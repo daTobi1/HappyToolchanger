@@ -524,6 +524,35 @@ def main():
     except ValueError:
         ok(True, "")
 
+    # --- 20: quadratische Spitzen-Extrapolation mit drei Stuetzstellen ---
+    # T0 (10.5/10.7): die Kurve Scheitel ueber Spalt wird zum kleinen Spalt
+    # hin steiler, linear ueber 0,75 mm hochgerechnet bleibt ein Rest.
+    # Parabel p(g) = p0 + a g + b g^2 durch drei Spalte, Spitze = p0.
+    P0, A_, B_ = 123.95, 0.15, 0.12          # ~0.6 mm/mm bei g = 1.9
+    gs = [0.75, 1.15, 1.55]
+    ps = [P0 + A_ * g + B_ * g * g for g in gs]
+    close(fit.tip_extrapolate_quadratic(ps, gs), P0, 1e-9,
+          "tip_extrapolate_quadratic trifft p0 nicht")
+    # Auf einer Geraden stimmt sie mit der linearen ueberein
+    lin = [5.0 + 0.3 * g for g in gs]
+    close(fit.tip_extrapolate_quadratic(lin, gs),
+          fit.tip_extrapolate(lin[0], gs[0], lin[1], gs[1]), 1e-9,
+          "tip_extrapolate_quadratic weicht auf einer Geraden von der "
+          "linearen ab")
+    # Vier Stuetzstellen: Kleinste Quadrate, exakt bei exakter Parabel
+    gs4 = [0.5, 0.9, 1.3, 1.7]
+    close(fit.tip_extrapolate_quadratic([P0 + A_ * g + B_ * g * g
+                                         for g in gs4], gs4), P0, 1e-9,
+          "tip_extrapolate_quadratic mit 4 Punkten falsch")
+    # Weniger als drei Punkte oder gleiche Spalte -> Fehler
+    for bad_p, bad_g in (([1.0, 2.0], [0.5, 1.0]),
+                         ([1.0, 2.0, 3.0], [0.5, 0.5, 1.0])):
+        try:
+            fit.tip_extrapolate_quadratic(bad_p, bad_g)
+            ok(False, "tip_extrapolate_quadratic akzeptiert %s" % (bad_g,))
+        except ValueError:
+            ok(True, "")
+
     print("%d Zusicherungen geprueft" % CHECKS[0])
     if FINDINGS:
         for f in FINDINGS:

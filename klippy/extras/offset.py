@@ -1758,7 +1758,8 @@ class Offset:
         "TIP_EXTRAPOLATE (1 = second fine measurement EXTRAPOLATE_DZ mm "
         "higher and linear extrapolation to gap 0 = the nozzle tip, default "
         "on), FIT2D (1 = 6x6 mm raster with paraboloid fit instead of two "
-        "lines). Requires homed, "
+        "lines), QUAD_SLOPE (mm per mm gap above which a third gap and a "
+        "quadratic extrapolation are used, default 0.1). Requires homed, "
         "levelled axes, the reference tool parked with NOZZLE_LOCATOR_PARK "
         "and the coil placed under the nozzle. Results are only shown and "
         "stored -- nothing is written to the tool configs.")
@@ -1805,6 +1806,9 @@ class Offset:
         # zweier Linien (10.7) -- gleiches Fenster fuer alle Tools, Kreuzterm
         # inklusive. Default aus, bis am Drucker gefahren.
         fit2d = gcmd.get_int('FIT2D', 0) != 0
+        # Ab dieser Steigung (mm je mm Spalt) eine dritte Stuetzstelle und
+        # quadratische Extrapolation (10.7, T0 mit 0,29).
+        quad_slope = gcmd.get_float('QUAD_SLOPE', 0.1, minval=0.)
         ref_tool, ordered_tools = self._xy_tool_run(gcmd)
         # Nie selbst homen oder leveln: die Halterung steht auf dem Bett.
         locator._require_homed()
@@ -1875,7 +1879,8 @@ class Offset:
             results = self._run_xy_calibration(
                 gcmd, locator, ref_tool, ordered_tools, dry_run, temp,
                 iterations, z_mode, tip_extrapolate=tip_extrapolate,
-                extrapolate_dz=extrapolate_dz, fit2d=fit2d)
+                extrapolate_dz=extrapolate_dz, fit2d=fit2d,
+                quad_slope=quad_slope)
         except Exception as e:
             # Bei Abbruch zurueck auf das Referenztool (Tobis Wunsch,
             # 2026-09-04). Das muss HIER passieren, solange der Fehler das
@@ -1998,7 +2003,7 @@ class Offset:
     def _run_xy_calibration(self, gcmd, locator, ref_tool, ordered_tools,
                             dry_run, temp, iterations, z_mode='switch',
                             tip_extrapolate=False, extrapolate_dz=0.5,
-                            fit2d=False):
+                            fit2d=False, quad_slope=0.1):
         results = {}
         ref_pos = None
         ref_gap = None
@@ -2190,25 +2195,50 @@ class Offset:
                                             rx2['center'], gap2)
                 tip_y = fit.tip_extrapolate(ry['center'], gap1,
                                             ry2['center'], gap2)
+                slope_x = fit.tip_slope(rx['center'], gap1,
+                                        rx2['center'], gap2)
+                slope_y = fit.tip_slope(ry['center'], gap1,
+                                        ry2['center'], gap2)
                 entry.update({
                     'x_gap1': rx['center'], 'y_gap1': ry['center'],
                     'x_gap2': rx2['center'], 'y_gap2': ry2['center'],
                     'gap1': gap1, 'gap2': gap2,
-                    'tip_slope_x': fit.tip_slope(rx['center'], gap1,
-                                                 rx2['center'], gap2),
-                    'tip_slope_y': fit.tip_slope(ry['center'], gap1,
-                                                 ry2['center'], gap2),
-                    'x_peak': tip_x, 'y_peak': tip_y,
+                    'tip_slope_x': slope_x, 'tip_slope_y': slope_y,
+                    'tip_method': 'linear',
                 })
+                method_note = ""
+                if max(abs(slope_x), abs(slope_y)) > quad_slope:
+                    # Steile, nicht lineare Kurve (10.7, T0): dritte
+                    # Stuetzstelle noch einmal dz hoeher und Parabel auf
+                    # Spalt 0 -- die Gerade ueber 0,75 mm liess einen Rest.
+                    gap3 = gap2 + extrapolate_dz
+                    locator._move([None, None, z_reached + 2 * extrapolate_dz],
+                                  locator.approach_speed)
+                    rx3, ry3, _ = measure(rx2['center'], ry2['center'],
+                                          "T%d Spalt 3" % tool_nr)
+                    gaps3 = [gap1, gap2, gap3]
+                    lin_x, lin_y = tip_x, tip_y
+                    tip_x = fit.tip_extrapolate_quadratic(
+                        [rx['center'], rx2['center'], rx3['center']], gaps3)
+                    tip_y = fit.tip_extrapolate_quadratic(
+                        [ry['center'], ry2['center'], ry3['center']], gaps3)
+                    entry.update({
+                        'x_gap3': rx3['center'], 'y_gap3': ry3['center'],
+                        'gap3': gap3, 'tip_method': 'quadratic',
+                        'x_tip_linear': lin_x, 'y_tip_linear': lin_y,
+                    })
+                    method_note = (" -- quadratisch ueber 3 Spalte (linear "
+                                   "haette X%.4f Y%.4f ergeben)"
+                                   % (lin_x, lin_y))
+                entry.update({'x_peak': tip_x, 'y_peak': tip_y})
                 gcmd.respond_info(
                     "T%d: Spitze aus Spalt %.2f/%.2f mm: X%.4f Y%.4f "
-                    "(Steigung X %+.0f / Y %+.0f um je mm Spalt%s)"
+                    "(Steigung X %+.0f / Y %+.0f um je mm Spalt%s)%s"
                     % (tool_nr, gap1, gap2, tip_x, tip_y,
-                       entry['tip_slope_x'] * 1000.,
-                       entry['tip_slope_y'] * 1000.,
+                       slope_x * 1000., slope_y * 1000.,
                        " -- Duese sitzt schief im Block?"
-                       if max(abs(entry['tip_slope_x']),
-                              abs(entry['tip_slope_y'])) > 0.2 else ""))
+                       if max(abs(slope_x), abs(slope_y)) > 0.2 else "",
+                       method_note))
                 rx, ry = ({'center': tip_x, 'fwd': rx['fwd'],
                            'rev': rx['rev'], 'spread': rx['spread']},
                           {'center': tip_y, 'fwd': ry['fwd'],

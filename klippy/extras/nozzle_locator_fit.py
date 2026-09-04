@@ -429,3 +429,32 @@ def paraboloid_fit(points, cx, cy, radius):
     a, b = -axx, -ayy
     return {'x': cx + vx, 'y': cy + vy, 'axx': a, 'ayy': b, 'axy': -axy,
             'rho': -axy / (2.0 * (a * b) ** 0.5), 'n': n}
+
+
+def tip_extrapolate_quadratic(positions, gaps):
+    """Spitze aus drei oder mehr Messungen: Kleinstequadrate-Parabel
+    p(g) = p0 + a g + b g^2 ueber den Spalt, Rueckgabe p0 (Spalt 0).
+
+    Fuer Tools, deren Scheitel stark und nicht linear mit dem Spalt
+    wandert (T0 am Messtag 2026-09-04: zum kleinen Spalt hin steiler).
+    Drei Stuetzstellen legen die Parabel exakt; mehr glaetten. Die
+    Hochrechnung verstaerkt Rauschen -- Spalte so klein und Stuetzstellen
+    so weit auseinander wie moeglich.
+    """
+    n = len(positions)
+    if n < 3 or len(gaps) != n:
+        raise ValueError("Quadratische Extrapolation braucht mindestens "
+                         "drei Spalte, hat %d" % n)
+    if max(gaps) - min(gaps) < 1e-6 or len(set(round(g, 6)
+                                                for g in gaps)) < 3:
+        raise ValueError("Quadratische Extrapolation braucht drei "
+                         "verschiedene Spalte, bekam %s" % (gaps,))
+    S = [[0.0] * 3 for _ in range(3)]
+    t = [0.0] * 3
+    for p, g in zip(positions, gaps):
+        f = [1.0, g, g * g]
+        for a in range(3):
+            t[a] += f[a] * p
+            for b in range(3):
+                S[a][b] += f[a] * f[b]
+    return _solve(S, t)[0]
