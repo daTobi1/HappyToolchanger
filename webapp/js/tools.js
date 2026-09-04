@@ -3321,13 +3321,18 @@ function xyRenderOverlay() {
 // je Schritt nachfuehrt, dazu die letzten Konsolenzeilen des Laufs und
 // das Live-Raster aus printer.nozzle_locator.map.
 // ---------------------------------------------------------------------
-function xyProgressHtml(p, lines, nowMs) {
+function xyProgressHtml(p, lines, nowMs, doneHint) {
+  // Leeres Objekt (Klipper hat noch nie einen Lauf gemeldet) zaehlt wie
+  // kein Status -- sonst stuende "Fertig" da, bevor irgendetwas lief.
+  if (p && typeof p.running !== 'boolean') p = null;
   function mmss(sec) {
     sec = Math.max(0, Math.round(sec));
     return Math.floor(sec / 60) + ':' + ('0' + (sec % 60)).slice(-2);
   }
   var h = '';
-  if (!p) {
+  if (!p && doneHint) {
+    h += '<div class="mb-2 text-success"><b>Der Drucker steht wieder.</b> ' + escapeHtml(doneHint) + '</div>';
+  } else if (!p) {
     h += '<div class="mb-2"><span class="spinner-border spinner-border-sm me-1"></span> Messlauf startet &hellip; ' +
          '(wartet auf die erste Meldung von Klipper)</div>';
   } else {
@@ -3381,7 +3386,9 @@ function xyRunProgressDialog(title) {
         .then(function (d) {
           var gs = (d && d.result && d.result.gcode_store) || [];
           return gs.filter(function (g) {
-            return g.type === 'response' && /^\/\/ (T\d+:|XY[:-]|nozzle_locator)/.test(g.message || '');
+            // nur Zeilen dieses Laufs, nicht die des letzten vom Abend
+            return g.type === 'response' && (g.time || 0) * 1000 >= t0 - 5000 &&
+                   /^\/\/ (T\d+:|XY[:-]|nozzle_locator)/.test(g.message || '');
           }).map(function (g) { return g.message.replace(/^\/\/ /, ''); }).slice(-12);
         }, function () { return []; }),
       xyPrinterIdle()
@@ -3419,6 +3426,10 @@ function xyRunProgressDialog(title) {
       var done = xyProgressDone(p, seenRunning, idle, Date.now() - t0);
       if (done) {
         stopped = true;
+        if (!p && body) {
+          body.innerHTML = xyProgressHtml(null, lines, Date.now(),
+            'Klipper hat keinen Laufstatus gemeldet (aelteres Modul?); die Konsole unten zeigt, was lief.');
+        }
         $('#confirmModalOk').prop('disabled', false).html(p && p.error ? 'Schlie&szlig;en' : 'Weiter');
         return;
       }

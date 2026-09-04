@@ -957,6 +957,9 @@ function runParkTest() {
   check('xyProgressHtml: Konsolenzeilen escaped', /&lt;b&gt;Vorhersage/.test(html) && !/<b>Vorhersage/.test(html));
   check('xyProgressHtml: Platz fuer das Live-Raster', /id="xy-prog-map3d"/.test(html));
   check('xyProgressHtml: ohne Status wartet', /wartet|startet/i.test(xyProgressHtml(null, [], t0)));
+  check('xyProgressHtml: leeres Objekt (nie gelaufen) zaehlt als kein Status',
+        /startet/i.test(xyProgressHtml({}, [], t0)) && !/Fertig/.test(xyProgressHtml({}, [], t0)));
+  check('xyProgressHtml: Ende ohne Status -> Hinweis', /steht wieder/.test(xyProgressHtml(null, [], t0, 'x')));
   var err = xyProgressHtml({ running: false, error: 'T2: nur 900 Hz', tools: [0, 1, 2], done: [0, 1] }, [], t0);
   check('xyProgressHtml: Fehler sichtbar', /nur 900 Hz/.test(err) && /abgebrochen|Fehler/i.test(err), err);
   var fin = xyProgressHtml({ running: false, tools: [0, 1], done: [0, 1], step: 'fertig' }, [], t0);
