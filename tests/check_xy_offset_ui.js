@@ -897,3 +897,35 @@ function runParkTest() {
   try { xyMapCommand({ width: 200, height: 20, pitch: 1 }); } catch (e) { threw = true; }
   check('xyMapCommand: mehr als 100 mm wird abgelehnt', threw);
 }
+
+// --------------------------------------------------------------------
+// Teil N+1: Messbild je Tool (Klick auf den Toolnamen). xyImageEntries()
+// zieht aus einem Ergebnis-Eintrag die anzeigbaren Bilder je Spalt,
+// xyImageBodyHtml() baut den Dialogrumpf mit einem Platzhalter je Bild.
+// --------------------------------------------------------------------
+{
+  eval(grab('escapeHtml') + grab('xyImageEntries') + grab('xyImageBodyHtml'));
+  var raster = { kind: 'raster', xs: [1, 2], ys: [1, 2], values: [[1, 2], [3, 4]],
+                 baseline: 100, x: 1.5, y: 1.5, pitch: 1 };
+  var prof = { kind: 'profiles', x: [[1, 5], [2, 9]], y: [[1, 4], [2, 8]], baseline: 0,
+               cx: 1.5, cy: 1.5 };
+  var entry = { images: [Object.assign({ gap: 0.8 }, raster),
+                         Object.assign({ gap: 1.2 }, raster),
+                         Object.assign({ gap: 1.6 }, prof)],
+                tip_slope_x: 0.01, tip_slope_y: 0.29, tip_method: 'quadratic',
+                x: 0.5, y: -5.0, amplitude: 11000 };
+  var es = xyImageEntries(entry);
+  check('xyImageEntries: drei Bilder', es.length === 3, String(es.length));
+  check('xyImageEntries: Spalt im Label', /0\.80/.test(es[0].label) && /1\.60/.test(es[2].label),
+        es.map(function (e) { return e.label; }).join('|'));
+  check('xyImageEntries: Art bleibt', es[0].kind === 'raster' && es[2].kind === 'profiles');
+  check('xyImageEntries: ohne Bilder leer', xyImageEntries({ x: 1 }).length === 0);
+  check('xyImageEntries: altes Einzelbild wird aufgenommen',
+        xyImageEntries({ image: raster }).length === 1);
+  var html = xyImageBodyHtml('3', entry, es);
+  check('xyImageBodyHtml: ein Platzhalter je Bild',
+        (html.match(/id="xy-img-\d+"/g) || []).length === 3, html.slice(0, 200));
+  check('xyImageBodyHtml: Steigung und Methode genannt',
+        /0\.29|290/.test(html) && /quadrat/i.test(html));
+  check('xyImageBodyHtml: Toolname drin', /T3/.test(html));
+}

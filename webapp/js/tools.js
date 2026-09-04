@@ -3043,7 +3043,10 @@ function renderXyBlock() {
     var res = (_xyMethod === 'eddy') ? _xyResults[t] : _cameraOffsetFor(t);
     var isRef = (String(ref) === String(t));
     if (isRef) {
-      return '<tr><td>T' + t + '</td>' +
+      var refName = (_xyMethod === 'eddy' && xyImageEntries(_xyResults[t]).length)
+        ? '<a href="#" onclick="xyShowImage(\x27' + t + '\x27); return false;" title="Messbild anzeigen">T' + t + '</a>'
+        : 'T' + t;
+      return '<tr><td>' + refName + '</td>' +
              '<td>' + cur.x.toFixed(3) + ' / ' + cur.y.toFixed(3) + '</td>' +
              '<td colspan="4" class="text-muted">Referenztool</td></tr>';
     }
@@ -3053,12 +3056,15 @@ function renderXyBlock() {
              '<td colspan="4" class="text-muted">nicht gemessen</td></tr>';
     }
     var dx = (res.x - cur.x) * 1000, dy = (res.y - cur.y) * 1000;
+    var name = xyImageEntries(res).length
+      ? '<a href="#" onclick="xyShowImage(\x27' + t + '\x27); return false;" title="Messbild anzeigen">T' + t + '</a>'
+      : 'T' + t;
     var bias = (res.x_fwd !== undefined)
       ? ('<span title="Differenz Hin- gegen Ruecksweep = gemessener ' +
          'Drift-Bias">' + ((res.x_fwd - res.x_rev) * 1000).toFixed(1) +
          ' / ' + ((res.y_fwd - res.y_rev) * 1000).toFixed(1) + ' &micro;m</span>')
       : '&mdash;';
-    return '<tr><td>T' + t + '</td>' +
+    return '<tr><td>' + name + '</td>' +
       '<td>' + cur.x.toFixed(3) + ' / ' + cur.y.toFixed(3) + '</td>' +
       '<td>' + res.x.toFixed(3) + ' / ' + res.y.toFixed(3) + '</td>' +
       '<td>' + dx.toFixed(0) + ' / ' + dy.toFixed(0) + ' &micro;m</td>' +
@@ -3078,6 +3084,78 @@ function renderXyBlock() {
     '<tbody>' + rows + '</tbody></table>' +
     '<button class="btn btn-sm btn-primary" onclick="applyAllXyOffsets()">' +
     'Alle &uuml;bernehmen + schreiben</button>';
+}
+
+// Messbild je Tool (Tobi, 2026-09-04): Klick auf den Toolnamen in der
+// Tabelle zeigt die Messbilder des Laufs -- je Spalt das 2D-Raster
+// (FIT2D) oder die X/Y-Profile der Linienmessung. Die Bilder kommen aus
+// printer.offset.xy_results[t].images (Klipper legt sie je Spalt ab).
+function xyImageEntries(entry) {
+  if (!entry) return [];
+  var list = Array.isArray(entry.images) ? entry.images.slice() : [];
+  if (!list.length && entry.image) list = [entry.image];
+  return list.filter(function (im) {
+    return im && (im.kind === 'raster' || im.kind === 'profiles');
+  }).map(function (im, i) {
+    var gap = (typeof im.gap === 'number') ? im.gap.toFixed(2) + ' mm' : '?';
+    return { label: 'Spalt ' + gap + (im.kind === 'raster' ? ' (Raster)' : ' (Profile)'),
+             kind: im.kind, gap: im.gap, data: im, index: i };
+  });
+}
+
+function xyImageBodyHtml(t, entry, entries) {
+  var head = '<div class="mb-2">Messbilder <b>T' + escapeHtml(String(t)) + '</b>';
+  var facts = [];
+  if (typeof entry.x === 'number') facts.push('Offset ' + entry.x.toFixed(4) + ' / ' + entry.y.toFixed(4));
+  if (typeof entry.amplitude === 'number') facts.push('Amplitude ' + Math.round(entry.amplitude) + ' Hz');
+  if (typeof entry.tip_slope_x === 'number') {
+    facts.push('Steigung ' + (entry.tip_slope_x * 1000).toFixed(0) + ' / ' +
+               (entry.tip_slope_y * 1000).toFixed(0) + ' &micro;m je mm Spalt');
+  }
+  if (entry.tip_method) facts.push('Extrapolation ' + escapeHtml(entry.tip_method === 'quadratic' ? 'quadratisch' : 'linear'));
+  if (typeof entry.rho === 'number') facts.push('&rho; ' + entry.rho.toFixed(3));
+  head += (facts.length ? '<div class="small text-muted">' + facts.join(' &middot; ') + '</div>' : '') + '</div>';
+  if (!entries.length) return head + '<div class="text-muted">Keine Messbilder im Ergebnis (Lauf vor 2026-09-04?).</div>';
+  return head + entries.map(function (e, i) {
+    return '<div class="mb-3"><div class="small fw-semibold">' + escapeHtml(e.label) + '</div>' +
+      '<div id="xy-img-' + i + '" style="width:100%;height:' + (e.kind === 'raster' ? '360px' : '120px') + '"></div></div>';
+  }).join('');
+}
+
+// X/Y-Profile als zwei kleine SVG-Kurven (Koerbe des letzten Sweeps).
+function xyProfileSvg(points, label) {
+  if (!points || points.length < 2) return '<span class="text-muted">' + label + ': keine Punkte</span>';
+  var xs = points.map(function (p) { return p[0]; }), ys = points.map(function (p) { return p[1]; });
+  var x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs);
+  var y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
+  var W = 300, H = 100;
+  var sx = (x1 > x0) ? (W - 40) / (x1 - x0) : 0, sy = (y1 > y0) ? (H - 20) / (y1 - y0) : 0;
+  var d = points.map(function (p, i) {
+    return (i ? 'L' : 'M') + (30 + (p[0] - x0) * sx).toFixed(1) + ' ' + (H - 10 - (p[1] - y0) * sy).toFixed(1);
+  }).join(' ');
+  return '<svg width="' + W + '" height="' + H + '"><path d="' + d + '" fill="none" stroke="currentColor" stroke-width="1.5"/>' +
+    '<text x="2" y="12" font-size="10">' + escapeHtml(label) + '</text>' +
+    '<text x="30" y="' + (H - 1) + '" font-size="9">' + x0.toFixed(1) + '</text>' +
+    '<text x="' + (W - 40) + '" y="' + (H - 1) + '" font-size="9">' + x1.toFixed(1) + '</text></svg>';
+}
+
+function xyShowImage(t) {
+  var entry = _xyResults[t];
+  var entries = xyImageEntries(entry);
+  alertDialog('Messbild T' + t, xyImageBodyHtml(t, entry || {}, entries), { okClass: 'btn-secondary' });
+  // Der Dialogrumpf steht jetzt im DOM; Raster per plotly, Profile als SVG.
+  setTimeout(function () {
+    entries.forEach(function (e, i) {
+      var el = document.getElementById('xy-img-' + i);
+      if (!el) return;
+      if (e.kind === 'raster' && typeof NozzleMap3d !== 'undefined') {
+        NozzleMap3d.renderMap3d(el, Object.assign({ done: true, label: 'T' + t + ' ' + e.label },
+                                                   e.data), 'xyimg-' + t + '-' + i, { log: false });
+      } else if (e.kind === 'profiles') {
+        el.innerHTML = xyProfileSvg(e.data.x, 'X') + ' ' + xyProfileSvg(e.data.y, 'Y');
+      }
+    });
+  }, 80);
 }
 
 // Zeichnet die laufende Glocke aus nozzle_locator.points. Zeigt sofort,

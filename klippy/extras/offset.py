@@ -2013,24 +2013,40 @@ class Offset:
 
         def measure(cx0, cy0, label):
             """Feinmessung: zwei Linien (X->Y-Iteration) oder ein
-            2D-Raster mit Paraboloid-Fit. -> (rx, ry, extra)"""
+            2D-Raster mit Paraboloid-Fit. -> (rx, ry, extra)
+
+            extra['image'] ist das Messbild fuer die Webapp (Tobi,
+            2026-09-04: Klick auf den Toolnamen zeigt es): beim Raster das
+            Gitter, bei Linien die Koerbe des letzten X- und Y-Sweeps."""
             if fit2d:
                 r = locator.locate2d(cx0, cy0, baseline, label=label)
                 rx = {'center': r['x'], 'fwd': r['x'], 'rev': r['x'],
                       'spread': 0.0}
                 ry = {'center': r['y'], 'fwd': r['y'], 'rev': r['y'],
                       'spread': 0.0}
+                lm = locator.live_map or {}
+                image = {'kind': 'raster', 'xs': lm.get('xs', []),
+                         'ys': lm.get('ys', []), 'values': lm.get('values', []),
+                         'baseline': baseline, 'x': r['x'], 'y': r['y'],
+                         'pitch': lm.get('pitch'), 'z': lm.get('z')}
                 return rx, ry, {'rho': r['rho'], 'fit': '2d',
-                                'axx': r['axx'], 'ayy': r['ayy']}
+                                'axx': r['axx'], 'ayy': r['ayy'],
+                                'image': image}
             rx = ry = None
+            prof_x = prof_y = []
             for _ in range(iterations):
                 rx = locator.locate('X', cx0 if rx is None else rx['center'],
                                     baseline)
+                prof_x = list(locator.last_points)
                 locator._move([rx['center'], None, None], locator.move_speed)
                 ry = locator.locate('Y', cy0 if ry is None else ry['center'],
                                     baseline)
+                prof_y = list(locator.last_points)
                 locator._move([None, ry['center'], None], locator.move_speed)
-            return rx, ry, {'fit': 'lines'}
+            image = {'kind': 'profiles', 'x': prof_x, 'y': prof_y,
+                     'baseline': baseline, 'cx': rx['center'],
+                     'cy': ry['center']}
+            return rx, ry, {'fit': 'lines', 'image': image}
         ref_z = None
         baseline = None
         # Gleicher Spalt statt gleicher Amplitude (Tobi, 2026-09-04): die
@@ -2180,6 +2196,11 @@ class Offset:
             entry.update(extra)
             if tool_nr == ref_tool:
                 ref_gap = z_reached - locator.holder_top_z
+            # Messbilder je Spalt fuer die Webapp (Klick auf den Toolnamen)
+            entry['images'] = []
+            if 'image' in extra:
+                entry['images'].append(dict(extra['image'], gap=ref_gap))
+                del entry['image']
             if tip_extrapolate:
                 # Spitzen-Extrapolation (Messtag 2026-09-04, 10.6): bei
                 # grossem Spalt misst die Spule den Heizblock, bei kleinem
@@ -2192,8 +2213,10 @@ class Offset:
                 gap2 = gap1 + extrapolate_dz
                 locator._move([None, None, z_reached + extrapolate_dz],
                               locator.approach_speed)
-                rx2, ry2, _ = measure(rx['center'], ry['center'],
-                                      "T%d Spalt 2" % tool_nr)
+                rx2, ry2, e2 = measure(rx['center'], ry['center'],
+                                       "T%d Spalt 2" % tool_nr)
+                if 'image' in e2:
+                    entry['images'].append(dict(e2['image'], gap=gap2))
                 tip_x = fit.tip_extrapolate(rx['center'], gap1,
                                             rx2['center'], gap2)
                 tip_y = fit.tip_extrapolate(ry['center'], gap1,
@@ -2217,8 +2240,10 @@ class Offset:
                     gap3 = gap2 + extrapolate_dz
                     locator._move([None, None, z_reached + 2 * extrapolate_dz],
                                   locator.approach_speed)
-                    rx3, ry3, _ = measure(rx2['center'], ry2['center'],
-                                          "T%d Spalt 3" % tool_nr)
+                    rx3, ry3, e3 = measure(rx2['center'], ry2['center'],
+                                           "T%d Spalt 3" % tool_nr)
+                    if 'image' in e3:
+                        entry['images'].append(dict(e3['image'], gap=gap3))
                     gaps3 = [gap1, gap2, gap3]
                     lin_x, lin_y = tip_x, tip_y
                     tip_x = fit.tip_extrapolate_quadratic(
