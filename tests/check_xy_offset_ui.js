@@ -1001,7 +1001,7 @@ function runParkTest() {
   check('xyImageBodyHtml: Log-Umschalter', /id="xy-img-log"/.test(html2) && /checked/.test(html2), html2);
   check('xyImageBodyHtml: 2D-Link je Raster',
         /map\.html\?ip=192\.168\.178\.60&src=xy&t=1&i=0/.test(html2), html2);
-  check('xyImageBodyHtml: Ueberlagern-Knopf', /xyShowOverlay\(/.test(html2));
+  check('xyImageBodyHtml: Ueberlagern-Knopf schliesst erst das Messbild', /xyOverlayFromImage\(/.test(html2));
 }
 
 // --------------------------------------------------------------------
