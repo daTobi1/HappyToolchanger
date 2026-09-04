@@ -3131,9 +3131,9 @@ function renderXyBlock() {
     // Separate Option (Tobi, 2026-09-05): Z aus dem Sonden-Lauf, nur im
     // Eddy-Verfahren und nur, wenn ein Lauf z_compare geliefert hat.
     ((_xyMethod === 'eddy' && Object.keys(xyProbeZValues(_xyResults, ref, _toolGcodeOffsets).values).length)
-      ? '<button class="btn btn-sm btn-outline-secondary" onclick="applyProbeZOffsets()" ' +
-        'title="gcode_z_offset je Tool aus der Messhoehen-Differenz des Sonden-Laufs (z_compare), Bezug: Referenztool">' +
-        'Z-Offsets aus der Sonde &uuml;bernehmen + schreiben</button>'
+      ? '<button class="btn btn-sm btn-outline-warning" onclick="applyProbeZOffsets()" ' +
+        'title="Option mit Vorbehalt: gcode_z_offset je Tool aus der Messhoehen-Differenz des Sonden-Laufs (z_compare). Der Z-Switch bleibt die verlaesslichere Quelle.">' +
+        '<i class="bi bi-exclamation-triangle"></i> Z-Offsets aus der Sonde &uuml;bernehmen + schreiben</button>'
       : '') +
     '</div>';
 }
@@ -3754,18 +3754,23 @@ function applyProbeZOffsets() {
       return { tool: t, file: "toolchanger/tools/T" + t + ".cfg", section: "tool T" + t,
                changes: [{ key: "gcode_z_offset", from: cur[t + "|gcode_z_offset"], to: zv.values[t].z }] };
     });
-    var note = 'Z aus dem Sonden-Lauf: gcode_z_offset(T) = gcode_z_offset(T' + escapeHtml(ref) +
-      ') (' + zv.refZ.toFixed(3) + ') + Messh&ouml;hen-Differenz z_compare.<br>' +
+    // Immer mit Warnung (Tobi, 2026-09-05: "als Option mit Warnung"): der
+    // Z-Switch bleibt die verlaesslichere Z-Quelle, die Sonde ist eine Option.
+    var note = '<p class="mb-1 text-warning"><i class="bi bi-exclamation-triangle"></i> <b>Option mit Vorbehalt:</b> ' +
+      'Z aus der Sonde ist kein Ersatz f&uuml;r den Z-Switch. ' +
       (zv.mode === 'amplitude'
-        ? '<span class="text-warning">Amplitudenmodus: H&ouml;he gleicher Amplitude. Die h&auml;ngt auch vom ' +
-          'Signal des Tools ab, nicht nur von der D&uuml;senl&auml;nge -- nur &uuml;bernehmen, wenn das gewollt ist.</span>'
-        : 'Spaltmodus: die Messh&ouml;hen kamen aus den Z-Switch-Daten, die Werte entsprechen dem Z-Switch-Lauf.') +
+        ? 'Amplitudenmodus: H&ouml;he gleicher Amplitude -- die h&auml;ngt auch vom Signal des Tools ab ' +
+          '(T1 8640 gegen T2 11969 Hz bei gleichem Spalt), nicht nur von der D&uuml;senl&auml;nge.'
+        : 'Spaltmodus: die Messh&ouml;hen kamen aus den Z-Switch-Daten, die Sonde gibt sie nur zur&uuml;ck -- ' +
+          'eigene Z-Information liefert sie hier nicht.') + '</p>' +
+      'Rechnung: gcode_z_offset(T) = gcode_z_offset(T' + escapeHtml(ref) +
+      ') (' + zv.refZ.toFixed(3) + ') + Messh&ouml;hen-Differenz z_compare.' +
       '<br>"Current" kommt aus der Config-Datei. Die Werte werden auch zur Laufzeit per ' +
       '<code>SET_TOOL_GCODE_OFFSET</code> gesetzt.';
     return confirmDialog({
       title: "Z-Offsets aus der Sonde übernehmen?",
       body: offsetChangeListHtml(entries, note),
-      okLabel: "OK — übernehmen + schreiben", okClass: "btn-success", cancelLabel: "Abbrechen"
+      okLabel: "Trotzdem übernehmen + schreiben", okClass: "btn-warning", cancelLabel: "Abbrechen"
     });
   }).then(function (ok) {
     if (!ok) return false;

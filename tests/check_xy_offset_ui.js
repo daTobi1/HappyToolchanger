@@ -1190,4 +1190,7 @@ function runParkTest() {
   var zvA = xyProbeZValues({ ref_tool: 1, '1': { z_compare: 0, z_mode: 'amplitude' }, '2': { z_compare: 0.2, z_mode: 'amplitude' } }, 1, off);
   check('xyProbeZValues: Amplitudenmodus wird gemeldet, Bezug ist das Referenztool', zvA.mode === 'amplitude' && zvA.values['2'].z === '0.145000', JSON.stringify(zvA));
   check('XY-Block: separater Knopf fuer Z aus der Sonde', /applyProbeZOffsets\(/.test(grab('renderXyBlock')));
+  check('Z aus der Sonde: immer mit Warnung, Z-Switch als Quelle genannt',
+        /Option mit Vorbehalt/.test(grab('applyProbeZOffsets')) && /Trotzdem/.test(grab('applyProbeZOffsets')) &&
+        /btn-outline-warning/.test(grab('renderXyBlock')));
 }
