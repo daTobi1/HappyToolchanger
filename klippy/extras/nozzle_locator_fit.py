@@ -458,3 +458,15 @@ def tip_extrapolate_quadratic(positions, gaps):
             for b in range(3):
                 S[a][b] += f[a] * f[b]
     return _solve(S, t)[0]
+
+
+def baseline_edge(x, x_min, x_max, margin):
+    """Ziel-x fuer die Basislinie am Druckerrand: die von x weiter
+    entfernte Achsgrenze, um `margin` nach innen. Tobi (2026-09-04):
+    sicherheitshalber kurz vor den Rand, damit wirklich nichts ueber der
+    Spule steht. Wirft ValueError, wenn die Achse dafuer zu eng ist."""
+    lo, hi = x_min + margin, x_max - margin
+    if hi <= lo:
+        raise ValueError("Achse zu eng fuer eine Basislinie am Rand "
+                         "(%.1f..%.1f, Rand %.1f)" % (x_min, x_max, margin))
+    return hi if (hi - x) >= (x - lo) else lo

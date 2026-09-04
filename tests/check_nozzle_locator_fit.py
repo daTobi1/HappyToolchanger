@@ -553,6 +553,23 @@ def main():
         except ValueError:
             ok(True, "")
 
+    # --- 21: Basislinie am Druckerrand ---
+    # Tobi (2026-09-04): fuer die Basislinie die Duese sicherheitshalber
+    # kurz vor den Rand fahren, damit wirklich nichts ueber der Spule
+    # steht. baseline_edge liefert das Ziel-x: die von x weiter entfernte
+    # Achsgrenze, um `margin` nach innen.
+    close(fit.baseline_edge(125.0, 0.0, 250.0, 10.0), 240.0, 1e-9,
+          "baseline_edge geht nicht zur weiter entfernten Grenze (+X)")
+    close(fit.baseline_edge(200.0, 0.0, 250.0, 10.0), 10.0, 1e-9,
+          "baseline_edge geht nicht zur weiter entfernten Grenze (-X)")
+    close(fit.baseline_edge(125.0, -20.0, 270.0, 10.0), 260.0, 1e-9,
+          "baseline_edge rechnet mit falschen Grenzen")
+    try:
+        fit.baseline_edge(125.0, 120.0, 130.0, 10.0)
+        ok(False, "baseline_edge erfindet ein Ziel bei zu enger Achse")
+    except ValueError:
+        ok(True, "")
+
     print("%d Zusicherungen geprueft" % CHECKS[0])
     if FINDINGS:
         for f in FINDINGS:

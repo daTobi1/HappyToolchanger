@@ -76,11 +76,13 @@ class NozzleLocator:
         # Mindestzahl Samples je Scan-Fenster. Liegt scan_speed darueber,
         # wird gebremst statt abgebrochen (fit.clamp_scan_speed).
         self.min_samples = config.getint('min_samples', 200, minval=3)
-        # Seitlicher Versatz in X fuer die Basislinie: auf park_z steht die
-        # Duese noch 7 mm ueber der Spule und hebt die Basislinie um
-        # ~1.400 Hz. Neben der Spule ist sie wirklich leer.
-        self.baseline_offset = config.getfloat('baseline_offset', 40.0,
-                                               minval=0.)
+        # Basislinie am Druckerrand: auf park_z steht die Duese noch 7 mm
+        # ueber der Spule und hebt die Basislinie um ~1.400 Hz. Der Kopf
+        # faehrt dafuer in X zur weiter entfernten Achsgrenze, um diesen
+        # Rand nach innen (Tobi, 2026-09-04: "sicherheitshalber kurz vor
+        # den Rand"). 0 = an Ort und Stelle lesen.
+        self.baseline_edge_margin = config.getfloat('baseline_edge_margin',
+                                                    10.0, minval=0.)
         # Aufwaermzeit des Sensors vor der ersten Messung eines
         # Kalibrierlaufs: der erste Lauf nach dem Sensorstart lag am Messtag
         # 80 um daneben (Spule kalt, Kruemmung 15 % kleiner); nach ~1 min
@@ -551,24 +553,25 @@ class NozzleLocator:
         """Freiluft-Basislinie. Der Aufrufer steht auf park_z ueber der
         Spule. Dort ist die Duese aber noch 7 mm ueber der Spule und hebt
         die Basislinie um ~1.400 Hz (offene Arbeiten 8.6) -- deshalb faehrt
-        der Kopf um baseline_offset seitlich weg, liest, und kommt zurueck.
+        der Kopf in X bis kurz vor den Druckerrand (weiter entfernte
+        Achsgrenze minus baseline_edge_margin), liest, und kommt zurueck.
         park_z ist per Definition die freie Fahrhoehe, der Weg ist sicher.
-        aside=False liest an Ort und Stelle (Rueckfall, wenn seitlich kein
-        Platz ist). Eine Basislinie mit der Duese in Reichweite ist der
+        aside=False liest an Ort und Stelle (Rueckfall, wenn die Achse zu
+        eng ist). Eine Basislinie mit der Duese in Reichweite ist der
         Fehler, der im Vorversuch 12 kHz Versatz erzeugt hat.
         """
         self.state = 'baseline'
         toolhead = self.printer.lookup_object('toolhead')
         here = toolhead.get_position()
         moved = False
-        if aside and self.baseline_offset > 0.:
+        if aside and self.baseline_edge_margin > 0.:
             now = self.printer.get_reactor().monotonic()
             status = toolhead.get_status(now)
             x_min = status['axis_minimum'][0]
             x_max = status['axis_maximum'][0]
             try:
-                x_aside = fit.baseline_side(here[0], self.baseline_offset,
-                                            x_min, x_max)
+                x_aside = fit.baseline_edge(here[0], x_min, x_max,
+                                            self.baseline_edge_margin)
             except ValueError as e:
                 logging.info("nozzle_locator: Basislinie an Ort und Stelle "
                              "-- %s", e)

@@ -1758,8 +1758,9 @@ class Offset:
         "TIP_EXTRAPOLATE (1 = second fine measurement EXTRAPOLATE_DZ mm "
         "higher and linear extrapolation to gap 0 = the nozzle tip, default "
         "on), FIT2D (1 = 6x6 mm raster with paraboloid fit instead of two "
-        "lines), QUAD_SLOPE (mm per mm gap above which a third gap and a "
-        "quadratic extrapolation are used, default 0.1). Requires homed, "
+        "lines), QUAD_SLOPE (mm per mm gap from which a third gap and a "
+        "quadratic extrapolation are used, default 0 = always). Requires "
+        "homed, "
         "levelled axes, the reference tool parked with NOZZLE_LOCATOR_PARK "
         "and the coil placed under the nozzle. Results are only shown and "
         "stored -- nothing is written to the tool configs.")
@@ -1807,8 +1808,10 @@ class Offset:
         # inklusive. Default aus, bis am Drucker gefahren.
         fit2d = gcmd.get_int('FIT2D', 0) != 0
         # Ab dieser Steigung (mm je mm Spalt) eine dritte Stuetzstelle und
-        # quadratische Extrapolation (10.7, T0 mit 0,29).
-        quad_slope = gcmd.get_float('QUAD_SLOPE', 0.1, minval=0.)
+        # quadratische Extrapolation. Default 0: immer drei Spalte, auch
+        # bei gerader Duese (Tobi, 2026-09-04) -- gleiche Behandlung fuer
+        # alle Tools, die Steigung bleibt als Warnung im Ergebnis.
+        quad_slope = gcmd.get_float('QUAD_SLOPE', 0.0, minval=0.)
         ref_tool, ordered_tools = self._xy_tool_run(gcmd)
         # Nie selbst homen oder leveln: die Halterung steht auf dem Bett.
         locator._require_homed()
@@ -2207,7 +2210,7 @@ class Offset:
                     'tip_method': 'linear',
                 })
                 method_note = ""
-                if max(abs(slope_x), abs(slope_y)) > quad_slope:
+                if max(abs(slope_x), abs(slope_y)) >= quad_slope:
                     # Steile, nicht lineare Kurve (10.7, T0): dritte
                     # Stuetzstelle noch einmal dz hoeher und Parabel auf
                     # Spalt 0 -- die Gerade ueber 0,75 mm liess einen Rest.

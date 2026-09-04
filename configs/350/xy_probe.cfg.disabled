@@ -57,9 +57,10 @@ scan_speed: 5
 # Mindestzahl Samples je Scan-Fenster; darueber wird gebremst statt
 # abgebrochen (400 Hz * 8 mm / 200 = 16 mm/s Obergrenze fuer die Feinmessung).
 min_samples: 200
-# Seitlicher X-Versatz fuer die Freiluft-Basislinie: auf park_z steht die
-# Duese noch 7 mm ueber der Spule (+1.400 Hz). 0 = an Ort und Stelle lesen.
-baseline_offset: 40
+# Basislinie am Druckerrand: auf park_z steht die Duese noch 7 mm ueber der
+# Spule (+1.400 Hz). Der Kopf faehrt in X zur weiter entfernten Achsgrenze,
+# um diesen Rand nach innen, liest, kommt zurueck. 0 = an Ort und Stelle.
+baseline_edge_margin: 10
 # Aufwaermzeit des Sensors vor der ersten Messung von CALIBRATE_XY_OFFSETS
 # (Sekunden). Der erste Lauf nach dem Sensorstart lag 80 um daneben, nach
 # ~1 min Dauerbetrieb ist die Spule stabil. WARMUP= am Kommando ueberschreibt.
