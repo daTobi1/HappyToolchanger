@@ -2095,6 +2095,19 @@ class Offset:
             self._xy_select_tool(gcmd, tool_nr)
             if temp > 0:
                 self.gcode.run_script_from_command("M109 S%.0f" % temp)
+            # Transparenz (Tobi, 2026-09-04): welcher gcode-Offset nach dem
+            # Wechsel aktiv ist. Die Sonde misst in Maschinenkoordinaten
+            # (toolhead.manual_move), der Offset hat keinen Einfluss auf das
+            # Ergebnis -- nur auf manuelle G1-Fahrten dazwischen.
+            try:
+                gm = self.printer.lookup_object('gcode_move')
+                origin = gm.get_status(self.printer.get_reactor().monotonic())["homing_origin"]
+                gcmd.respond_info(
+                    "T%d: gcode-Offset aktiv X%+.3f Y%+.3f Z%+.3f (ohne "
+                    "Einfluss auf die Messung, Maschinenkoordinaten)"
+                    % (tool_nr, origin[0], origin[1], origin[2]))
+            except Exception:
+                pass
             locator.park(park_x, park_y, park_z)
             if dry_run:
                 gcmd.respond_info("T%d: Trockenlauf, Position erreicht"

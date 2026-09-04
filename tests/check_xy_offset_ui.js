@@ -509,28 +509,26 @@ function runXyWizardGateTest() {
 
   var seq = Promise.resolve();
 
-  // --- Trockenlauf nicht als kollisionsfrei bestaetigt -> KEIN Messlauf ---
+  // --- Kein Trockenlauf mehr im Ablauf (Tobi, 2026-09-04): nach dem
+  // Aufsetzen startet direkt der Messlauf, DRY_RUN wird nie gesendet ---
   seq = seq.then(function () {
-    return runWizard([true, true, true, false, null]).then(function (r) {
-      check('nach dem Trockenlauf wird nachgefragt, bevor der Messlauf laeuft',
-        r.confirms.indexOf('Trockenlauf beendet?') !== -1,
+    return runWizard([true, true, null], { idle: false }).then(function (r) {
+      check('kein Trockenlauf-Dialog mehr',
+        r.confirms.indexOf('Trockenlauf') === -1 &&
+        r.confirms.indexOf('Trockenlauf beendet?') === -1,
         JSON.stringify(r.confirms));
-      check('"Nein" nach dem Trockenlauf -> der Messlauf wird NICHT gestartet',
-        JSON.stringify(r.sent) ===
-          JSON.stringify(['CALIBRATE_XY_OFFSETS DRY_RUN=1']),
+      check('DRY_RUN wird nicht gesendet',
+        r.sent.every(function (s) { return s.indexOf('DRY_RUN') === -1; }),
         JSON.stringify(r.sent));
-      check('abgelehnter Trockenlauf landet im Abbruch-Dialog (Halterung liegt)',
-        r.confirms.indexOf('XY-Assistent abgebrochen') !== -1,
-        JSON.stringify(r.confirms));
     });
   });
 
   // --- Messlauf laeuft noch (nie idle) -> kein FIRMWARE_RESTART ---
   seq = seq.then(function () {
-    return runWizard([true, true, true, true, null], { idle: false })
+    return runWizard([true, true, null], { idle: false })
       .then(function (r) {
-        check('Messlauf wird nach der Bestaetigung gestartet',
-          r.sent.length === 2 && r.sent[1] === 'CALIBRATE_XY_OFFSETS',
+        check('Messlauf wird direkt nach dem Aufsetzen gestartet',
+          r.sent.length === 1 && r.sent[0] === 'CALIBRATE_XY_OFFSETS',
           JSON.stringify(r.sent));
         check('Drucker noch nicht idle -> "Abschliessen" wird NICHT angeboten',
           r.confirms.indexOf('Abschließen') === -1,
@@ -542,14 +540,13 @@ function runXyWizardGateTest() {
 
   // --- Regelfall: transport, aber der Drucker meldet sich wieder idle ---
   seq = seq.then(function () {
-    return runWizard([true, true, true, true, true, true]).then(function (r) {
+    return runWizard([true, true, true, true]).then(function (r) {
       check('idle nach dem Messlauf -> "Abschliessen" und Deaktivieren',
         r.confirms.indexOf('Abschließen') !== -1 && r.deactivate === 1,
         JSON.stringify(r.confirms) + ' calls=' + r.deactivate);
       check('vollstaendige Dialogfolge des Regelfalls',
         JSON.stringify(r.confirms) === JSON.stringify([
-          'XY-Sonde: Anstecken', 'XY-Sonde: Aufsetzen', 'Trockenlauf',
-          'Trockenlauf beendet?', 'Abschließen', 'Fertig'
+          'XY-Sonde: Anstecken', 'XY-Sonde: Aufsetzen', 'Abschließen', 'Fertig'
         ]), JSON.stringify(r.confirms));
     });
   });

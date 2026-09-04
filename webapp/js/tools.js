@@ -4009,48 +4009,12 @@ function xyWizard() {
       if (!ok2) throw new Error(
         "Aufsetzen abgebrochen. Die Sonde ist bereits aktiviert -- bitte " +
         "deaktivieren, bevor sie abgezogen wird.");
-      return confirmDialog({
-        title: "Trockenlauf",
-        body: "Beim ersten Mal dringend empfohlen: alle Werkzeugwechsel " +
-              "und Verfahrwege werden abgefahren, aber nie abgesenkt. " +
-              "Damit siehst du gefahrlos, ob der Wechselweg über die " +
-              "Halterung führt.",
-        okLabel: "Trockenlauf fahren",
-        cancelLabel: "Überspringen"
-      }).then(function (runDry) {
-        if (!runDry) return null;
-        return xySendMounted("CALIBRATE_XY_OFFSETS DRY_RUN=1", "Trockenlauf")
-          .then(function (r) {
-            // Der Trockenlauf existiert genau dafuer, dass der Nutzer den
-            // Wechselweg beobachtet und danach ABBRECHEN kann. Vorher
-            // hingen Trocken- und Messlauf ohne irgendetwas dazwischen
-            // aneinander: ein Verbindungsabbruch beim Trockenlauf hat den
-            // absenkenden Messlauf sofort hinterhergeschoben.
-            var note = (r && r.transport)
-              ? '<p class="mb-2 text-warning">' +
-                '<i class="bi bi-exclamation-triangle"></i> Die Verbindung ' +
-                'zum Trockenlauf ist abgerissen -- er laeuft auf dem ' +
-                'Drucker weiter. Erst antworten, wenn der Drucker wirklich ' +
-                'steht.</p>'
-              : '';
-            return confirmDialog({
-              title: "Trockenlauf beendet?",
-              body: note +
-                    "Lief der Trockenlauf kollisionsfrei ab? Der Messlauf " +
-                    "faehrt dieselben Wege, senkt die Duese dabei aber ab.",
-              okLabel: "Ja -- Messlauf starten",
-              okClass: "btn-warning",
-              cancelLabel: "Nein -- abbrechen"
-            });
-          }).then(function (clean) {
-            if (clean) return null;
-            var e = new Error(
-              "Trockenlauf nicht als kollisionsfrei bestaetigt -- kein " +
-              "Messlauf.");
-            e.xyHolderMounted = true;
-            throw e;
-          });
-      }).then(function () {
+      // Kein Trockenlauf mehr im Ablauf (Tobi, 2026-09-04): die Wege sind
+      // am 250er ueber viele Laeufe bekannt, und der Messlauf selbst prueft
+      // Homing, Leveling und Toolchanger-Status. CALIBRATE_XY_OFFSETS
+      // DRY_RUN=1 bleibt als Kommando fuer neue Aufbauten erhalten.
+      return null;
+    }).then(function () {
         return xySendMounted("CALIBRATE_XY_OFFSETS", "XY-Messlauf");
       }).then(function (r) {
         // Auch hier gilt: das Aufloesen des Requests ist KEIN Beweis, dass
@@ -4093,7 +4057,6 @@ function xyWizard() {
           "Sonde ist deaktiviert. Halterung jetzt vom Bett nehmen und die " +
           "Sonde abziehen.");
       });
-    });
   }).catch(function (err) {
     var mounted = !!(err && err.xyHolderMounted);
     var detail = gcodeErrorMessage(err) || (err && err.message) ||
