@@ -676,3 +676,17 @@ Tobis Einwand: „Ich kann nicht garantieren, dass die Sonde immer an derselben 
 - **`TIP_EXTRAPOLATE` Default aus.** Ergebnis ist der rohe Raster-Scheitel beim gemeinsamen Spalt (Z-Switch-Daten). T0s Scheitel liegt damit weiter systematisch neben der Spitze (schiefe Düse), aber konstant — solange Spalt und Platinenlage konstant sind. Die Extrapolation bleibt per Parameter verfügbar. Im Messbild heißt der Ergebnispunkt dann „Spitze (Messspalt)".
 
 **Offen:** ob das Nachzentrieren T0s 75–96 µm auf die 20 µm der anderen bringt, zeigt erst das nächste Paar Läufe mit verschieden stehender Halterung. Bleibt ein Rest, ist er die Platine (Amplitude 1,8 % anders) — dann hilft nur ein kleinerer Spalt (Amplitudenmodus, MIN_GAP 0,2) oder der Platinen-Abzug aus einem weiten Raster je Lauf.
+
+**Lauf 11 (23:31–23:39, 8 min, RECENTER an, ohne Extrapolation, Halterung neu gestellt — laut Grobsuche nahe der Position von Lauf 9):** T1 +0,5284/−5,2342, T2 +0,7284/−4,4552, T3 +0,2900/−5,9293. T0 wurde einmal nachzentriert (Fenster danach 0,03/0,06 mm neben dem Scheitel).
+
+| | Lauf 11 | gegen Lauf 10 (µm) | gegen Lauf 9 (µm) |
+|---|---|---|---|
+| T2−T1 | +0,2000 / +0,7790 | +1 / −21 | +1 / −2 |
+| T3−T1 | −0,2384 / −0,6952 | +12 / +0 | +4 / +16 |
+| T1−T0 | +0,5284 / −5,2342 | −4 / −127 | +71 / −30 |
+| T2−T0 | +0,7284 / −4,4552 | −2 / −147 | +72 / −32 |
+| T3−T0 | +0,2900 / −5,9293 | +8 / −126 | +75 / −14 |
+
+**Befund:** Die Differenzen zwischen T1, T2 und T3 sind über drei Läufe und drei Halterungspositionen auf ≤ 21 µm gleich — das Verfahren misst die Tools reproduzierbar. Alles gegen T0 streut gemeinsam um 70–150 µm; das ist T0 selbst (Platine + schiefe Spitze), nicht die Messung der anderen. Gegenüber der Extrapolation (0,2–0,45 mm) ist das eine Verbesserung um den Faktor 3, aber noch nicht die 20 µm. T0s Amplitude schwankt zwischen den Läufen um ±1 % (andere Tools ±0,2 %), also ändert sich der Platinenanteil mit der Halterungslage.
+
+**Nächste Kandidaten für T0:** kleinerer Spalt für alle (`FINE_GAP=0.4`, Spitze dominiert stärker, der Z-Boden hebt das kürzeste Tool automatisch), oder Platinen-Abzug aus einem weiten Raster je Lauf.
