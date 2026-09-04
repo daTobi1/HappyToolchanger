@@ -596,3 +596,12 @@ Steigungen je Tool (mm je mm Spalt), stabil über die Läufe: **T0 Y +0,26…+0,
 **T0 ist damit endgültig das Problem, nicht das Verfahren.** Mit dem 2-mm-Radius des 2D-Fits verdoppelt sich T0s Steigung gegenüber der 8-mm-Parabel (Y 0,29 → 0,50, X −0,04 → +0,14): der lokale Scheitel folgt bei kleinem Spalt der Spitze, bei großem dem Block, und beide liegen bei T0 offenbar ~0,5 mm auseinander. Die quadratische Hochrechnung über 0,8 mm verschiebt T0s „Spitze" gegenüber der linearen um 0,12/0,13 mm und gegenüber dem 1D-Verfahren um ~0,35/0,45 mm — alle Offsets gegen T0 wandern gemeinsam mit. **Solange T0s Düse so sitzt, ist ihre Spitze per Spule nicht besser als ±0,3 mm zu bestimmen**, egal mit welcher Extrapolation; die Kamera-Abweichungen von 300–600 µm in diesem Lauf sind genau dieser Fehler.
 
 Konsequenz: (a) T0s Düse unter der Kamera prüfen und ggf. tauschen/neu setzen (10.7, Weg 3); (b) bis dahin T1 als Referenz und T0s Offset aus der Kamera; (c) `FIT2D=1` und die Extrapolation bleiben für Tools mit Steigung < 0,1 die bessere Methode (gleiches Fenster, Kreuzterm), `QUAD_SLOPE` als Warnschwelle. Der Nebeneffekt der 2D-Messung: `spread` und Drift-Bias sind dort 0 (ein Raster, kein Hin/Rück) — die Webapp zeigt das entsprechend.
+
+### 10.9 Entscheidung nach Lauf 7 (Tobi, 2026-09-04, Abend)
+
+Die Ungenauigkeit durch T0s Düse wird vorerst akzeptiert, T0 bleibt Referenz. Zwei Änderungen dazu:
+
+- **Basislinie am Druckerrand:** `measure_baseline()` fährt in X zur weiter entfernten Achsgrenze minus `baseline_edge_margin` (Default 10 mm) statt 40 mm zur Seite — damit steht bei der Basislinie wirklich nichts über der Spule. `baseline_offset` ist ersetzt.
+- **Extrapolation immer über drei Spalte:** `QUAD_SLOPE` Default 0, also bekommt jedes Tool die dritte Stützstelle und die Parabel, auch mit gerader Düse. Gleiche Behandlung für alle; die Steigung bleibt als Warnung im Ergebnis. Kostet ~25 s je Tool.
+
+Nie gefahren (Restart nötig).
