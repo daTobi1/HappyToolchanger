@@ -162,13 +162,21 @@
       });
       return { radius: r, nMin: isFinite(nMin) ? nMin : 0, devUm: ok ? dev : null, ok: ok, why: why };
     });
-    var plateau = rows.filter(function (row) { return row.ok && row.devUm <= tolUm; });
+    // Plateau: innerhalb tolUm UND nicht weiter als doppelt so weit wie der
+    // beste Radius (plus 5 um Rauschen). Sonst wuerde ein Radius am Rand des
+    // Plateaus gewaehlt, wo die Flanken schon ziehen (Lauf 13: 2,5 mm mit
+    // 24 um, obwohl 2,0 mm bei 6 um liegt).
+    var okRows = rows.filter(function (row) { return row.ok; });
+    var minDev = okRows.length ? Math.min.apply(null, okRows.map(function (r) { return r.devUm; })) : 0;
+    var limit = Math.min(tolUm, 2 * minDev + 5);
+    var plateau = okRows.filter(function (row) { return row.devUm <= limit; });
     var best = null, reason;
     if (plateau.length) {
       best = plateau[plateau.length - 1];
       reason = 'Bis ' + best.radius.toFixed(2) + ' mm bleibt der Scheitel bei allen ' + tools.length +
-        ' Tools innerhalb ' + tolUm + ' um um seinen Bezug (hier ' + best.devUm.toFixed(0) +
-        ' um); groesster Radius im Plateau = meiste Punkte im Fit (mindestens ' + best.nMin + ').';
+        ' Tools innerhalb ' + limit.toFixed(0) + ' um um seinen Bezug (hier ' + best.devUm.toFixed(0) +
+        ' um, bester Radius ' + minDev.toFixed(0) + ' um); groesster solcher Radius = meiste Punkte im Fit ' +
+        '(mindestens ' + best.nMin + ').';
     } else {
       rows.forEach(function (row) {
         if (row.ok && (!best || row.devUm < best.devUm)) best = row;

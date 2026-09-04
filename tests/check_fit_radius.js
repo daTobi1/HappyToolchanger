@@ -76,9 +76,10 @@ ok(swBad.every(r => r.error), 'radiusSweep: Sattel als Fehler je Radius, kein Wu
 // stabil ueber alle Radien, Vorschlag = der groesste (meiste Punkte).
 const resSym = { ref_tool: 0, '0': { images: [bell] }, '1': { images: [grid(124.5, 121, (x, y) => 9000 * Math.exp(-(((x - 124.6) / 3) ** 2) - (((y - 120.9) / 1.6) ** 2)))] } };
 const sug = F.suggestFitRadius(resSym, { radii: [0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5] });
-// Bei 2,5 mm liegt die Gitter-Streuung der Glocke schon bei 27 um (> 25):
-// das Plateau endet bei 2,0, und das ist der Vorschlag.
-ok(sug.radius === 2.0, 'suggestFitRadius: stabile Scheitel -> groesster Radius im Plateau', JSON.stringify(sug.rows.map(r => [r.radius, r.devUm, r.ok])));
+// Abweichungen je Radius (Gitter-Streuung): 1,25 -> 0,9 um (bester), 1,5 ->
+// 1,7, 1,75 -> 4,6, 2,0 -> 8,4, 2,5 -> 27. Plateau = bis doppelt so weit wie
+// der beste plus 5 um = 6,8 um -> groesster Radius darin ist 1,75.
+ok(sug.radius === 1.75, 'suggestFitRadius: stabile Scheitel -> groesster Radius im Plateau', JSON.stringify(sug.rows.map(r => [r.radius, r.devUm, r.ok])));
 ok(sug.rows.length === 7 && sug.rows.every(r => typeof r.devUm === 'number' || r.ok === false), 'suggestFitRadius: Tabelle je Radius');
 ok(sug.tools.length === 2 && sug.tools[0].tool === '0', 'suggestFitRadius: Tools aufgelistet');
 ok(typeof sug.reason === 'string' && sug.reason.length > 10, 'suggestFitRadius: Begruendung');
