@@ -2902,16 +2902,16 @@ function xyOffsetSection() {
       '<div class="d-flex flex-wrap gap-1 align-items-center">' +
         // Feinspalt fuer den Messlauf (FINE_GAP), leer = Klipper-Default
         // 0,4 mm. Kleinerer Spalt = Spitze dominiert (offene Arbeiten 10.12).
-        '<div class="input-group input-group-sm flex-nowrap" style="width:13.5em" title="Messspalt ueber der Spule fuer alle Tools (FINE_GAP); leer = Config-Default 0,4 mm. Kleiner = Spitze dominiert, mindestens 0,2 mm.">' +
+        '<div class="input-group input-group-sm flex-nowrap w-auto" title="Messspalt ueber der Spule fuer alle Tools (FINE_GAP); leer = Config-Default 0,4 mm. Kleiner = Spitze dominiert, mindestens 0,2 mm.">' +
           '<span class="input-group-text">Feinspalt</span>' +
-          '<input type="number" class="form-control" id="xy-fine-gap" min="0.2" max="3" step="0.05" placeholder="0.4" value="' +
+          '<input type="number" class="form-control" id="xy-fine-gap" style="width:5.5em;flex:0 0 5.5em" min="0.2" max="3" step="0.05" placeholder="0.4" value="' +
           escapeHtml(_xyFineGapStored()) + '">' +
           '<span class="input-group-text">mm</span>' +
         '</div>' +
         // Fit-Radius (FIT_RADIUS), leer = 2,0 mm. Sweep ueber Lauf 12: <= 20 um Wirkung.
-        '<div class="input-group input-group-sm flex-nowrap" style="width:13.5em" title="Radius des Paraboloid-Fits um die Rastermitte (FIT_RADIUS); leer = 2,0 mm. Kleiner haelt den Fit auf der Spitze, hat an Lauf 12 aber nur <= 20 um geaendert. 0,75 bis 3 mm.">' +
+        '<div class="input-group input-group-sm flex-nowrap w-auto" title="Radius des Paraboloid-Fits um die Rastermitte (FIT_RADIUS); leer = 2,0 mm. Kleiner haelt den Fit auf der Spitze, hat an Lauf 12 aber nur <= 20 um geaendert. 0,75 bis 3 mm.">' +
           '<span class="input-group-text">Fit-Radius</span>' +
-          '<input type="number" class="form-control" id="xy-fit-radius" min="0.75" max="3" step="0.25" placeholder="2.0" value="' +
+          '<input type="number" class="form-control" id="xy-fit-radius" style="width:5.5em;flex:0 0 5.5em" min="0.75" max="3" step="0.25" placeholder="2.0" value="' +
           escapeHtml(_xyFitRadiusStored()) + '">' +
           '<span class="input-group-text">mm</span>' +
           '<button type="button" class="btn btn-outline-secondary" id="xy-fit-radius-suggest" ' +
