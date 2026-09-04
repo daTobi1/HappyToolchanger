@@ -2885,8 +2885,10 @@ function _xyFineGapStored() {
 
 function xyOffsetSection() {
   var checkedAttr = function (m) { return (_xyMethod === m) ? ' checked' : ''; };
-  return '<div class="container p-0">' +
-    '<div class="d-flex align-items-center justify-content-between mb-2">' +
+  return '<div class="container-fluid p-0">' +
+    // flex-wrap: auf schmalen Bildschirmen brechen Felder und Knoepfe um,
+    // statt sich zu quetschen (Tobi, 2026-09-05).
+    '<div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">' +
       '<div class="btn-group btn-group-sm" role="group" id="xy-method">' +
         '<input type="radio" class="btn-check" name="xy-method" ' +
           'id="xy-method-camera" value="camera"' + checkedAttr('camera') + '>' +
@@ -2897,7 +2899,7 @@ function xyOffsetSection() {
         '<label class="btn btn-outline-secondary" for="xy-method-eddy">' +
           'Eddy-Sweep</label>' +
       '</div>' +
-      '<div class="d-flex gap-1 align-items-center">' +
+      '<div class="d-flex flex-wrap gap-1 align-items-center">' +
         // Feinspalt fuer den Messlauf (FINE_GAP), leer = Klipper-Default
         // 0,4 mm. Kleinerer Spalt = Spitze dominiert (offene Arbeiten 10.12).
         '<div class="input-group input-group-sm flex-nowrap" style="width:13.5em" title="Messspalt ueber der Spule fuer alle Tools (FINE_GAP); leer = Config-Default 0,4 mm. Kleiner = Spitze dominiert, mindestens 0,2 mm.">' +
