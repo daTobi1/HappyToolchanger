@@ -2879,6 +2879,10 @@ function _cameraOffsetFor(toolNr) {
 // Assistent-Knopf koennen deshalb nicht dort hinein (verschachtelte
 // interaktive Elemente sind ungueltiges HTML) und stehen stattdessen oben
 // im Body.
+function _xyFineGapStored() {
+  try { return localStorage.getItem('offset_xy_fine_gap') || ''; } catch (e) { return ''; }
+}
+
 function xyOffsetSection() {
   var checkedAttr = function (m) { return (_xyMethod === m) ? ' checked' : ''; };
   return '<div class="container p-0">' +
@@ -2893,7 +2897,15 @@ function xyOffsetSection() {
         '<label class="btn btn-outline-secondary" for="xy-method-eddy">' +
           'Eddy-Sweep</label>' +
       '</div>' +
-      '<div class="d-flex gap-1">' +
+      '<div class="d-flex gap-1 align-items-center">' +
+        // Feinspalt fuer den Messlauf (FINE_GAP), leer = Klipper-Default
+        // 0,75 mm. Kleinerer Spalt = Spitze dominiert (offene Arbeiten 10.12).
+        '<div class="input-group input-group-sm" style="width:11em" title="Messspalt ueber der Spule fuer alle Tools (FINE_GAP); leer = Config-Default 0,75 mm. Kleiner = Spitze dominiert, mindestens 0,2 mm.">' +
+          '<span class="input-group-text">Feinspalt</span>' +
+          '<input type="number" class="form-control" id="xy-fine-gap" min="0.2" max="3" step="0.05" placeholder="0.75" value="' +
+          escapeHtml(_xyFineGapStored()) + '">' +
+          '<span class="input-group-text">mm</span>' +
+        '</div>' +
         // Nur sichtbar, solange die Sonde aktiv ist (nozzle_locator geladen):
         // direkter Lauf ohne Neustart/Homen/Aufsetzen und das Deaktivieren
         // fuer den Fall "Sonde aktiv lassen" am Ende des Assistenten.
@@ -4284,25 +4296,56 @@ function xyParkMove(park) {
 // Kommando des Eddy-Messlaufs aus Tool-Auswahl und Referenz. Referenz
 // immer dabei, sortiert, ohne Dubletten; ohne Angaben das nackte Kommando
 // (Klipper nimmt dann alle Tools und das konfigurierte Referenztool).
-function xyCalibrateCommand(selectedTools, refTool) {
+// opts.fineGap (Tobi, 2026-09-04, nach Lauf 11): Feinspalt in mm als
+// FINE_GAP -- kleinerer Spalt, damit die Spitze gegen Block und Platine
+// dominiert. Leer = Klipper-Default (fine_gap der Config); unter 0,2 mm
+// (MIN_GAP-Boden) oder Unsinn wirft, damit nie ein kaputtes Kommando
+// rausgeht.
+function xyCalibrateCommand(selectedTools, refTool, opts) {
+  opts = opts || {};
+  var cmd;
   if (refTool === null || refTool === undefined || isNaN(parseInt(refTool, 10))) {
-    return "CALIBRATE_XY_OFFSETS";
+    cmd = "CALIBRATE_XY_OFFSETS";
+  } else {
+    var ref = parseInt(refTool, 10);
+    var set = {};
+    set[ref] = true;
+    (selectedTools || []).forEach(function (t) {
+      var n = parseInt(t, 10);
+      if (!isNaN(n)) set[n] = true;
+    });
+    var tools = Object.keys(set).map(Number).sort(function (a, b) { return a - b; });
+    cmd = "CALIBRATE_XY_OFFSETS REF_TOOL=" + ref + " TOOLS=" + tools.join(",");
   }
-  var ref = parseInt(refTool, 10);
-  var set = {};
-  set[ref] = true;
-  (selectedTools || []).forEach(function (t) {
-    var n = parseInt(t, 10);
-    if (!isNaN(n)) set[n] = true;
-  });
-  var tools = Object.keys(set).map(Number).sort(function (a, b) { return a - b; });
-  return "CALIBRATE_XY_OFFSETS REF_TOOL=" + ref + " TOOLS=" + tools.join(",");
+  var raw = opts.fineGap;
+  if (raw !== undefined && raw !== null && String(raw).trim() !== '') {
+    var g = parseFloat(String(raw).replace(',', '.'));
+    if (!isFinite(g) || g < 0.2 || g > 3) {
+      throw new Error("Feinspalt muss zwischen 0,2 und 3 mm liegen");
+    }
+    cmd += " FINE_GAP=" + String(+g.toFixed(3));
+  }
+  return cmd;
 }
 
 function xySelectedTools() {
   return $(".calibrate-tool-checkbox:checked").map(function () {
     return parseInt(this.value, 10);
   }).get().filter(function (v) { return !isNaN(v); });
+}
+
+// Feld "Feinspalt" im XY-Block; leer = Default. Wert bleibt im Browser.
+function xyFineGapValue() {
+  var v = $('#xy-fine-gap').val();
+  try { localStorage.setItem('offset_xy_fine_gap', v || ''); } catch (e) { /* egal */ }
+  return v;
+}
+
+// Baut das Messlauf-Kommando aus Panel und Feld; bei Unsinn im Feld eine
+// Meldung statt eines Laufs.
+function xyBuildRunCommand() {
+  return xyCalibrateCommand(xySelectedTools(), getSelectedReferenceTool(0),
+                            { fineGap: xyFineGapValue() });
 }
 
 function xyWizard() {
@@ -4378,15 +4421,22 @@ function xyWizard() {
         // beendet meldet. Das Senden selbst laeuft daneben; sein Ergebnis
         // ist wie gehabt kein Beweis fuer irgendetwas ({transport} =
         // laeuft noch), ein echter Fehler wirft aber sofort.
-        var progress = xyRunProgressDialog("XY-Messlauf läuft");
-        // Auswahl und Referenz aus dem Tool-Panel (Tobi, 2026-09-04) --
-        // ohne Panel (Tests, alte Seite) das nackte Kommando.
+        // Auswahl, Referenz und Feinspalt aus Panel und Feld (Tobi,
+        // 2026-09-04) -- ohne Panel (Tests, alte Seite) das nackte
+        // Kommando. Ein unsinniger Feinspalt bricht hier ab, BEVOR der
+        // Fortschrittsdialog aufgeht; die Halterung steht schon, also
+        // bietet der catch() unten das Deaktivieren an.
         var cmd;
         try {
-          cmd = xyCalibrateCommand(xySelectedTools(), getSelectedReferenceTool(0));
+          cmd = xyBuildRunCommand();
         } catch (e) {
+          if (/Feinspalt/.test(e.message)) {
+            e.xyHolderMounted = true;
+            throw e;
+          }
           cmd = "CALIBRATE_XY_OFFSETS";
         }
+        var progress = xyRunProgressDialog("XY-Messlauf läuft");
         return xySendMounted(cmd, "XY-Messlauf").then(function (r) {
           if (r && r.transport && typeof showToast === 'function') {
             showToast("Verbindung zum Messlauf verloren - er laeuft weiter, " +
@@ -4502,8 +4552,9 @@ function xyWizard() {
 function xyRunDirect() {
   var cmd;
   try {
-    cmd = xyCalibrateCommand(xySelectedTools(), getSelectedReferenceTool(0));
+    cmd = xyBuildRunCommand();
   } catch (e) {
+    if (/Feinspalt/.test(e.message)) return alertDialog("Feinspalt", escapeHtml(e.message));
     cmd = "CALIBRATE_XY_OFFSETS";
   }
   return confirmDialog({

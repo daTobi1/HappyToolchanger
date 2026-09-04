@@ -1079,6 +1079,21 @@ function runParkTest() {
         xyCalibrateCommand([], 2) === 'CALIBRATE_XY_OFFSETS REF_TOOL=2 TOOLS=2');
   check('xyCalibrateCommand: ohne Angaben das nackte Kommando',
         xyCalibrateCommand(null, null) === 'CALIBRATE_XY_OFFSETS');
+  // Feinspalt (Tobi, 2026-09-04, nach Lauf 11): Feld im XY-Block, geht als
+  // FINE_GAP mit -- leer heisst Klipper-Default, Unsinn wirft.
+  check('xyCalibrateCommand: Feinspalt wird angehaengt',
+        xyCalibrateCommand([1], 0, { fineGap: 0.4 }) === 'CALIBRATE_XY_OFFSETS REF_TOOL=0 TOOLS=0,1 FINE_GAP=0.4');
+  check('xyCalibrateCommand: Feinspalt auch ohne Auswahl',
+        xyCalibrateCommand(null, null, { fineGap: '0.55' }) === 'CALIBRATE_XY_OFFSETS FINE_GAP=0.55');
+  check('xyCalibrateCommand: leerer Feinspalt wird weggelassen',
+        xyCalibrateCommand([1], 0, { fineGap: '' }) === 'CALIBRATE_XY_OFFSETS REF_TOOL=0 TOOLS=0,1');
+  var threwGap = false;
+  try { xyCalibrateCommand([1], 0, { fineGap: 0.1 }); } catch (e) { threwGap = /Feinspalt/.test(e.message); }
+  check('xyCalibrateCommand: Feinspalt unter 0,2 mm wirft', threwGap);
+  threwGap = false;
+  try { xyCalibrateCommand([1], 0, { fineGap: 'abc' }); } catch (e) { threwGap = true; }
+  check('xyCalibrateCommand: Feinspalt als Unsinn wirft', threwGap);
+  check('XY-Block: Feld fuer den Feinspalt', /id="xy-fine-gap"/.test(grab('xyOffsetSection')));
 }
 
 // --------------------------------------------------------------------
@@ -1106,8 +1121,9 @@ function runParkTest() {
   global.updateAllProbeResultsRD = function () { return Promise.resolve(); };
   global.xySelectedToolsRD = function () { return [0, 1]; };
   global.getSelectedReferenceToolRD = function () { return 0; };
-  var rd = grab('xyRunDirect').replace(
-    /\b(confirmDialog|alertDialog|xyRunProgressDialog|xySendMounted|waitForPrinterIdle|updateAllProbeResults|xySelectedTools|getSelectedReferenceTool)\(/g,
+  global.xyFineGapValueRD = function () { return ''; };
+  var rd = (grab('xyBuildRunCommand') + grab('xyRunDirect')).replace(
+    /\b(confirmDialog|alertDialog|xyRunProgressDialog|xySendMounted|waitForPrinterIdle|updateAllProbeResults|xySelectedTools|getSelectedReferenceTool|xyFineGapValue|xyBuildRunCommand)\(/g,
     '$1RD(');
   eval(grab('escapeHtml') + grab('gcodeErrorMessage') + grab('xyCalibrateCommand') + rd);
   xyRunDirect().then(function () {
