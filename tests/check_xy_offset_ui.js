@@ -1027,6 +1027,14 @@ function runParkTest() {
   check('xyOverlayLayers: ohne Ausrichten bleibt B, wo es gemessen wurde', L2.b.vx === 11 && L2.b.values[1][1] === 8);
   var L3 = xyOverlayLayers(results, { a: '0:0', b: '', align: true, dx: 0, dy: 0, normalize: true });
   check('xyOverlayLayers: ohne B nur A', L3.a && L3.b === null);
+  // Spitzenpunkt (x_peak/y_peak, Extrapolation auf Spalt 0) kommt mit und
+  // wandert bei B mit der Verschiebung
+  var resultsT = { ref_tool: 0, '0': { images: [rA], x_peak: 1.2, y_peak: 0.9 },
+                   '1': { images: [rB], x_peak: 11.3, y_peak: 6.1 } };
+  var LT = xyOverlayLayers(resultsT, { a: '0:0', b: '1:0', align: true, dx: 0, dy: 0, normalize: true });
+  check('xyOverlayLayers: Spitze von A', LT.a.tx === 1.2 && LT.a.ty === 0.9);
+  check('xyOverlayLayers: Spitze von B mitverschoben (Scheiteldifferenz -10/-5)',
+        Math.abs(LT.b.tx - 1.3) < 1e-9 && Math.abs(LT.b.ty - 1.1) < 1e-9, JSON.stringify([LT.b.tx, LT.b.ty]));
   var L4 = xyOverlayLayers(results, { a: '7:0', b: '', align: true, dx: 0, dy: 0 });
   check('xyOverlayLayers: unbekanntes Tool -> a null', L4.a === null);
 }

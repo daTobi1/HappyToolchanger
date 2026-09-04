@@ -117,6 +117,25 @@ ok(opts[0].tool === '0' && opts[0].index === 0 && /T0/.test(opts[0].label) && /0
    'layerOptions: Tool, Index und Label', JSON.stringify(opts[0]));
 ok(opts[1].index === 2 && /1\.20/.test(opts[1].label), 'layerOptions: Index zeigt auf das Bild in images[]');
 
+// 11: Spitzenpunkt (Extrapolation auf Spalt 0) je Ebene -- getrennt vom
+// Scheitel des Rasters, wird mitverschoben und in 2D wie 3D gezeichnet.
+const At = O.layerFromImage(imgA, 'T0', { x: 10.3, y: 19.6 });
+ok(At.tx === 10.3 && At.ty === 19.6, 'layerFromImage uebernimmt den Spitzenpunkt');
+ok(A.tx === undefined || A.tx === null, 'layerFromImage ohne Spitze: keine Spitze');
+const Bt = O.shiftLayer(O.layerFromImage(imgB, 'T1', { x: 11.4, y: 15.2 }), -1.5, 5);
+ok(near(Bt.tx, 9.9, 1e-9) && near(Bt.ty, 20.2, 1e-9), 'shiftLayer verschiebt die Spitze mit', JSON.stringify([Bt.tx, Bt.ty]));
+const Nt = O.normalizeLayer(At);
+ok(Nt.tx === 10.3, 'normalizeLayer behaelt die Spitze');
+const t2t = O.overlayTraces2d(At, Bt, { levels: 4 });
+ok(t2t.data.length === 6, 'overlayTraces2d: Linien, Scheitel und Spitzen je Ebene', 'n=' + t2t.data.length);
+const tips2 = t2t.data.filter(t => /Spitze/.test(t.name));
+ok(tips2.length === 2 && tips2[0].x[0] === 10.3 && near(tips2[1].y[0], 20.2, 1e-9), 'overlayTraces2d: Spitzenmarker an der extrapolierten Position');
+ok(tips2[0].marker.symbol !== t2t.data[2].marker.symbol, 'overlayTraces2d: Spitze und Scheitel verschieden markiert');
+ok(O.overlayTraces2d(A, Bs, {}).data.length === 4, 'overlayTraces2d ohne Spitzen: unveraendert');
+const t3t = O.overlayTraces3d(At, Bt, {});
+ok(t3t.data.length === 4, 'overlayTraces3d: zwei Flaechen plus zwei Spitzen-Lote', 'n=' + t3t.data.length);
+ok(t3t.data[2].type === 'scatter3d' && t3t.data[2].x[0] === 10.3 && t3t.data[2].x[1] === 10.3, 'overlayTraces3d: Lot senkrecht durch die Spitze');
+
 console.log(checks + ' Zusicherungen, ' + findings.length + ' Befunde');
 findings.forEach(f => console.log('  FEHLT: ' + f));
 process.exit(findings.length ? 1 : 0);

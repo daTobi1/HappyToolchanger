@@ -3220,7 +3220,11 @@ function xyOverlayLayers(results, f) {
     var im = e && Array.isArray(e.images) ? e.images[parseInt(m[2], 10)] : null;
     if (!im) return null;
     var gap = (typeof im.gap === 'number') ? im.gap.toFixed(2) + ' mm' : '?';
-    return O.layerFromImage(im, 'T' + m[1] + ' Spalt ' + gap);
+    // Spitzenpunkt = Ergebnis der Extrapolation auf Spalt 0 (x_peak/y_peak),
+    // in Maschinenkoordinaten wie das Raster (Tobi, 2026-09-04).
+    var tip = (typeof e.x_peak === 'number' && typeof e.y_peak === 'number')
+      ? { x: e.x_peak, y: e.y_peak } : null;
+    return O.layerFromImage(im, 'T' + m[1] + ' Spalt ' + gap, tip);
   }
   var a = pick(f.a), b = pick(f.b);
   var shift = { dx: 0, dy: 0 };
@@ -3303,7 +3307,8 @@ function xyShowOverlay(toolA) {
     '</div>' +
     '<div id="xy-ov-status" class="small text-muted mb-1"></div>' +
     '<div id="xy-ov-plot" style="width:100%;height:440px"></div>' +
-    '<div class="small text-muted mt-2">Kreuz = Scheitel des 2D-Fits je Raster. Liegen die Buckel nach dem ' +
+    '<div class="small text-muted mt-2">Kreuz = Scheitel des 2D-Fits in diesem Raster, Stern (3D: Lot) = ' +
+    'ermittelter Spitzenpunkt des Tools (Extrapolation auf Spalt 0). Liegen die Buckel nach dem ' +
     'Verschieben um den gemessenen Offset nicht aufeinander, weicht die Form der D&uuml;se (oder der ' +
     'Messung) ab; die Handverschiebung zeigt, um wie viel.</div>';
   alertDialog('Messbilder überlagern', body, { okClass: 'btn-secondary' });
