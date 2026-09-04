@@ -519,3 +519,27 @@ Wiederholbarkeit weiter 1–3 µm. Die Abweichungen zur Kamera liegen bei 0,1–
 - **`sweep_quality` mit Randabstand** (12,5 % der Fensterbreite, über die Position): die Messtag-Flanke ist als Testfall festgenagelt.
 - **`NOZZLE_LOCATE COARSE=1`**: Grobsuche über `search_span` vor der Feinmessung.
 - Fit 87 Zusicherungen.
+
+### 10.5 Zweiter Lauf mit T0 bis T3, Feinspalt, Höhenserien, Platinen-Abzug (2026-09-04, 13–14 Uhr)
+
+`CALIBRATE_XY_OFFSETS REF_TOOL=1 TOOLS=0,1,2,3 FINE_GAP=0.4 MIN_GAP=0.25` (Feinspalt vom Boden auf 0,78 angehoben, T3 begrenzt), 428 s:
+
+| Tool | Sonde, Differenz zu T1 | Kamera | Abweichung | Amplitude | Messhöhe Z |
+|---|---|---|---|---|---|
+| T0 | −0,4995 / +5,2143 | −0,330 / +5,050 | −170 / +164 µm | 15,7 kHz | 53,465 |
+| T2 | +0,2128 / +0,7297 | +0,110 / +0,490 | +103 / +240 µm | 11,7 kHz | 53,509 |
+| T3 | −0,2470 / −0,7196 | −0,510 / −0,790 | +263 / +70 µm | 10,8 kHz | 53,250 |
+| T1 | Referenz | | | 8,1 kHz | 53,775 |
+
+T2/T3 reproduzieren den ersten Lauf (10.2) auf 15 µm — bei anderer Halterungsposition und anderem Spalt. Die Sonde ist also stabil; die Abweichung zur Kamera ist systematisch.
+
+**Höhenserien** (`NOZZLE_LOCATE GAPS=`, „Spalt" = Z − 53):
+
+- T1 Y: 2,0 → 0,6: 118,642 → 118,710, **−48 µm/mm**, X flach (−2 µm/mm). Auch ohne Platine wandert der Y-Scheitel mit dem Spalt — Block-Geometrie.
+- T0 Y: 2,31 → 1,12: 124,550 → 124,250, **+250 µm/mm und zum kleinen Spalt hin steiler** (146 → 308 → 384 µm/mm je Stufe); im Lauf bei Z 53,465: 123,93. Die Extrapolation auf Spalt 0 ist damit nicht belastbar. X: 19 µm/mm.
+
+**Platinen-Abzug aus zwei Feinrastern** (14 × 14 mm, 0,5 mm, T0 bei Z 54,12, T1 bei Z 53,76; T1-Buckel auf den T0-Buckel geschoben und abgezogen): das Residuum am Buckel ist nur +100 Hz Niveau mit **~10 Hz/mm Gefälle → ≤ 20 µm Scheitelverschiebung**. Die direkte, additive Wirkung der Platine am Düsenort ist also klein. Die starke Spaltabhängigkeit von T0 kommt woanders her.
+
+**Der eigentliche Befund: die Spalte waren im Lauf nicht gleich.** Amplituden bei „gleichem Spalt": T1 8,1 kHz, T2 11,7, T3 10,8, T0 15,7. Und die Feinraster: T1 bei Z 53,76 hat dieselbe Amplitude (8,47 kHz) wie T0 bei Z 54,12 (8,58 kHz) — T1s Spitze steht also bei gleichem Z rund 0,36 mm **höher** als T0s, T1 ist kürzer. Der Spaltmodus rechnet mit dem Gegenteil (z_trigger T1 1,337 > T0 1,026 → „T1 länger") und hat T0 auf ~0,1 mm und T3 auf wenige Hundertstel über die Halterung gesetzt (kein Schaden, T1-Kontrolle vor/nach dem Lauf stabil). Entweder ist die Vorzeichen-Deutung von `z_trigger` im Spaltmodus falsch, oder T0s Z-Daten sind veraltet (Hotend gewechselt?). **Solange das offen ist, ist `Z_MODE=amplitude` mit identischen Hotends der ehrlichere Gleichspalt** — die Spule selbst setzt den Spalt, unabhängig von Z-Daten; die Platine addiert am Buckel nur ~1 %.
+
+Weitere Code-Punkte: die Höhenserie lässt den Kopf am Sweep-Ende stehen statt auf dem Scheitel (Folgekommando fiel darauf herein); `target_amplitude` als Laufparameter (`TARGET_AMPLITUDE=`), damit der Amplitudenmodus einen kleinen Spalt fahren kann.
