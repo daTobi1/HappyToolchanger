@@ -99,7 +99,9 @@ und ob die 180°-Drehung der Hotends den Block-Schwerpunkt kippt.
 
 **Noch später (offene Arbeiten §10.11):** Tobi hat den Assistenten (alte, gecachte Webapp) gefahren und die Werte dieses Laufs **in die `T<n>.cfg` geschrieben** (T1 +0,585/−5,238, T2 +0,780/−4,512, T3 +0,315/−5,959; Sicherung der Kamera-Werte in `docs/backups/250-tools-2026-09-04/`). Danach gebaut: Fortschrittsdialog während des Laufs (`xy_progress`), Messbild mit Log-Umschalter und 2D-Link, Überlagerungs-Editor (`overlay.js`), `FIT2D` Default an. Alles deployt, Klipper neu gestartet; **der Fortschrittsdialog ist mit laufender Messung noch ungesehen.**
 
-**Zustand des 250ers beim Verlassen (noch später):** **nicht gehomt** (FIRMWARE_RESTART nach dem Deaktivieren der Sonde), T0 montiert, Toolchanger `uninitialized`, Sonde deaktiviert (`xy_probe.cfg` leer). **Halterung vermutlich noch auf dem Bett** — vor `G28` prüfen. `printer.offset.xy_results` ist der Assistenten-Lauf (Profile, keine Raster).
+**23 Uhr (offene Arbeiten §10.12):** Lauf 9 und 10 mit verschieden stehender Halterung: rohe Raster-Scheitel von T1–T3 auf 20 µm reproduzierbar, die Extrapolation auf Spalt 0 macht daraus 80–220 µm, T0 wandert um 0,2–0,45 mm. Tobi: T0 bleibt Referenz, keine Kamera-Brücke. Gebaut: **Nachzentrieren des Rasters** (`RECENTER`), **`TIP_EXTRAPOLATE` Default aus**. Der Nachweis, dass T0 damit positionsunabhängig wird, steht aus — nächstes Paar Läufe mit versetzter Halterung fahren und T0−T1 vergleichen.
+
+**Zustand des 250ers beim Verlassen (23 Uhr):** siehe Konsole — nach dem Deploy Klipper-Service neu gestartet, also **nicht gehomt**; Sonde war zu dem Zeitpunkt aktiv (`xy_probe.cfg`), **Halterung stand auf dem Bett**. Vor jedem Homen prüfen.
 
 **Nächste Schritte in dieser Reihenfolge** (Details §9.4 und §10 der offenen Arbeiten; **nach dem Messtag gilt: Referenztool ohne Sonde oder T0 mit kleinem Spalt, `FINE_GAP=`, Parkpunkt über dem Düsenbuckel des Referenztools, nicht über der Platine**):
 

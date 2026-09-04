@@ -654,3 +654,25 @@ Im Browser geprüft: Messbild-Dialog (Profile des Abendlaufs), Editor in 2D und 
 **Lauf 9 (Tobi, 22:17–22:30, neuer Assistent):** `CALIBRATE_XY_OFFSETS REF_TOOL=0 TOOLS=0,1,2,3`, Spaltmodus, jetzt mit Rastern (FIT2D Default): T1 +0,786/−4,334, T2 +0,970/−3,677, T3 +0,525/−5,208 — gegen Lauf 8 (Amplitudenmodus) 0,12–0,25 mm, gegen den Assistenten-Lauf vom Abend (Linien, gleiche Spalte) 0,2–0,9 mm in Y. Nicht geschrieben; in den Configs stehen weiter die Werte des Abendlaufs. Danach Sonde deaktiviert (22:41). Der Überlagerungs-Editor zeigt mit diesen Rastern T1 gegen T0: die Höhenlinien von T0 liegen nach dem Verschieben um den gemessenen Offset sichtbar breiter und leicht versetzt — T0s schiefe Spitze als Bild.
 
 **Abschließen mit Wahl (Tobi):** Am Ende des Assistenten gibt es neben „Deaktivieren" jetzt „Sonde aktiv lassen". Dann bleiben Sonde und Halterung, und im XY-Block erscheinen — nur solange `nozzle_locator` geladen ist — die Knöpfe „Messlauf" (direkter Lauf mit Fortschrittsdialog, ohne Neustart/Homen/Aufsetzen; Kommando aus Tool-Auswahl und Referenz) und „Sonde deaktivieren". Behoben: „Mit anderem Tool überlagern" im Messbild-Dialog tat nichts, weil der zweite Dialog in der Alert-Warteschlange hinter dem Messbild wartete — der Knopf schließt das Messbild jetzt zuerst.
+
+### 10.12 Reproduzierbarkeit gegen die Halterungsposition: Lauf 9 und 10 (2026-09-04, 23 Uhr)
+
+Tobis Einwand: „Ich kann nicht garantieren, dass die Sonde immer an derselben Stelle steht — wenn wir dann immer andere Offsets bekommen, ist das falsch." Lauf 9 (22:17) und Lauf 10 (23:02) liefen mit demselben Kommando, aber die Halterung stand beim zweiten Mal etwa 9 mm weiter in +Y. Vergleich der Tool-zu-Tool-Differenzen (T2−T1, T3−T1) an drei Stellen der Kette:
+
+| Stufe | Änderung T2−T1 (µm X / Y) | Änderung T3−T1 (µm X / Y) |
+|---|---|---|
+| roher Raster-Scheitel bei 0,75 mm Spalt | 0 / +19 | −8 / +16 |
+| lineare Extrapolation auf Spalt 0 | +17 / +81 | −15 / +90 |
+| quadratische Extrapolation über 3 Spalte | +56 / +113 | −17 / +222 |
+
+**Die Rastermessung selbst ist positionsunabhängig** (20 µm). Der Spalt war beide Male gleich (T1-Amplitude 7016 gegen 7011 Hz). Was die Reproduzierbarkeit zerstört, ist die Extrapolation: die Steigung aus drei Punkten über 1 mm ist um ±50 µm je mm unsicher (T1 in Y: −98 gegen −49), mal 0,75 mm Spalt sind das 40 µm linear, und die Parabel verstärkt es.
+
+**T0 (Referenz)** ist die große Störgröße: sein extrapolierter Punkt wanderte um 0,2 / 0,45 mm, sein roher Scheitel bei 0,75 mm um 75 / 96 µm. Seine Amplitude änderte sich um 1,8 % (T1: 0,07 %), also stand die Platine anders zur Spule. Zudem stand T0s Raster beide Male 0,7–0,85 mm neben dem Scheitel, weil die 1D-Grobsuche in Y durch den Ausläufer der Platine läuft — ein schiefes Fenster über einem asymmetrischen Buckel verschiebt den Paraboloid-Fit.
+
+**Tobis Vorgabe:** T0 bleibt Referenz, die Kamera als Brücke T0→T1 ist keine Option, T1 als Referenz auch nicht. „Das Referenztool muss sich erst selbst über der Sonde zentrieren, dann genau messen, dann die anderen Tools."
+
+**Umgesetzt (Commit nach Lauf 10):**
+- **Nachzentrieren** (`RECENTER`, Default 2, `RECENTER_TOL` 0,3 mm; `fit.recenter_target`): liegt der Scheitel des 2D-Fits weiter als 0,3 mm von der Rastermitte, wird das Raster auf den Scheitel gelegt und wiederholt. Alle Tools bekommen ein mittig sitzendes Fenster derselben Größe. Kostet ~40 s je Wiederholung, trifft praktisch nur T0.
+- **`TIP_EXTRAPOLATE` Default aus.** Ergebnis ist der rohe Raster-Scheitel beim gemeinsamen Spalt (Z-Switch-Daten). T0s Scheitel liegt damit weiter systematisch neben der Spitze (schiefe Düse), aber konstant — solange Spalt und Platinenlage konstant sind. Die Extrapolation bleibt per Parameter verfügbar. Im Messbild heißt der Ergebnispunkt dann „Spitze (Messspalt)".
+
+**Offen:** ob das Nachzentrieren T0s 75–96 µm auf die 20 µm der anderen bringt, zeigt erst das nächste Paar Läufe mit verschieden stehender Halterung. Bleibt ein Rest, ist er die Platine (Amplitude 1,8 % anders) — dann hilft nur ein kleinerer Spalt (Amplitudenmodus, MIN_GAP 0,2) oder der Platinen-Abzug aus einem weiten Raster je Lauf.

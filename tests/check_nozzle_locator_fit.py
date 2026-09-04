@@ -576,6 +576,18 @@ def main():
             print("BEFUND: %s" % f)
         return 1
     print("sauber")
+    # --- Nachzentrieren (Tobi, 2026-09-04): Raster erst auf den Scheitel
+    # legen, dann messen. Innerhalb der Toleranz: None (fertig); ausserhalb:
+    # der Scheitel wird die neue Mitte. Toleranz 0,3 mm bei 0,5-mm-Raster.
+    ok(fit.recenter_target((124.02, 128.01), (124.0, 128.0), 0.3) is None,
+       "recenter_target: Scheitel nahe der Mitte muss None liefern")
+    ok(fit.recenter_target((124.0, 127.15), (124.0, 128.0), 0.3) == (124.0, 127.15),
+       "recenter_target: Scheitel 0,85 mm daneben muss neue Mitte liefern")
+    ok(fit.recenter_target((124.2, 128.2), (124.0, 128.0), 0.3) is None,
+       "recenter_target: Diagonale 0,28 mm liegt innerhalb 0,3")
+    ok(fit.recenter_target((124.25, 128.25), (124.0, 128.0), 0.3) is not None,
+       "recenter_target: Diagonale 0,35 mm liegt ausserhalb 0,3")
+
     return 0
 
 

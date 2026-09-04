@@ -173,7 +173,7 @@
   // sich vom Kreuz des Raster-Scheitels unterscheidet.
   function tipTrace(layer, color) {
     return { type: 'scatter', mode: 'markers', x: [layer.tx], y: [layer.ty],
-             name: layer.label + ' Spitze (Spalt 0)',
+             name: layer.label + ' Spitze',
              marker: { color: color, size: 14, symbol: 'star', line: { color: '#fff', width: 1 } },
              hovertemplate: 'Spitze X %{x:.3f}<br>Y %{y:.3f}<extra>' + layer.label + '</extra>' };
   }
@@ -222,7 +222,7 @@
   function tipLine3d(layer, color, zr) {
     return { type: 'scatter3d', mode: 'lines+markers',
              x: [layer.tx, layer.tx], y: [layer.ty, layer.ty], z: [zr[0], zr[1]],
-             name: layer.label + ' Spitze (Spalt 0)',
+             name: layer.label + ' Spitze',
              line: { color: color, width: 6 }, marker: { size: 4, color: color },
              hovertemplate: 'Spitze X %{x:.3f}<br>Y %{y:.3f}<extra>' + layer.label + '</extra>' };
   }

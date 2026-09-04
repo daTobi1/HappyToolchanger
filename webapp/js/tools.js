@@ -3136,7 +3136,8 @@ function xyImageBodyHtml(t, entry, entries, opts) {
   if (typeof entry.x_peak === 'number' && typeof entry.y_peak === 'number') {
     // Spitzenpunkt in Maschinenkoordinaten (Tobi, 2026-09-04) -- im Raster
     // als oranges Lot neben der weissen Scheitel-Linie
-    facts.push('Spitze (Spalt 0) X ' + entry.x_peak.toFixed(3) + ' / Y ' + entry.y_peak.toFixed(3) +
+    facts.push('Spitze X ' + entry.x_peak.toFixed(3) + ' / Y ' + entry.y_peak.toFixed(3) +
+               (entry.tip_method ? ' (extrapoliert auf Spalt 0)' : ' (Scheitel beim Messspalt)') +
                ' <span style="color:#ff7f0e">&#9646;</span>');
   }
   if (typeof entry.rho === 'number') facts.push('&rho; ' + entry.rho.toFixed(3));
@@ -3198,7 +3199,8 @@ function xyRenderImages() {
   var log = $('#xy-img-log').is(':checked');
   var entry = _xyResults[s.t] || {};
   var tip = (typeof entry.x_peak === 'number' && typeof entry.y_peak === 'number')
-    ? { x: entry.x_peak, y: entry.y_peak, label: 'T' + s.t + ' Spitze (Spalt 0)' } : null;
+    ? { x: entry.x_peak, y: entry.y_peak,
+        label: 'T' + s.t + (entry.tip_method ? ' Spitze (Spalt 0)' : ' Spitze (Messspalt)') } : null;
   s.entries.forEach(function (e, i) {
     var el = document.getElementById('xy-img-' + i);
     if (!el) return;
@@ -3317,7 +3319,7 @@ function xyShowOverlay(toolA) {
     '<div id="xy-ov-status" class="small text-muted mb-1"></div>' +
     '<div id="xy-ov-plot" style="width:100%;height:440px"></div>' +
     '<div class="small text-muted mt-2">Kreuz = Scheitel des 2D-Fits in diesem Raster, Stern (3D: Lot) = ' +
-    'ermittelter Spitzenpunkt des Tools (Extrapolation auf Spalt 0). Liegen die Buckel nach dem ' +
+    'ermitteltes Ergebnis des Tools (mit Extrapolation: Spitze bei Spalt 0, sonst Scheitel beim Messspalt). Liegen die Buckel nach dem ' +
     'Verschieben um den gemessenen Offset nicht aufeinander, weicht die Form der D&uuml;se (oder der ' +
     'Messung) ab; die Handverschiebung zeigt, um wie viel.</div>';
   alertDialog('Messbilder überlagern', body, { okClass: 'btn-secondary' });

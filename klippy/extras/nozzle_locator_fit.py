@@ -460,6 +460,20 @@ def tip_extrapolate_quadratic(positions, gaps):
     return _solve(S, t)[0]
 
 
+def recenter_target(vertex, centre, tol):
+    """Erst zentrieren, dann messen (Tobi, 2026-09-04): liegt der
+    gefittete Scheitel weiter als `tol` von der Rastermitte entfernt,
+    ist das Fenster schief ueber dem Buckel gestanden -- bei einem
+    asymmetrischen Buckel (T0: Platine und schiefe Duese) verschiebt
+    das den Fit. Dann wird das Raster auf den Scheitel nachzentriert.
+    -> (x, y) der neuen Mitte oder None, wenn es passt."""
+    dx = vertex[0] - centre[0]
+    dy = vertex[1] - centre[1]
+    if (dx * dx + dy * dy) ** 0.5 <= tol:
+        return None
+    return (vertex[0], vertex[1])
+
+
 def baseline_edge(x, x_min, x_max, margin):
     """Ziel-x fuer die Basislinie am Druckerrand: die von x weiter
     entfernte Achsgrenze, um `margin` nach innen. Tobi (2026-09-04):

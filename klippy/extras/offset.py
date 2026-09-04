@@ -1760,8 +1760,10 @@ class Offset:
         "sensor warm-up before the first measurement), TARGET_AMPLITUDE (Hz "
         "above baseline for Z_MODE=amplitude, higher = smaller gap), "
         "TIP_EXTRAPOLATE (1 = second fine measurement EXTRAPOLATE_DZ mm "
-        "higher and linear extrapolation to gap 0 = the nozzle tip, default "
-        "on), FIT2D (1 = 6x6 mm raster with paraboloid fit instead of two "
+        "higher and extrapolation to gap 0 = the nozzle tip; default OFF "
+        "since 2026-09-04, it costs repeatability), RECENTER (max. repeats "
+        "of the raster centred on the found vertex, default 2) and "
+        "RECENTER_TOL (mm, default 0.3), FIT2D (1 = 6x6 mm raster with paraboloid fit instead of two "
         "lines, default on since 2026-09-04 -- the raster is also the image "
         "the webapp shows and overlays), QUAD_SLOPE (mm per mm gap from which a third gap and a "
         "quadratic extrapolation are used, default 0 = always). Requires "
@@ -1805,7 +1807,20 @@ class Offset:
         # Spitzen-Extrapolation (10.6): zweite Feinmessung EXTRAPOLATE_DZ
         # hoeher, Gerade auf Spalt 0. Default an -- sie macht das Ergebnis
         # unabhaengig davon, wie die Duese im Block sitzt.
-        tip_extrapolate = gcmd.get_int('TIP_EXTRAPOLATE', 1) != 0
+        # Default AUS seit Lauf 9/10 (2026-09-04, spaet): die Extrapolation
+        # auf Spalt 0 schaetzt die Steigung aus drei Punkten ueber 1 mm,
+        # und die ist um +-50 um je mm unsicher -- die Tool-zu-Tool-
+        # Differenzen wanderten damit um 80-220 um zwischen zwei
+        # Halterungspositionen, die rohen Raster-Scheitel beim kleinen
+        # Spalt nur um 20 um (offene Arbeiten 10.12). Gleicher Spalt fuer
+        # alle Tools (Z_MODE=switch) reicht; TIP_EXTRAPOLATE=1 bleibt als
+        # Option.
+        tip_extrapolate = gcmd.get_int('TIP_EXTRAPOLATE', 0) != 0
+        # Nachzentrieren des Rasters (RECENTER = maximale Wiederholungen,
+        # RECENTER_TOL in mm), siehe measure() unten.
+        recenter = gcmd.get_int('RECENTER', 2, minval=0, maxval=5)
+        recenter_tol = gcmd.get_float('RECENTER_TOL', 0.3, minval=0.05,
+                                      maxval=3.0)
         extrapolate_dz = gcmd.get_float('EXTRAPOLATE_DZ', 0.5, minval=0.2,
                                         maxval=3.0)
         # FIT2D=1: Feinmessung als 6x6-mm-Raster mit Paraboloid-Fit statt
@@ -1896,7 +1911,8 @@ class Offset:
                 gcmd, locator, ref_tool, ordered_tools, dry_run, temp,
                 iterations, z_mode, tip_extrapolate=tip_extrapolate,
                 extrapolate_dz=extrapolate_dz, fit2d=fit2d,
-                quad_slope=quad_slope)
+                quad_slope=quad_slope, recenter=recenter,
+                recenter_tol=recenter_tol)
         except Exception as e:
             # Bei Abbruch zurueck auf das Referenztool (Tobis Wunsch,
             # 2026-09-04). Das muss HIER passieren, solange der Fehler das
@@ -2029,7 +2045,8 @@ class Offset:
     def _run_xy_calibration(self, gcmd, locator, ref_tool, ordered_tools,
                             dry_run, temp, iterations, z_mode='switch',
                             tip_extrapolate=False, extrapolate_dz=0.5,
-                            fit2d=False, quad_slope=0.1):
+                            fit2d=False, quad_slope=0.1,
+                            recenter=2, recenter_tol=0.3):
         results = {}
         ref_pos = None
         ref_gap = None
@@ -2044,6 +2061,31 @@ class Offset:
             self._xy_progress(step='Feinmessung %s' % label)
             if fit2d:
                 r = locator.locate2d(cx0, cy0, baseline, label=label)
+                # Erst zentrieren, dann messen (Tobi, 2026-09-04, nach
+                # Lauf 9/10: T0s Raster stand bis 0,85 mm neben dem
+                # Scheitel, weil die Grobsuche in Y durch den Ausläufer
+                # der Platine laeuft; ein schiefes Fenster ueber einem
+                # asymmetrischen Buckel verschiebt den Fit, und zwar je
+                # nach Halterungsposition anders). Liegt der Scheitel
+                # weiter als recenter_tol von der Rastermitte, wird das
+                # Raster auf ihn nachzentriert -- hoechstens `recenter`
+                # Mal. Alle Tools bekommen so ein mittig sitzendes
+                # Fenster derselben Groesse.
+                n_re = 0
+                while n_re < recenter:
+                    target = fit.recenter_target((r['x'], r['y']),
+                                                 (cx0, cy0), recenter_tol)
+                    if target is None:
+                        break
+                    n_re += 1
+                    gcmd.respond_info(
+                        "%s: Scheitel %.2f/%.2f mm neben der Rastermitte "
+                        "-- Raster nachzentriert (%d/%d)"
+                        % (label, r['x'] - cx0, r['y'] - cy0, n_re, recenter))
+                    self._xy_progress(step='Feinmessung %s, nachzentriert %d'
+                                      % (label, n_re))
+                    cx0, cy0 = target
+                    r = locator.locate2d(cx0, cy0, baseline, label=label)
                 rx = {'center': r['x'], 'fwd': r['x'], 'rev': r['x'],
                       'spread': 0.0}
                 ry = {'center': r['y'], 'fwd': r['y'], 'rev': r['y'],
@@ -2055,6 +2097,8 @@ class Offset:
                          'pitch': lm.get('pitch'), 'z': lm.get('z')}
                 return rx, ry, {'rho': r['rho'], 'fit': '2d',
                                 'axx': r['axx'], 'ayy': r['ayy'],
+                                'recentered': n_re,
+                                'window_x': cx0, 'window_y': cy0,
                                 'image': image}
             rx = ry = None
             prof_x = prof_y = []
