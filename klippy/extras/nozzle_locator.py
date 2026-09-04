@@ -613,8 +613,13 @@ class NozzleLocator:
                 return z
             if z <= floor:
                 break
-            # Naeher am Ziel feiner tasten
-            if mean - baseline >= target_amplitude * 0.5:
+            # Naeher am Ziel feiner tasten. Die letzte Stufe 0,05 mm, weil
+            # ein Tool bei 0,25-mm-Schritten bis zu 0,25 mm ueber dem
+            # Ziel stehen bleibt -- bei 0,6 mm Scheitelwanderung je mm
+            # Spalt (T0, Messtag) sind das 150 um.
+            if mean - baseline >= target_amplitude * 0.85:
+                step = 0.05
+            elif mean - baseline >= target_amplitude * 0.5:
                 step = 0.25
             if z - 5.0 > coarse_until:
                 z = z - 5.0

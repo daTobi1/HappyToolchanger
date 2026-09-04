@@ -444,6 +444,33 @@ def main():
        "sweep_quality bewertet den Rand bei dichten Punkten nach Index statt "
        "Position")
 
+    # --- 18: Spitzen-Extrapolation -- Scheitel bei zwei Spalten auf Spalt 0 ---
+    # Messtag 2026-09-04: T0s Y-Scheitel wandert 0,6 mm je mm Spalt, weil
+    # die Duesenspitze nicht auf der Blockachse sitzt. Die Spule liefert bei
+    # Spalt -> 0 die Spitze; zwei Messungen bei kleinen Spalten und eine
+    # Gerade dorthin.
+    # T0-Zahlen: Spalt 0,465 -> 5,2143, Spalt 1,0 -> 5,5264 -> Spalt 0 ~ 4,94
+    tip = fit.tip_extrapolate(5.2143, 0.465, 5.5264, 1.0)
+    close(tip, 5.2143 - (5.5264 - 5.2143) * 0.465 / 0.535, 1e-9,
+          "tip_extrapolate rechnet nicht linear auf Spalt 0")
+    ok(4.9 < tip < 5.0, "tip_extrapolate liefert fuer T0 nicht ~4,94",
+       "%.4f" % tip)
+    # Ohne Spaltabhaengigkeit bleibt der Wert
+    close(fit.tip_extrapolate(1.0, 0.3, 1.0, 0.8), 1.0, 1e-12,
+          "tip_extrapolate veraendert einen spaltunabhaengigen Scheitel")
+    # Reihenfolge der Spalte egal
+    close(fit.tip_extrapolate(5.5264, 1.0, 5.2143, 0.465), tip, 1e-9,
+          "tip_extrapolate haengt von der Reihenfolge ab")
+    # Gleiche Spalte -> keine Gerade -> Fehler statt Division durch 0
+    try:
+        fit.tip_extrapolate(1.0, 0.5, 1.1, 0.5)
+        ok(False, "tip_extrapolate akzeptiert gleiche Spalte")
+    except ValueError:
+        ok(True, "")
+    # Die Steigung (mm je mm Spalt) ist der Exzentrizitaets-Indikator
+    close(fit.tip_slope(5.2143, 0.465, 5.5264, 1.0),
+          (5.5264 - 5.2143) / 0.535, 1e-9, "tip_slope falsch")
+
     print("%d Zusicherungen geprueft" % CHECKS[0])
     if FINDINGS:
         for f in FINDINGS:

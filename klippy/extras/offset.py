@@ -7,6 +7,7 @@ from statistics import median, mean
 
 from . import tools_calibrate
 from . import toolchanger
+from . import nozzle_locator_fit as fit
 
 
 class Offset:
@@ -1753,8 +1754,10 @@ class Offset:
         "amplitude = same signal amplitude), FINE_GAP and MIN_GAP (mm above "
         "holder_top_z for this run, MIN_GAP >= 0.15), WARMUP (seconds of "
         "sensor warm-up before the first measurement), TARGET_AMPLITUDE (Hz "
-        "above baseline for Z_MODE=amplitude, higher = smaller gap). "
-        "Requires homed, "
+        "above baseline for Z_MODE=amplitude, higher = smaller gap), "
+        "TIP_EXTRAPOLATE (1 = second fine measurement EXTRAPOLATE_DZ mm "
+        "higher and linear extrapolation to gap 0 = the nozzle tip, default "
+        "on). Requires homed, "
         "levelled axes, the reference tool parked with NOZZLE_LOCATOR_PARK "
         "and the coil placed under the nozzle. Results are only shown and "
         "stored -- nothing is written to the tool configs.")
@@ -1791,6 +1794,12 @@ class Offset:
         target_amplitude = gcmd.get_float('TARGET_AMPLITUDE',
                                           locator.target_amplitude,
                                           above=locator.min_amplitude)
+        # Spitzen-Extrapolation (10.6): zweite Feinmessung EXTRAPOLATE_DZ
+        # hoeher, Gerade auf Spalt 0. Default an -- sie macht das Ergebnis
+        # unabhaengig davon, wie die Duese im Block sitzt.
+        tip_extrapolate = gcmd.get_int('TIP_EXTRAPOLATE', 1) != 0
+        extrapolate_dz = gcmd.get_float('EXTRAPOLATE_DZ', 0.5, minval=0.2,
+                                        maxval=3.0)
         ref_tool, ordered_tools = self._xy_tool_run(gcmd)
         # Nie selbst homen oder leveln: die Halterung steht auf dem Bett.
         locator._require_homed()
@@ -1860,7 +1869,8 @@ class Offset:
                 gcmd.respond_info("XY: Phase 3/3 -- fein, gleicher Spalt")
             results = self._run_xy_calibration(
                 gcmd, locator, ref_tool, ordered_tools, dry_run, temp,
-                iterations, z_mode)
+                iterations, z_mode, tip_extrapolate=tip_extrapolate,
+                extrapolate_dz=extrapolate_dz)
         except Exception as e:
             # Bei Abbruch zurueck auf das Referenztool (Tobis Wunsch,
             # 2026-09-04). Das muss HIER passieren, solange der Fehler das
@@ -1981,9 +1991,11 @@ class Offset:
         return out
 
     def _run_xy_calibration(self, gcmd, locator, ref_tool, ordered_tools,
-                            dry_run, temp, iterations, z_mode='switch'):
+                            dry_run, temp, iterations, z_mode='switch',
+                            tip_extrapolate=False, extrapolate_dz=0.5):
         results = {}
         ref_pos = None
+        ref_gap = None
         ref_z = None
         baseline = None
         # Gleicher Spalt statt gleicher Amplitude (Tobi, 2026-09-04): die
@@ -2136,6 +2148,51 @@ class Offset:
                 'amplitude': amp,
                 'z_mode': 'switch' if (zs is not None) else 'amplitude',
             }
+            if tool_nr == ref_tool:
+                ref_gap = z_reached - locator.holder_top_z
+            if tip_extrapolate:
+                # Spitzen-Extrapolation (Messtag 2026-09-04, 10.6): bei
+                # grossem Spalt misst die Spule den Heizblock, bei kleinem
+                # die Spitze; sitzt die Duese nicht auf der Blockachse,
+                # wandert der Scheitel mit dem Spalt (T0: 0,6 mm/mm).
+                # Zweite Messung extrapolate_dz hoeher, Gerade auf Spalt 0.
+                # Der Spalt der ersten Messung ist der des Referenztools --
+                # gleich fuer alle, ob per Amplitude oder per Z-Switch.
+                gap1 = ref_gap
+                gap2 = gap1 + extrapolate_dz
+                locator._move([None, None, z_reached + extrapolate_dz],
+                              locator.approach_speed)
+                rx2 = locator.locate('X', rx['center'], baseline)
+                locator._move([rx2['center'], None, None],
+                              locator.move_speed)
+                ry2 = locator.locate('Y', ry['center'], baseline)
+                tip_x = fit.tip_extrapolate(rx['center'], gap1,
+                                            rx2['center'], gap2)
+                tip_y = fit.tip_extrapolate(ry['center'], gap1,
+                                            ry2['center'], gap2)
+                entry.update({
+                    'x_gap1': rx['center'], 'y_gap1': ry['center'],
+                    'x_gap2': rx2['center'], 'y_gap2': ry2['center'],
+                    'gap1': gap1, 'gap2': gap2,
+                    'tip_slope_x': fit.tip_slope(rx['center'], gap1,
+                                                 rx2['center'], gap2),
+                    'tip_slope_y': fit.tip_slope(ry['center'], gap1,
+                                                 ry2['center'], gap2),
+                    'x_peak': tip_x, 'y_peak': tip_y,
+                })
+                gcmd.respond_info(
+                    "T%d: Spitze aus Spalt %.2f/%.2f mm: X%.4f Y%.4f "
+                    "(Steigung X %+.0f / Y %+.0f um je mm Spalt%s)"
+                    % (tool_nr, gap1, gap2, tip_x, tip_y,
+                       entry['tip_slope_x'] * 1000.,
+                       entry['tip_slope_y'] * 1000.,
+                       " -- Duese sitzt schief im Block?"
+                       if max(abs(entry['tip_slope_x']),
+                              abs(entry['tip_slope_y'])) > 0.2 else ""))
+                rx, ry = ({'center': tip_x, 'fwd': rx['fwd'],
+                           'rev': rx['rev'], 'spread': rx['spread']},
+                          {'center': tip_y, 'fwd': ry['fwd'],
+                           'rev': ry['rev'], 'spread': ry['spread']})
             coil_temp = self._xy_coil_temp()
             if coil_temp is not None:
                 entry['coil_temp'] = coil_temp

@@ -333,3 +333,26 @@ def baseline_side(x, offset, x_min, x_max):
     raise ValueError(
         "Kein Platz fuer die Basislinie: x=%.1f +- %.1f liegt ausserhalb "
         "von %.1f..%.1f" % (x, offset, x_min, x_max))
+
+
+def tip_slope(p1, g1, p2, g2):
+    """Steigung des Scheitels ueber dem Spalt, mm je mm. Gross heisst: die
+    Duesenspitze sitzt nicht auf der Achse des Blocks (T0 am Messtag
+    2026-09-04: 0,6 mm/mm), klein heisst zentriert (T1: -0,05)."""
+    if abs(g2 - g1) < 1e-6:
+        raise ValueError("Spitzen-Extrapolation braucht zwei verschiedene "
+                         "Spalte, bekam %.3f und %.3f" % (g1, g2))
+    return (p2 - p1) / (g2 - g1)
+
+
+def tip_extrapolate(p1, g1, p2, g2):
+    """Scheitel bei Spalt 0 aus zwei Messungen (p1 bei Spalt g1, p2 bei g2).
+
+    Bei grossem Spalt misst die Spule den Heizblock, bei kleinem die
+    Spitze; die Gerade durch beide Messungen trifft bei Spalt 0 die
+    Spitze -- die auch die Kamera sieht. Nebenbei faellt jede additive
+    Stoerung heraus, die mit dem Spalt schwaecher wird. Linear ist eine
+    Naeherung: zum kleinen Spalt hin wird die Kurve steiler (offene
+    Arbeiten 10.5), also beide Spalte so klein wie moeglich waehlen.
+    """
+    return p1 - tip_slope(p1, g1, p2, g2) * g1
