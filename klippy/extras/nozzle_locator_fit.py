@@ -154,9 +154,19 @@ def sweep_quality(points, baseline, min_amplitude):
         return False, ("Amplitude nur %.0f Hz, mindestens %.0f noetig"
                        % (amplitude, min_amplitude))
     peak_idx = values.index(peak)
-    if peak_idx == 0 or peak_idx == len(values) - 1:
-        return False, ("Scheitel liegt am Rand des Fensters (%.3f) -- "
-                       "Bereich verfehlt" % points[peak_idx][0])
+    # Randabstand ueber die POSITION, nicht den Index: ein Scan hat ~600
+    # Punkte, da ist "nicht der erste Punkt" kein Kriterium. Messtag
+    # 2026-09-04: Maximum einen Korb neben dem Rand, Fit auf der Flanke,
+    # Scheitel 17 mm daneben. Mindestens 12,5 % der Fensterbreite Abstand
+    # von beiden Raendern (1 mm bei 8 mm).
+    positions = [p for p, _ in points]
+    lo, hi = min(positions), max(positions)
+    margin = (hi - lo) * 0.125
+    peak_pos = points[peak_idx][0]
+    if peak_pos - lo < margin - 1e-9 or hi - peak_pos < margin - 1e-9:
+        return False, ("Scheitel liegt am Rand des Fensters (%.3f, Fenster "
+                       "%.3f..%.3f) -- Bereich verfehlt, erst Grobsuche"
+                       % (peak_pos, lo, hi))
     return True, ""
 
 

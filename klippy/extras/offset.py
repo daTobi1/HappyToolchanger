@@ -1750,7 +1750,9 @@ class Offset:
         "against cross-coupling, default from config; run NOZZLE_LOCATE "
         "AXIS=DIAG once to find out whether 2 is needed), Z_MODE (switch = "
         "same gap for every tool from the Z-switch data, default; "
-        "amplitude = same signal amplitude). Requires homed, "
+        "amplitude = same signal amplitude), FINE_GAP and MIN_GAP (mm above "
+        "holder_top_z for this run, MIN_GAP >= 0.15), WARMUP (seconds of "
+        "sensor warm-up before the first measurement). Requires homed, "
         "levelled axes, the reference tool parked with NOZZLE_LOCATOR_PARK "
         "and the coil placed under the nozzle. Results are only shown and "
         "stored -- nothing is written to the tool configs.")
@@ -1768,6 +1770,17 @@ class Offset:
         z_mode = (gcmd.get('Z_MODE', 'switch') or 'switch').strip().lower()
         if z_mode not in ('switch', 'amplitude'):
             raise gcmd.error("Z_MODE muss switch oder amplitude sein")
+        # Spalt fuer diesen Lauf (Tobi, Messtag 2026-09-04: T0 soll mit
+        # kleinstmoeglichem Spalt gemessen werden, damit die Kupferplatine
+        # der Eddy-NG-Sonde 16,7 mm daneben so wenig wie moeglich zieht).
+        # MIN_GAP ist der harte Z-Boden ueber holder_top_z; unter 0,15 mm
+        # geht es nicht, weil holder_top_z nur auf ~0,1-0,2 mm bekannt ist.
+        fine_gap = gcmd.get_float('FINE_GAP', locator.fine_gap, above=0.)
+        min_gap = gcmd.get_float('MIN_GAP', locator.min_gap, minval=0.15)
+        if fine_gap < min_gap:
+            raise gcmd.error("FINE_GAP (%.2f) darf nicht unter MIN_GAP "
+                             "(%.2f) liegen" % (fine_gap, min_gap))
+        warmup = gcmd.get_float('WARMUP', locator.warmup_time, minval=0.)
         ref_tool, ordered_tools = self._xy_tool_run(gcmd)
         # Nie selbst homen oder leveln: die Halterung steht auf dem Bett.
         locator._require_homed()
@@ -1800,6 +1813,16 @@ class Offset:
         prev_timeout = self._current_idle_timeout()
         self.gcode.run_script_from_command("SET_IDLE_TIMEOUT TIMEOUT=3600")
         results = {}
+        saved_gaps = (locator.fine_gap, locator.min_gap)
+        locator.fine_gap, locator.min_gap = fine_gap, min_gap
+        if (fine_gap, min_gap) != saved_gaps:
+            gcmd.respond_info("XY: Spalt fuer diesen Lauf fine_gap %.2f, "
+                              "min_gap %.2f (Z-Boden %.3f)"
+                              % (fine_gap, min_gap, locator._z_floor()))
+        # Sensor ueber den ganzen Lauf halten und vorher aufwaermen: der
+        # erste Lauf nach dem Sensorstart lag am Messtag 80 um daneben.
+        # Die inneren Haltungen (locate, coarse_locate) zaehlen nur hoch.
+        locator._hold_sensor(warmup=warmup)
         try:
             if bootstrap:
                 gcmd.respond_info("XY: Phase 1/3 -- grob, gleiche Amplitude")
@@ -1837,6 +1860,8 @@ class Offset:
             self._xy_abort_to_ref_tool(gcmd, locator, ref_tool, e)
             raise
         finally:
+            locator._release_sensor()
+            locator.fine_gap, locator.min_gap = saved_gaps
             self.gcode.run_script_from_command(
                 "SET_IDLE_TIMEOUT TIMEOUT=%d" % prev_timeout)
             locator.state = 'idle'

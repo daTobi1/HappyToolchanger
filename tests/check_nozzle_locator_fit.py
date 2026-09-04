@@ -409,6 +409,41 @@ def main():
     close(fit.baseline_side(210.0, 40.0, 0.0, 250.0), 250.0, 1e-9,
           "baseline_side lehnt ein Ziel genau auf der Achsgrenze ab")
 
+    # --- 17: sweep_quality mit Randabstand ---
+    # Messtag 2026-09-04: der Y-Scheitel lag am unteren Fensterrand, das
+    # Maximum einen Korb daneben (126.5 statt 126.0) -- die Randpruefung
+    # sah ein inneres Maximum, der Parabelfit auf der Flanke lieferte
+    # Y 109 statt 126. Jetzt muss das Maximum mindestens 12,5 % der
+    # Fensterbreite von beiden Raendern entfernt liegen.
+    FLANK = [(126.0, 9291.), (126.5, 9305.), (127.0, 9189.), (127.5, 8936.),
+             (128.0, 8530.), (128.5, 8030.), (129.0, 7452.), (129.5, 6825.),
+             (130.0, 6154.), (130.5, 5485.), (131.0, 4839.), (131.5, 4229.),
+             (132.0, 3676.), (132.5, 3193.), (133.0, 2760.), (133.5, 2384.),
+             (134.0, 2133.)]
+    good, reason = fit.sweep_quality(FLANK, 0.0, 2000.0)
+    ok(not good, "sweep_quality laesst einen Scheitel am Fensterrand durch "
+       "(Messtag-Flanke)")
+    ok("Rand" in reason, "Begruendung nennt den Rand nicht", reason)
+    # Gespiegelt (Scheitel am oberen Rand) genauso
+    good, reason = fit.sweep_quality([(260.0 - x, v) for x, v in FLANK],
+                                     0.0, 2000.0)
+    ok(not good, "sweep_quality laesst einen Scheitel am oberen Rand durch")
+    # Ein Scheitel 1,5 mm vom Rand (von 8 mm) liegt ausserhalb der 12,5 % und
+    # ist erlaubt; genau bei 1,0 mm (= 12,5 %) auch noch.
+    ok(fit.sweep_quality(bell(121.5, AMPL, CURV, POSITIONS), 0.0, 2000.0)[0],
+       "sweep_quality lehnt einen Scheitel 1,5 mm vom Rand ab")
+    ok(fit.sweep_quality(bell(121.0, AMPL, CURV, POSITIONS), 0.0, 2000.0)[0],
+       "sweep_quality lehnt einen Scheitel genau auf der 12,5-%-Grenze ab")
+    ok(not fit.sweep_quality(bell(120.5, AMPL, CURV, POSITIONS),
+                             0.0, 2000.0)[0],
+       "sweep_quality laesst einen Scheitel 0,5 mm vom Rand durch")
+    # Dichte Scan-Punkte: dasselbe Kriterium ueber die Position, nicht den
+    # Index
+    dense = bell(120.6, AMPL, CURV, [120.0 + 0.0125 * i for i in range(641)])
+    ok(not fit.sweep_quality(dense, 0.0, 2000.0)[0],
+       "sweep_quality bewertet den Rand bei dichten Punkten nach Index statt "
+       "Position")
+
     print("%d Zusicherungen geprueft" % CHECKS[0])
     if FINDINGS:
         for f in FINDINGS:

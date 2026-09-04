@@ -511,3 +511,11 @@ Wiederholbarkeit weiter 1–3 µm. Die Abweichungen zur Kamera liegen bei 0,1–
 - **`G1` mit T1/T2 rechnet den Tool-Offset ein**, die Locator-Kommandos arbeiten in Maschinenkoordinaten. Manuelle Anfahrten dazwischen sind um den Offset verschoben — `NOZZLE_LOCATOR_PARK` und die Locator-Kommandos nehmen.
 - Krümmung des Düsenbuckels: Y ~250 Hz/mm² gegen X ~100 — der Buckel ist in X deutlich breiter (Block länger in X?). `AXIS=DIAG` steht noch aus.
 - Live-3D-Panel und Viewer funktionieren; die Z-Achse muss logarithmisch sein, sonst überstrahlt die Platine alles (behoben).
+
+### 10.4 Umgesetzt nach dem Messtag (Tobi: T0 bleibt drin, Spalt so klein wie möglich)
+
+- **`CALIBRATE_XY_OFFSETS FINE_GAP= MIN_GAP= WARMUP=`**: Spalt und Z-Boden je Lauf ohne Config-Änderung (MIN_GAP ≥ 0,15, weil `holder_top_z` nur auf 0,1–0,2 mm bekannt ist). Ziel: T0 mit kleinstem Spalt messen, damit die Kupferplatine der Sonde so wenig wie möglich zieht. Erwartung aus der Höhenserie (8.3, Steigung zum kleinen Spalt hin *steiler*): bei 0,4 mm bleiben vermutlich ~0,1 mm; deshalb zusätzlich T0 bei zwei Spalten messen und auf Spalt 0 hochrechnen (`NOZZLE_LOCATE GAPS=`).
+- **Sensor-Haltung über den ganzen Lauf mit Aufwärmzeit** (`warmup_time`, Default 60 s): der erste Lauf nach dem Sensorstart lag 80 µm daneben.
+- **`sweep_quality` mit Randabstand** (12,5 % der Fensterbreite, über die Position): die Messtag-Flanke ist als Testfall festgenagelt.
+- **`NOZZLE_LOCATE COARSE=1`**: Grobsuche über `search_span` vor der Feinmessung.
+- Fit 87 Zusicherungen.

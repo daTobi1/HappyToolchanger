@@ -103,7 +103,7 @@ kein `SAVE_CONFIG` nötig. Ergebnisse in `printer.offset.xy_results`
 in `~/printer_data/logs/` (`nozzle_locator_map_*.json`, `map_T*_wide.json`,
 `scan_x_speeds.json`).
 
-**Nächste Schritte in dieser Reihenfolge** (Details §9.4 der offenen Arbeiten):
+**Nächste Schritte in dieser Reihenfolge** (Details §9.4 und §10 der offenen Arbeiten; **nach dem Messtag gilt: Referenztool ohne Sonde oder T0 mit kleinem Spalt, `FINE_GAP=`, Parkpunkt über dem Düsenbuckel des Referenztools, nicht über der Platine**):
 
 1. Bett leer → `G28`, `QUAD_GANTRY_LEVEL`, `G28 Z`,
    `SET_IDLE_TIMEOUT TIMEOUT=3600`, `T0`, `NOZZLE_LOCATOR_PARK` → Sonde

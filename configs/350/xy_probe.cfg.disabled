@@ -60,6 +60,10 @@ min_samples: 200
 # Seitlicher X-Versatz fuer die Freiluft-Basislinie: auf park_z steht die
 # Duese noch 7 mm ueber der Spule (+1.400 Hz). 0 = an Ort und Stelle lesen.
 baseline_offset: 40
+# Aufwaermzeit des Sensors vor der ersten Messung von CALIBRATE_XY_OFFSETS
+# (Sekunden). Der erste Lauf nach dem Sensorstart lag 80 um daneben, nach
+# ~1 min Dauerbetrieb ist die Spule stabil. WARMUP= am Kommando ueberschreibt.
+warmup_time: 60
 # Spulenstrom des LDC1612 (0-31). Einmal mit der Duese auf Messhoehe
 # NOZZLE_LOCATOR_CALIBRATE_DRIVE fahren; SAVE_CONFIG traegt den Wert in den
 # Autosave-Block ein (erst wenn die Halterung vom Bett ist -- der Neustart

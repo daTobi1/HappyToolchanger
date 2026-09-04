@@ -81,6 +81,12 @@ class NozzleLocator:
         # ~1.400 Hz. Neben der Spule ist sie wirklich leer.
         self.baseline_offset = config.getfloat('baseline_offset', 40.0,
                                                minval=0.)
+        # Aufwaermzeit des Sensors vor der ersten Messung eines
+        # Kalibrierlaufs: der erste Lauf nach dem Sensorstart lag am Messtag
+        # 80 um daneben (Spule kalt, Kruemmung 15 % kleiner); nach ~1 min
+        # Dauerbetrieb stabil. CALIBRATE_XY_OFFSETS haelt den Sensor ueber
+        # den ganzen Lauf und wartet beim ersten Halten so lange.
+        self.warmup_time = config.getfloat('warmup_time', 60.0, minval=0.)
         self.runs = config.getint('runs', 3, minval=1)
         self.runs_tolerance = config.getfloat('runs_tolerance', 0.05, above=0.)
         # X->Y-Runden gegen die Kreuzkopplung der 2D-Glocke. 1 genuegt, wenn
@@ -622,7 +628,7 @@ class NozzleLocator:
             "Duese, und stimmt holder_top_z?"
             % (floor, self.last_freq - baseline, target_amplitude))
 
-    def _hold_sensor(self, speed=None):
+    def _hold_sensor(self, speed=None, warmup=None):
         """Haelt den Sensor ueber mehrere Sweeps hinweg am Laufen.
 
         Klippers FixedFreqReader setzt seine Zeitstempel-Regression bei
@@ -644,7 +650,13 @@ class NozzleLocator:
         self._hold_flag = flag
         self.sensor.add_client(lambda msg: flag[0])
         toolhead = self.printer.lookup_object('toolhead')
-        toolhead.dwell(1.0)
+        # Einschwingen der Zeitbasis (1 s) oder Aufwaermen der Spule
+        # (warmup, Kalibrierlauf) -- je nachdem, wer haelt.
+        dwell = max(1.0, warmup or 0.0)
+        if dwell > 5.0:
+            self.gcode.respond_info(
+                "nozzle_locator: Sensor waermt %.0f s auf" % dwell)
+        toolhead.dwell(dwell)
         toolhead.wait_moves()
 
     def _release_sensor(self, speed=None):
@@ -1028,6 +1040,12 @@ class NozzleLocator:
         span = gcmd.get_float('SPAN', self.sweep_span, above=0.)
         step = gcmd.get_float('STEP', self.sweep_step, above=0.)
         speed = gcmd.get_float('SPEED', None, minval=0.)
+        # COARSE=1: erst Grobsuche ueber search_span um die aktuelle
+        # Position, dann fein. Ohne Grobsuche faellt der Fit auf eine
+        # Flanke herein, wenn der Scheitel nicht im 8-mm-Fenster liegt
+        # (Messtag 2026-09-04) -- sweep_quality faengt das jetzt, aber die
+        # Grobsuche ist der Weg dorthin.
+        coarse = gcmd.get_int('COARSE', 0)
         gaps_raw = gcmd.get('GAPS', None)
         gaps = None
         if gaps_raw:
@@ -1070,6 +1088,13 @@ class NozzleLocator:
                 gcmd.respond_info(self._coupling_advice(r['rho']))
                 return
             center = here[0 if axis == 'X' else 1]
+            if coarse:
+                center, amp = self.coarse_locate(axis, center, baseline)
+                gcmd.respond_info("nozzle_locator Grobsuche %s: %.2f "
+                                  "(%+.0f Hz)" % (axis, center, amp))
+                coord = [None, None, None]
+                coord[0 if axis == 'X' else 1] = center
+                self._move(coord, self.move_speed)
             result = self.locate(axis, center, baseline, runs=runs,
                                  span=span, step=step, speed=speed)
             gcmd.respond_info(
