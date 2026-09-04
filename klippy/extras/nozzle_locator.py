@@ -1148,7 +1148,14 @@ class NozzleLocator:
                        r['curvature'], amp))
                 center = r['center']
         finally:
+            # Zurueck auf die Ausgangshoehe UND auf den letzten Scheitel:
+            # ein Sweep endet am Fensterrand, und ein Folgekommando fiel
+            # am Messtag genau darauf herein (7 mm neben dem Scheitel,
+            # Amplitude zu klein).
             self._move([None, None, here[2]], self.approach_speed)
+            coord = [None, None, None]
+            coord[idx] = center
+            self._move(coord, self.move_speed)
         if len(rows) >= 2:
             g0, _, r0 = rows[0]
             g1, _, r1 = rows[-1]
