@@ -70,3 +70,30 @@ if (findings.length) {
   process.exit(1);
 }
 console.log('ALLE TESTS OK');
+
+// ---- 3D: mapToSurface (webapp/js/map3d.js) ----------------------------
+const Map3d = require(path.join(__dirname, '..', 'webapp', 'js', 'map3d.js'));
+{
+  let c2 = 0; const f2 = [];
+  const ok2 = (cond, what, detail) => { c2++; if (!cond) f2.push(what + (detail ? ' -- ' + detail : '')); };
+  const live = { label: 'T0', baseline: 1000, x: 124, y: 130, pitch: 1,
+                 rows_total: 3, rows_done: 2, done: false,
+                 xs: [122.5, 123.5], ys: [129.5, 130.5],
+                 values: [[1100, 1600], [1050, null]] };
+  const s = Map3d.mapToSurface(live);
+  ok2(JSON.stringify(s.x) === '[122.5,123.5]' && JSON.stringify(s.y) === '[129.5,130.5]',
+      'mapToSurface uebernimmt die Achsen nicht');
+  ok2(s.z[0][1] === 600 && s.z[1][0] === 50, 'mapToSurface zieht die Basislinie nicht ab',
+      JSON.stringify(s.z));
+  ok2(s.z[1][1] === null, 'mapToSurface macht aus null einen Wert');
+  ok2(s.progress === 2 / 3, 'mapToSurface meldet den Fortschritt nicht', String(s.progress));
+  ok2(s.title.indexOf('T0') === 0 && /2\s*\/\s*3/.test(s.title),
+      'mapToSurface: Titel ohne Label oder Fortschritt', s.title);
+  ok2(Map3d.mapToSurface(null) === null && Map3d.mapToSurface({ xs: [] }) === null,
+      'mapToSurface liefert fuer leere Raster kein null');
+  const done = Object.assign({}, live, { done: true, rows_done: 3, file: 'm.json' });
+  ok2(/fertig/i.test(Map3d.mapToSurface(done).title), 'mapToSurface: fertiges Raster nicht markiert');
+  console.log(c2 + ' Zusicherungen (3D) geprueft');
+  if (f2.length) { f2.forEach(f => console.log('BEFUND: ' + f)); process.exit(1); }
+  console.log('ALLE TESTS OK (3D)');
+}

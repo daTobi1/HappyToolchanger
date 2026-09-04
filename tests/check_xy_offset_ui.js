@@ -867,3 +867,33 @@ function runParkTest() {
   check('Leveling referenziert Z neu und weist applied nach',
     /G28 Z/.test(lv) && /waitForPrinterIdle/.test(lv) && /applied/.test(lv));
 })();
+
+// --------------------------------------------------------------------
+// Teil N: xyMapCommand() - baut das NOZZLE_LOCATOR_MAP-Kommando aus den
+// Feldern des Raster-Panels. Reine Funktion; Validierung gehoert hierher,
+// damit ein Tippfehler nicht als Maschinenbefehl rausgeht.
+// --------------------------------------------------------------------
+{
+  eval(grab('xyMapCommand'));
+  var c = xyMapCommand({ width: 20, height: 20, pitch: 1, label: 'T0' });
+  check('xyMapCommand: Standardfelder',
+        c === 'NOZZLE_LOCATOR_MAP WIDTH=20 HEIGHT=20 PITCH=1 LABEL=T0', c);
+  c = xyMapCommand({ width: '12.5', height: '8', pitch: '0.5', label: '' });
+  check('xyMapCommand: Zahlen als Text, leeres Label weggelassen',
+        c === 'NOZZLE_LOCATOR_MAP WIDTH=12.5 HEIGHT=8 PITCH=0.5', c);
+  var threw = false;
+  try { xyMapCommand({ width: 0, height: 20, pitch: 1 }); } catch (e) { threw = true; }
+  check('xyMapCommand: Breite 0 wird abgelehnt', threw);
+  threw = false;
+  try { xyMapCommand({ width: 20, height: 20, pitch: 11 }); } catch (e) { threw = true; }
+  check('xyMapCommand: Raster groesser als halbe Hoehe wird abgelehnt', threw);
+  threw = false;
+  try { xyMapCommand({ width: 20, height: 20, pitch: 1, label: 'T0 X=5' }); } catch (e) { threw = true; }
+  check('xyMapCommand: Label mit Leerzeichen/Gleichheitszeichen wird abgelehnt', threw);
+  threw = false;
+  try { xyMapCommand({ width: 'abc', height: 20, pitch: 1 }); } catch (e) { threw = true; }
+  check('xyMapCommand: Unsinn statt Zahl wird abgelehnt', threw);
+  threw = false;
+  try { xyMapCommand({ width: 200, height: 20, pitch: 1 }); } catch (e) { threw = true; }
+  check('xyMapCommand: mehr als 100 mm wird abgelehnt', threw);
+}

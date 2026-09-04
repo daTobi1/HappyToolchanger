@@ -351,3 +351,8 @@ Farbrampe. Läuft lokal ohne DOM:
 ```bash
 node tests/check_nozzle_map.js
 ```
+
+Seit der Live-3D-Ansicht prüft `check_nozzle_map.js` zusätzlich `mapToSurface`
+aus `webapp/js/map3d.js` (Basislinie, `null`-Zellen, Fortschritt, Titel), und
+`check_xy_offset_ui.js` das Kommando-Bauen `xyMapCommand()` des Raster-Panels
+(Grenzen, Label-Zeichen, Unsinn statt Zahl).

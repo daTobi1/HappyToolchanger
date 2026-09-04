@@ -131,6 +131,8 @@ class NozzleLocator:
         # Dateiname des letzten Rasters (NOZZLE_LOCATOR_MAP), fuer den Viewer
         self.last_map_file = None
         self.last_baseline = None
+        # Laufendes Raster fuer die Live-3D-Ansicht der Webapp
+        self.live_map = None
         # Zuletzt per NOZZLE_LOCATOR_PARK angefahrene Position. Der
         # Messlauf nimmt sie, damit eine im Assistenten geaenderte Position
         # ohne FIRMWARE_RESTART gilt.
@@ -171,6 +173,7 @@ class NozzleLocator:
             'last_map_file': self.last_map_file,
             'last_baseline': self.last_baseline,
             'drive_current': self.sensor.dccal.get_drive_current(),
+            'map': self.live_map,
         }
 
     # ------------------------------------------------------------------
@@ -379,6 +382,16 @@ class NozzleLocator:
         lead = 3.0 * self.sweep_step
         rows = []
         t_start = time.time()
+        # Live-Bild fuer die Webapp: nach jeder Zeile das Gitter bis hierhin
+        # in den Status legen (printer.nozzle_locator.map). 30 x 20 Zellen
+        # sind fuer Moonrakers Polling unkritisch.
+        self.live_map = {
+            'label': label, 'x': cx, 'y': cy, 'z': z,
+            'gap': z - self.holder_top_z, 'pitch': pitch,
+            'width': width, 'height': height, 'baseline': baseline,
+            'rows_total': n_rows, 'rows_done': 0, 'done': False,
+            'file': None, 'xs': [], 'ys': [], 'values': [],
+        }
         self._hold_sensor()
         try:
             for j in range(n_rows):
@@ -390,6 +403,13 @@ class NozzleLocator:
                                    (1.0, 0.0), lo, hi, lead, speed,
                                    through=(cx, y), log=False)
                 rows.append((y, track))
+                try:
+                    part = fit.raster_grid(rows, x_lo, x_hi, pitch)
+                    self.live_map = dict(self.live_map, rows_done=j + 1,
+                                         xs=part['xs'], ys=part['ys'],
+                                         values=part['values'])
+                except ValueError:
+                    pass
         finally:
             self._release_sensor()
             self.state = 'idle'
@@ -421,6 +441,9 @@ class NozzleLocator:
         }
         path = self._write_json(gcmd, name, "nozzle_locator_map", data)
         self.last_map_file = os.path.basename(path)
+        self.live_map = dict(self.live_map, done=True, file=self.last_map_file,
+                             xs=grid['xs'], ys=grid['ys'],
+                             values=grid['values'])
         gcmd.respond_info(
             "nozzle_locator Raster %s: %d Zeilen x %.0f mm, %d Samples in "
             "%.0f s, Spalt %.2f mm%s. Maximum %+.0f Hz bei X%.1f Y%.1f. "

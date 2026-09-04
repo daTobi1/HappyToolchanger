@@ -105,9 +105,10 @@ des Amplituden-Laufs liegen in `printer.offset.xy_results` und
    durch („nur N Samples im Fenster"): `scan_speed: 0` und weiter im
    Punktmodus. **Dabei zusehen, ob Y stehen bleibt** — die Bahngeometrie
    (`fit.scan_line`) wurde abends korrigiert und ist nie gefahren.
-3. **Raster:** `NOZZLE_LOCATOR_MAP LABEL=T0` auf Messhöhe, dann dasselbe
-   mit T1 beim gleichen Spalt; in `webapp/map.html` als A − B ansehen.
-   Zeigt die T0-Sonde direkt (§9.5).
+3. **Raster:** `NOZZLE_LOCATOR_MAP LABEL=T0` auf Messhöhe (oder aus dem
+   Panel „Raster" im XY-Block der Webapp, das zeigt es live in 3D), dann
+   dasselbe mit T1 beim gleichen Spalt; in `webapp/map.html` als A − B
+   ansehen. Zeigt die T0-Sonde direkt (§9.5).
 4. **Höhenserie** `NOZZLE_LOCATE AXIS=Y GAPS=3,2,1.5,1,0.75,0.5`, danach
    `NOZZLE_LOCATOR_DUMP`. Die JSON-Datei aus `~/printer_data/logs/` holen —
    sie entscheidet zwischen Feinspalt, Extrapolation und Zwei-Höhen-Differenz.

@@ -120,12 +120,26 @@
     return { values: rasterValues(m), grid: m.grid, map: m, diverging: false };
   }
 
+  // 3D-Flaeche (js/map3d.js) fuer die aktuelle Anzeige: A, B oder A - B.
+  // Fuer die Differenz ein Pseudo-Raster ohne Basislinie.
+  function draw3d(cur) {
+    var el = $('map3d');
+    if (!el || !state.show3d || typeof NozzleMap3d === 'undefined') return;
+    if (!cur) { el.textContent = ''; return; }
+    var pseudo = { label: (state.mode === 'diff') ? 'A − B' : (cur.map.label || 'Raster'),
+                   baseline: 0, x: cur.map.x, y: cur.map.y, gap: cur.map.gap,
+                   done: true, rows_total: cur.grid.ys.length, rows_done: cur.grid.ys.length,
+                   xs: cur.grid.xs, ys: cur.grid.ys, values: cur.values };
+    NozzleMap3d.renderMap3d(el, pseudo, 'map-' + state.mode);
+  }
+
   function draw() {
     var cur = currentValues();
     var canvas = $('map');
     var ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     $('legend').innerHTML = '';
+    draw3d(cur);
     if (!cur) return;
 
     var vals = cur.values.map(function (row) {
@@ -325,6 +339,12 @@
     document.querySelectorAll('input[name=scale]').forEach(function (r) {
       r.onchange = function () { state.scale = r.value; draw(); };
     });
+    $('show3d').onclick = function () {
+      state.show3d = !state.show3d;
+      $('map3d').style.height = state.show3d ? '480px' : '0';
+      $('show3d').textContent = state.show3d ? '3D ausblenden' : '3D-Ansicht';
+      draw();
+    };
     if ($('ip').value && $('file-a').value) loadFromPrinter('a');
     if ($('ip').value && $('file-b').value) loadFromPrinter('b');
   }

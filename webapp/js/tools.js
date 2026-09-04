@@ -2886,8 +2886,122 @@ function xyOffsetSection() {
       '<button class="btn btn-sm btn-primary" id="xy-wizard-btn">Assistent&hellip;</button>' +
     '</div>' +
     '<div id="xy-sparkline" class="mb-2"></div>' +
+    xyMapPanel() +
     '<div id="xy-offset-body"></div>' +
   '</div>';
+}
+
+// Raster-Panel: startet NOZZLE_LOCATOR_MAP und zeigt das Bild live in 3D
+// (printer.nozzle_locator.map, gezeichnet von js/map3d.js). Der Kopf muss
+// dafuer schon auf Messhoehe ueber der Sonde stehen -- das Kommando prueft
+// das, das Panel bewegt Z nie selbst.
+function xyMapPanel() {
+  function num(id, label, val, step) {
+    return '<div class="col-auto"><label class="form-label small mb-0" for="' +
+      id + '">' + label + '</label><input type="number" step="' + step +
+      '" min="0" class="form-control form-control-sm" id="' + id +
+      '" value="' + val + '" style="width:5.5em"></div>';
+  }
+  return '<details class="mb-2" id="xy-map-panel">' +
+    '<summary class="small text-muted">Raster (C-Scan) mit Live-3D-Ansicht</summary>' +
+    '<div class="row g-2 align-items-end mt-1">' +
+      num('xy-map-width', 'Breite mm', 20, 1) +
+      num('xy-map-height', 'H&ouml;he mm', 20, 1) +
+      num('xy-map-pitch', 'Raster mm', 1, 0.5) +
+      '<div class="col-auto"><label class="form-label small mb-0" for="xy-map-label">Label</label>' +
+      '<input class="form-control form-control-sm" id="xy-map-label" value="T0" style="width:5.5em"></div>' +
+      '<div class="col-auto"><button class="btn btn-sm btn-outline-primary" id="xy-map-start" ' +
+      'onclick="xyStartMap()">Raster starten</button></div>' +
+    '</div>' +
+    '<div id="xy-map-status" class="small text-muted mt-1"></div>' +
+    '<div id="xy-map3d" style="width:100%;max-width:640px;height:420px"></div>' +
+  '</details>';
+}
+
+// Baut das Kommando aus den Feldern. Wirft bei Unsinn, damit nie ein
+// kaputter Maschinenbefehl rausgeht. Getestet in check_xy_offset_ui.js.
+function xyMapCommand(p) {
+  function num(v, name, lo, hi) {
+    var n = parseFloat(v);
+    if (!isFinite(n) || n <= lo || n > hi) {
+      throw new Error(name + ' muss zwischen ' + lo + ' und ' + hi + ' mm liegen');
+    }
+    return n;
+  }
+  var w = num(p.width, 'Breite', 0, 100);
+  var h = num(p.height, 'Hoehe', 0, 100);
+  var pitch = num(p.pitch, 'Raster', 0, Math.min(w, h) / 2);
+  var label = String(p.label || '').trim();
+  if (label && !/^[A-Za-z0-9_.-]{1,16}$/.test(label)) {
+    throw new Error('Label: nur Buchstaben, Ziffern, _ . - (max. 16)');
+  }
+  function fmt(n) { return String(+n.toFixed(3)); }
+  var cmd = 'NOZZLE_LOCATOR_MAP WIDTH=' + fmt(w) + ' HEIGHT=' + fmt(h) +
+            ' PITCH=' + fmt(pitch);
+  if (label) cmd += ' LABEL=' + label;
+  return cmd;
+}
+
+function xyStartMap() {
+  var cmd;
+  try {
+    cmd = xyMapCommand({
+      width: $('#xy-map-width').val(), height: $('#xy-map-height').val(),
+      pitch: $('#xy-map-pitch').val(), label: $('#xy-map-label').val()
+    });
+  } catch (e) {
+    $('#xy-map-status').text(e.message);
+    return Promise.resolve(false);
+  }
+  return confirmDialog({
+    title: 'Raster starten',
+    body: '<p class="small">Der Kopf f&auml;hrt auf der aktuellen H&ouml;he ' +
+          'Zeile f&uuml;r Zeile &uuml;ber die Sonde, davor einmal auf ' +
+          '<code>park_z</code> und seitlich f&uuml;r die Basislinie. Er muss ' +
+          'jetzt auf Messh&ouml;he &uuml;ber der Sonde stehen. Dauer etwa ' +
+          'eine Minute je 20 Zeilen.</p><p class="mb-0"><code>' +
+          escapeHtml(cmd) + '</code></p>',
+    okLabel: 'Starten'
+  }).then(function (ok) {
+    if (!ok) return false;
+    $('#xy-map-start').prop('disabled', true);
+    $('#xy-map-status').text('Raster läuft …');
+    // Halterung steht auf dem Bett: kein Recovery-Knopf, und {transport}
+    // heisst "laeuft noch" -- die Live-Ansicht zeigt den Fortschritt.
+    return xySendMounted(cmd, 'Raster').then(function () {
+      return true;
+    }, function (e) {
+      $('#xy-map-status').text(e.message);
+      $('#xy-map-start').prop('disabled', false);
+      return false;
+    });
+  });
+}
+
+// Live-3D aus printer.nozzle_locator.map. Laeuft im selben Poll wie die
+// Sparkline. Nach dem letzten Zeile: Knopf wieder frei, Link zur 2D-Ansicht.
+var _xyMapKey = null;
+function renderXyMap3d(status) {
+  var el = document.getElementById('xy-map3d');
+  if (!el || typeof NozzleMap3d === 'undefined') return;
+  var map = status && status.map;
+  if (!map || !map.xs || !map.xs.length) return;
+  var key = (map.label || '') + ':' + map.rows_total + ':' + map.x + ':' + map.y;
+  if (key !== _xyMapKey) {
+    _xyMapKey = key;
+    $('#xy-map-panel').prop('open', true);
+  }
+  NozzleMap3d.renderMap3d(el, map, key);
+  var st = $('#xy-map-status');
+  if (map.done) {
+    $('#xy-map-start').prop('disabled', false);
+    var url = 'map.html?ip=' + encodeURIComponent(printerIp) +
+              (map.file ? '&a=' + encodeURIComponent(map.file) : '');
+    st.html('Fertig' + (map.file ? ': <code>' + escapeHtml(map.file) + '</code>' : '') +
+            ' &middot; <a href="' + url + '" target="_blank">2D-Ansicht und Differenzbild</a>');
+  } else {
+    st.text('Zeile ' + map.rows_done + ' von ' + map.rows_total);
+  }
 }
 
 $(document).on("change", 'input[name="xy-method"]', function () {
@@ -3025,8 +3139,10 @@ function pollXySparkline() {
     return Promise.resolve(
       $.get(printerUrl(printerIp, "/printer/objects/query?nozzle_locator"))
     ).then(function (data) {
-      renderXySparkline(data && data.result && data.result.status
-                          && data.result.status.nozzle_locator);
+      var st = data && data.result && data.result.status
+               && data.result.status.nozzle_locator;
+      renderXySparkline(st);
+      renderXyMap3d(st);
     }, function () { renderXySparkline(null); });
   });
 }

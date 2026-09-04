@@ -13,6 +13,7 @@
     #legend { max-width: 720px; }
     .slot { border: 1px solid #dee2e6; border-radius: 6px; padding: .75rem; background: #fff; }
   </style>
+  <script src="./js/map3d.js"></script>
   <script src="./js/map.js"></script>
 </head>
 <body>
@@ -75,9 +76,13 @@
       <label class="me-2"><input type="radio" name="scale" value="linear" checked> linear</label>
       <label><input type="radio" name="scale" value="log"> logarithmisch</label>
     </div>
+    <div>
+      <button id="show3d" class="btn btn-sm btn-outline-secondary">3D-Ansicht</button>
+    </div>
   </div>
 
   <canvas id="map" width="720" height="720"></canvas>
+  <div id="map3d" style="width:100%;max-width:720px;height:0;overflow:hidden"></div>
   <div id="legend" class="mt-2"></div>
   <div id="peak" class="small mt-1"></div>
   <div id="hover" class="small text-muted" style="min-height:1.2em"></div>
