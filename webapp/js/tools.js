@@ -3125,8 +3125,17 @@ function renderXyBlock() {
     '<thead><tr><th>Tool</th><th>aktuell X/Y</th><th>gemessen X/Y</th>' +
     '<th>&Delta;</th><th>Z-Vgl.</th><th>Drift-Bias</th><th></th></tr></thead>' +
     '<tbody>' + rows + '</tbody></table>' +
+    '<div class="d-flex flex-wrap gap-2 justify-content-center">' +
     '<button class="btn btn-sm btn-primary" onclick="applyAllXyOffsets()">' +
-    'Alle &uuml;bernehmen + schreiben</button>';
+    'Alle &uuml;bernehmen + schreiben</button>' +
+    // Separate Option (Tobi, 2026-09-05): Z aus dem Sonden-Lauf, nur im
+    // Eddy-Verfahren und nur, wenn ein Lauf z_compare geliefert hat.
+    ((_xyMethod === 'eddy' && Object.keys(xyProbeZValues(_xyResults, ref, _toolGcodeOffsets).values).length)
+      ? '<button class="btn btn-sm btn-outline-secondary" onclick="applyProbeZOffsets()" ' +
+        'title="gcode_z_offset je Tool aus der Messhoehen-Differenz des Sonden-Laufs (z_compare), Bezug: Referenztool">' +
+        'Z-Offsets aus der Sonde &uuml;bernehmen + schreiben</button>'
+      : '') +
+    '</div>';
 }
 
 // Messbild je Tool (Tobi, 2026-09-04): Klick auf den Toolnamen in der
@@ -3705,6 +3714,76 @@ function applyXyOffset(toolNr, alsoWrite) {
                          escapeHtml(detail || "Unbekannter Fehler"))
         .then(function () { return false; });
     });
+}
+
+// Z-Offsets aus der Sonde (Tobi, 2026-09-05, als separate Option): der
+// XY-Lauf legt je Tool die Messhoehe z_reached fest und meldet
+// z_compare = z_reached(t) - z_reached(ref). Dieselbe Konvention wie der
+// Z-Switch-Lauf (gcode_z_offset(n) = z_trigger(n) - z_trigger(ref)), also
+// gcode_z_offset(t) = gcode_z_offset(ref, aus der Config) + z_compare(t).
+// Im Spaltmodus (Z_MODE=switch) kommt z_compare aus den Z-Switch-Daten und
+// reproduziert sie; im Amplitudenmodus ist es die Hoehe gleicher Amplitude
+// -- die haengt auch vom Signal des Tools ab (T1 8640 gegen T2 11969 Hz bei
+// gleichem Spalt, Lauf 12), also mit Vorsicht.
+function xyProbeZValues(results, refTool, toolGcodeOffsets) {
+  var refOff = (toolGcodeOffsets && toolGcodeOffsets[String(refTool)]) || {};
+  var refZ = (typeof refOff.z === 'number') ? refOff.z : 0;
+  var values = {};
+  var mode = null;
+  Object.keys(results || {}).filter(function (k) { return /^\d+$/.test(k); }).forEach(function (t) {
+    if (String(t) === String(refTool)) return;
+    var e = results[t];
+    if (!e || typeof e.z_compare !== 'number') return;
+    values[t] = { z: (refZ + e.z_compare).toFixed(6), zCompare: e.z_compare };
+    if (e.z_mode) mode = e.z_mode;
+  });
+  return { values: values, mode: mode, refZ: refZ };
+}
+
+function applyProbeZOffsets() {
+  var ref = xyRefTool();
+  var zv = xyProbeZValues(_xyResults, ref, _toolGcodeOffsets);
+  var names = Object.keys(zv.values).sort(function (a, b) { return parseInt(a, 10) - parseInt(b, 10); });
+  if (!names.length) {
+    if (typeof showToast === 'function') showToast("Keine Z-Werte aus der Sonde vorhanden", "warning");
+    return Promise.resolve(false);
+  }
+  var requests = names.map(function (t) { return { tool: t, key: "gcode_z_offset", section: "tool T" + t }; });
+  return fetchToolConfigValues(requests).then(function (cur) {
+    var entries = names.map(function (t) {
+      return { tool: t, file: "toolchanger/tools/T" + t + ".cfg", section: "tool T" + t,
+               changes: [{ key: "gcode_z_offset", from: cur[t + "|gcode_z_offset"], to: zv.values[t].z }] };
+    });
+    var note = 'Z aus dem Sonden-Lauf: gcode_z_offset(T) = gcode_z_offset(T' + escapeHtml(ref) +
+      ') (' + zv.refZ.toFixed(3) + ') + Messh&ouml;hen-Differenz z_compare.<br>' +
+      (zv.mode === 'amplitude'
+        ? '<span class="text-warning">Amplitudenmodus: H&ouml;he gleicher Amplitude. Die h&auml;ngt auch vom ' +
+          'Signal des Tools ab, nicht nur von der D&uuml;senl&auml;nge -- nur &uuml;bernehmen, wenn das gewollt ist.</span>'
+        : 'Spaltmodus: die Messh&ouml;hen kamen aus den Z-Switch-Daten, die Werte entsprechen dem Z-Switch-Lauf.') +
+      '<br>"Current" kommt aus der Config-Datei. Die Werte werden auch zur Laufzeit per ' +
+      '<code>SET_TOOL_GCODE_OFFSET</code> gesetzt.';
+    return confirmDialog({
+      title: "Z-Offsets aus der Sonde übernehmen?",
+      body: offsetChangeListHtml(entries, note),
+      okLabel: "OK — übernehmen + schreiben", okClass: "btn-success", cancelLabel: "Abbrechen"
+    });
+  }).then(function (ok) {
+    if (!ok) return false;
+    var script = names.map(function (t) { return "SET_TOOL_GCODE_OFFSET T=" + t + " Z=" + zv.values[t].z; }).join('\n');
+    var toolOffsets = {};
+    names.forEach(function (t) { toolOffsets[t] = { z: zv.values[t].z }; });
+    return sendGcodeWithRecovery(script, "Z-Offsets aus der Sonde").then(function (r) {
+      if (!r || !r.ok) return false;
+      return updateToolConfigOffsets(toolOffsets).then(function () {
+        if (typeof showToast === 'function') showToast("Z-Offsets aus der Sonde gesetzt und geschrieben", "success");
+        return true;
+      });
+    });
+  }).catch(function (err) {
+    var detail = gcodeErrorMessage(err) || (err && err.message) || "Unbekannter Fehler";
+    return alertDialog("Z-Offsets aus der Sonde fehlgeschlagen", '<p class="mb-0">' + escapeHtml(detail) + '</p>')
+      .then(function () { return false; });
+  });
 }
 
 // "Alle uebernehmen + schreiben": sammelt die Aenderungen aller Tools mit

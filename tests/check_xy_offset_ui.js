@@ -1166,3 +1166,28 @@ function runParkTest() {
   check('xyShowFitRadius: Vorschlag wird als Default ins Feld geschrieben',
         /xy-fit-radius'\)\.val\(String\(sug\.radius\)\)/.test(grab('xyShowFitRadius')) && /extraLabel/.test(grab('xyShowFitRadius')));
 }
+
+// --------------------------------------------------------------------
+// Teil N+8: Z-Offsets aus der Sonde (Tobi, 2026-09-05, separate Option).
+// gcode_z_offset(t) = gcode_z_offset(ref) + z_compare(t), dieselbe
+// Konvention wie der Z-Switch-Lauf (z_trigger(n) - z_trigger(ref)).
+// --------------------------------------------------------------------
+{
+  eval(grab('xyProbeZValues'));
+  var resZ = { ref_tool: 0,
+    '0': { x: 0, y: 0, z_compare: 0, z_mode: 'switch' },
+    '1': { x: 0.5, y: -5, z_compare: 0.31, z_mode: 'switch' },
+    '2': { x: 0.6, y: -4, z_compare: -0.215, z_mode: 'switch' },
+    '3': { x: 0.1, y: -6 } };
+  var off = { '0': { x: 0, y: 0, z: 0 }, '1': { x: 0.5, y: -5, z: -0.055 }, '2': { x: 0.6, y: -4, z: 0.103 }, '3': { x: 0, y: 0, z: 0 } };
+  var zv = xyProbeZValues(resZ, 0, off);
+  check('xyProbeZValues: Referenz ausgelassen', zv.values['0'] === undefined);
+  check('xyProbeZValues: Z = Referenz-Z + z_compare', zv.values['1'].z === '0.310000' && zv.values['2'].z === '-0.215000', JSON.stringify(zv.values));
+  check('xyProbeZValues: ohne z_compare kein Wert', zv.values['3'] === undefined);
+  check('xyProbeZValues: Modus erkannt', zv.mode === 'switch');
+  var off2 = Object.assign({}, off, { '0': { x: 0, y: 0, z: 0.1 } });
+  check('xyProbeZValues: Referenz-Z aus der Config geht ein', xyProbeZValues(resZ, 0, off2).values['1'].z === '0.410000');
+  var zvA = xyProbeZValues({ ref_tool: 1, '1': { z_compare: 0, z_mode: 'amplitude' }, '2': { z_compare: 0.2, z_mode: 'amplitude' } }, 1, off);
+  check('xyProbeZValues: Amplitudenmodus wird gemeldet, Bezug ist das Referenztool', zvA.mode === 'amplitude' && zvA.values['2'].z === '0.145000', JSON.stringify(zvA));
+  check('XY-Block: separater Knopf fuer Z aus der Sonde', /applyProbeZOffsets\(/.test(grab('renderXyBlock')));
+}
