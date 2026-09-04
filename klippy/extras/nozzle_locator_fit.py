@@ -289,3 +289,37 @@ def raster_grid(rows, x_lo, x_hi, pitch):
         ys.append(y)
         values.append(row)
     return {'xs': xs, 'ys': ys, 'values': values}
+
+
+def clamp_scan_speed(speed, span, rate, min_samples):
+    """Begrenzt die Scan-Geschwindigkeit so, dass mindestens min_samples
+    Samples im Fenster liegen. -> mm/s
+
+    Samples im Fenster = rate * span / speed. Statt bei zu wenigen Samples
+    abzubrechen, wird gebremst -- so macht es auch EddySeek. Bei 400 Hz und
+    8 mm Fenster sind 200 Samples ab 16 mm/s unterschritten.
+    """
+    if min_samples <= 0:
+        raise ValueError("min_samples muss positiv sein")
+    limit = rate * span / float(min_samples)
+    return min(speed, limit)
+
+
+def baseline_side(x, offset, x_min, x_max):
+    """Ziel-x fuer die Basislinie neben der Spule: um `offset` von x weg,
+    bevorzugt +X, sonst -X, innerhalb [x_min, x_max]. Wirft ValueError,
+    wenn beides ausserhalb liegt.
+
+    Auf park_z steht die Duese noch 7 mm ueber der Spule und hebt die
+    Basislinie um ~1.400 Hz (offene Arbeiten 8.6). Seitlich versetzt ist
+    die Spule wirklich leer -- und park_z ist per Definition die freie
+    Fahrhoehe, also ist der Weg dorthin sicher.
+    """
+    eps = 1e-9
+    if x + offset <= x_max + eps:
+        return x + offset
+    if x - offset >= x_min - eps:
+        return x - offset
+    raise ValueError(
+        "Kein Platz fuer die Basislinie: x=%.1f +- %.1f liegt ausserhalb "
+        "von %.1f..%.1f" % (x, offset, x_min, x_max))

@@ -54,6 +54,16 @@ scan_speed: 5
 # Differenz bei zwei Geschwindigkeiten, NOZZLE_LOCATE SPEED=), traegt ihn
 # hier ein.
 #sample_latency: 0.0
+# Mindestzahl Samples je Scan-Fenster; darueber wird gebremst statt
+# abgebrochen (400 Hz * 8 mm / 200 = 16 mm/s Obergrenze fuer die Feinmessung).
+min_samples: 200
+# Seitlicher X-Versatz fuer die Freiluft-Basislinie: auf park_z steht die
+# Duese noch 7 mm ueber der Spule (+1.400 Hz). 0 = an Ort und Stelle lesen.
+baseline_offset: 40
+# Spulenstrom des LDC1612 (0-31). Einmal mit der Duese auf Messhoehe
+# NOZZLE_LOCATOR_CALIBRATE_DRIVE fahren; SAVE_CONFIG traegt den Wert ein
+# (erst wenn die Halterung vom Bett ist -- der Neustart loescht das Homing).
+#reg_drive_current: 15
 runs: 3
 runs_tolerance: 0.05
 xy_iterations: 1

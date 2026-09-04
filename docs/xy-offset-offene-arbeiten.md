@@ -11,7 +11,7 @@ Die XY-Offset-Kalibrierung per Eddy-Spule ist entworfen, gebaut und am 250er ein
 
 | Task | Zustand |
 |---|---|
-| 1 — Fit-Mathematik (`nozzle_locator_fit.py`) | **fertig**, 71 Zusicherungen, getestet (Scan- und Raster-Bausteine seit 2026-09-04, Abschnitt 9) |
+| 1 — Fit-Mathematik (`nozzle_locator_fit.py`) | **fertig**, 80 Zusicherungen, getestet (Scan-, Raster- und Klemm-Bausteine seit 2026-09-04, Abschnitt 9) |
 | 2 — Sensoranbindung (`nozzle_locator.py`) | **fertig**, am 250er verifiziert (2026-09-03), siehe 2.1 |
 | 3 — Z-Anfahrt, Sweep, Ortung | **fertig**, am 250er verifiziert (2026-09-04), siehe Abschnitt 8 |
 | 4 — Extraktion `_resolve_tool_run()` | **gestrichen** (siehe unten) |
@@ -20,7 +20,7 @@ Die XY-Offset-Kalibrierung per Eddy-Spule ist entworfen, gebaut und am 250er ein
 | 7 — XY-Block in der Webapp | **vorgebaut ohne Hardware**, Node-Tests gruen, siehe Abschnitt 4 |
 | 8–9 — Assistent, Kamera-Position | **vorgebaut ohne Hardware**, siehe Abschnitt 4 |
 
-Die Webapp-Tests umfassen 63 Zusicherungen (`tests/check_xy_offset_ui.js`), der Fit 71 (`tests/check_nozzle_locator_fit.py`). Ein Abschluss-Review über den gesamten Umfang ist gelaufen; sein einziger blockierender Befund (`transport` als Erfolg behandelt) ist behoben, siehe 4.5.
+Die Webapp-Tests umfassen 63 Zusicherungen (`tests/check_xy_offset_ui.js`), der Fit 80 (`tests/check_nozzle_locator_fit.py`). Ein Abschluss-Review über den gesamten Umfang ist gelaufen; sein einziger blockierender Befund (`transport` als Erfolg behandelt) ist behoben, siehe 4.5.
 
 **Task 4 wurde bewusst gestrichen.** Die Annahme, `CALIBRATE_ALL_Z_OFFSETS` und `CALIBRATE_PROBE_OFFSETS` lösten dieselbe Tool-Auswahl doppelt, war falsch — sie haben absichtlich verschiedene Politiken (u. a. wählt das zweite ohne `TOOLS` nur Tools mit vorhandenen Z-Switch-Daten und erzwingt das Referenztool weder in die Liste noch an deren Anfang). Ein gemeinsamer Helfer hätte das zweite Kommando im Normalfall verändert. Details in Task 4 des Plans.
 
@@ -446,3 +446,11 @@ Quellen: TI-Applikationsbericht SNOA931 „LDC1612/LDC1614 Linear Position Sensi
 - Höhere oder niedrigere Abtastrate (siehe oben).
 - Schnellere Scans als ~10 mm/s für die Feinmessung: die Latenz-Verschiebung `v·Δt` wächst, der Gewinn an Zeit ist bei 2 s je Sweep bedeutungslos.
 - Ein größerer Spalt zugunsten von „mehr Fläche im Bild": TI und 8.3 zeigen in dieselbe Richtung, klein bleiben.
+
+**Umgesetzt (2026-09-04, spät):**
+
+- **Geschwindigkeitsklemme** `min_samples` (Default 200): `_scan` bremst auf `rate · span / min_samples`, statt bei zu wenigen Samples abzubrechen (`fit.clamp_scan_speed`). Für 8 mm bei 400 Hz sind das höchstens 16 mm/s, die Grobsuche über 30 mm darf 60.
+- **`NOZZLE_LOCATOR_CALIBRATE_DRIVE`**: wie Klippers `LDC_CALIBRATE_DRIVE_CURRENT`, aber mit Höhenprüfung (Düse muss auf Messhöhe stehen, der Strom hängt vom Ziel im Feld ab) und **sofort wirksam** — setzt `dccal.drive_cur`, das der nächste Sensorstart schreibt, und legt den Wert für `SAVE_CONFIG` bereit. Meldet altes und neues Register und das Rauschen danach. `SAVE_CONFIG` erst bei leerem Bett (Neustart löscht das Homing). Status: `printer.nozzle_locator.drive_current`.
+- **Basislinie neben der Spule** (Tobis Einwand): auf `park_z` steht die Düse noch 7 mm über der Spule und hebt die Basislinie um ~1.400 Hz (8.6). `measure_baseline()` fährt jetzt um `baseline_offset` (Default 40 mm) in X zur Seite (bevorzugt +X, sonst −X, innerhalb der Achsgrenzen, `fit.baseline_side`), liest, und kommt zurück; `park_z` ist per Definition die freie Fahrhöhe. Gilt für `NOZZLE_LOCATE`, `NOZZLE_LOCATOR_MAP` und `CALIBRATE_XY_OFFSETS`. Folge: die Amplituden (`min_amplitude`, `target_amplitude`, Raster-Werte) sind ab jetzt ~1.400 Hz größer als bisher gemeldet — Schwellen sind davon nicht betroffen (Düse bei 6.000 Hz bleibt weit darüber), aber alte und neue Amplituden nicht direkt vergleichen. Status: `last_baseline`.
+
+Tests: Fit 80 Zusicherungen, Klipper-API-Wächter um die `ldc1612`-Register und `DriveCurrentCalibrate` erweitert.

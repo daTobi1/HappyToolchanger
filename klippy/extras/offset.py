@@ -2000,8 +2000,10 @@ class Offset:
                 continue
 
             if baseline is None:
-                # Einmal pro Lauf, mit dem Referenztool, auf park_z -- dort
-                # ist die Spule 60 mm entfernt und praktisch unsichtbar.
+                # Einmal pro Lauf, mit dem Referenztool, von park_z aus:
+                # der Locator faehrt dafuer seitlich neben die Spule (auf
+                # park_z steht die Duese sonst noch 7 mm darueber, +1.400 Hz)
+                # und kommt zurueck.
                 baseline = locator.measure_baseline()
                 gcmd.respond_info("XY: Basislinie %.0f Hz" % baseline)
 

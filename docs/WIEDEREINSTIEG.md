@@ -11,7 +11,7 @@ Stand: 2026-09-03, alles auf `main` und gepusht. Die Spule ist da, haengt per US
 
 | Task | Zustand |
 |---|---|
-| 1 — Fit-Mathematik `nozzle_locator_fit.py` | **fertig**, 71 Zusicherungen (Scan- und Raster-Bausteine seit 2026-09-04) |
+| 1 — Fit-Mathematik `nozzle_locator_fit.py` | **fertig**, 80 Zusicherungen (Scan-, Raster- und Klemm-Bausteine seit 2026-09-04) |
 | 2 — Sensoranbindung `nozzle_locator.py` | **fertig**, am 250er verifiziert (3,13 MHz, sd 21 Hz, 0 Fehler) |
 | 3 — Z-Anfahrt, Sweep, Ortung | **fertig**, `NOZZLE_LOCATE X/Y/DIAG`, am 250er verifiziert |
 | 4 — Extraktion `_resolve_tool_run()` | **gestrichen**, siehe §4 |
@@ -19,7 +19,7 @@ Stand: 2026-09-03, alles auf `main` und gepusht. Die Spule ist da, haengt per US
 | 6 — Extraktion `updateConfigFile()` | **fertig** |
 | 7–9 — Webapp (Block, Assistent, Kamera) | **fertig gebaut, nie im Browser gesehen** |
 
-Tests heute: 71 (Fit, Python) + 71 (Klipper-API, Python, auf dem Pi) + 63 (Webapp, node) + 19 (Recovery, node) + 17 (Raster-Viewer, node).
+Tests heute: 80 (Fit, Python) + 77 (Klipper-API, Python, auf dem Pi) + 63 (Webapp, node) + 19 (Recovery, node) + 17 (Raster-Viewer, node).
 Ein Abschluss-Review über den gesamten Umfang ist gelaufen und sauber.
 
 **Blockiert ist Task 3 jetzt nur noch an der Halterung** (bekannte Bauhoehe, siehe
@@ -97,7 +97,10 @@ des Amplituden-Laufs liegen in `printer.offset.xy_results` und
 1. Bett leer → `G28`, `QUAD_GANTRY_LEVEL`, `G28 Z`,
    `SET_IDLE_TIMEOUT TIMEOUT=3600`, `T0`, `NOZZLE_LOCATOR_PARK` → Sonde
    unter die Düse → auf Messhöhe (z. B. `G1 Z54 F300`).
-2. **Scan prüfen:** `NOZZLE_LOCATE AXIS=X`, dann `SPEED=10`. Hin-Rück-
+2. **Drive-Current kalibrieren** (einmalig, Düse auf Messhöhe):
+   `NOZZLE_LOCATOR_CALIBRATE_DRIVE`. Gilt sofort; `SAVE_CONFIG` erst,
+   wenn die Halterung vom Bett ist (Neustart löscht das Homing).
+   Danach **Scan prüfen:** `NOZZLE_LOCATE AXIS=X`, dann `SPEED=10`. Hin-Rück-
    Differenz sollte ~2·v·Δt sein und sich verdoppeln. Geht der Scan nicht
    durch („nur N Samples im Fenster"): `scan_speed: 0` und weiter im
    Punktmodus. **Dabei zusehen, ob Y stehen bleibt** — die Bahngeometrie

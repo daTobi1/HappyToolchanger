@@ -116,6 +116,26 @@ def main():
            "ldc1612._process_batch meldet 'errors' nicht mehr als "
            "kumulierten last_error_count",
            "nozzle_locator.read_frequency() muesste dann aufsummieren")
+        # NOZZLE_LOCATOR_CALIBRATE_DRIVE wiederholt Klippers
+        # cmd_LDC_CALIBRATE mit denselben Registern und setzt dccal.drive_cur
+        # direkt, damit der Wert ohne Neustart gilt.
+        has_attrs(ldc1612, ["REG_CONFIG", "REG_DRIVE_CURRENT0",
+                            "DriveCurrentCalibrate"], "ldc1612")
+        if hasattr(ldc1612, "DriveCurrentCalibrate"):
+            src = source_of(ldc1612.DriveCurrentCalibrate.__init__)
+            ok("self.drive_cur = " in src,
+               "ldc1612.DriveCurrentCalibrate haelt den Strom nicht mehr in "
+               "self.drive_cur", "nozzle_locator setzt genau dieses Feld")
+            src = source_of(getattr(ldc1612.DriveCurrentCalibrate,
+                                    "cmd_LDC_CALIBRATE", None))
+            ok("set_reg(REG_CONFIG, 0x001 | (1<<9))" in src
+               and "(reg_drive_current0 >> 6) & 0x1f" in src,
+               "ldc1612.cmd_LDC_CALIBRATE kalibriert anders als "
+               "nozzle_locator.cmd_CALIBRATE_DRIVE es nachbaut")
+        src = source_of(getattr(ldc1612.LDC1612, "_start_measurements", None))
+        ok("self.dccal.get_drive_current()" in src,
+           "ldc1612._start_measurements liest den Strom nicht mehr aus dccal",
+           "ein geaenderter drive_cur wuerde dann nie wirksam")
         # Der Scanmodus ordnet jedes Sample ueber seinen Zeitstempel einer
         # Position zu -- der Zeitstempel muss an Index 0 liegen.
         src = source_of(getattr(ldc1612.LDC1612, "_convert_samples", None))

@@ -372,6 +372,43 @@ def main():
        "raster_grid fuellt fehlende Spalten nicht mit None",
        str(g2['values']))
 
+    # --- 15: Geschwindigkeitsklemme -- Mindestzahl Samples im Fenster ---
+    # 400 Samples/s ueber 8 mm: bei 5 mm/s 640 Samples, bei 40 mm/s nur 80.
+    # Statt abzubrechen wird die Geschwindigkeit so weit gesenkt, dass
+    # min_samples im Fenster liegen (EddySeek macht es genauso).
+    close(fit.clamp_scan_speed(5.0, 8.0, 400.0, 200), 5.0, 1e-9,
+          "clamp_scan_speed bremst, obwohl genug Samples da sind")
+    close(fit.clamp_scan_speed(40.0, 8.0, 400.0, 200), 16.0, 1e-9,
+          "clamp_scan_speed klemmt nicht auf rate*span/min_samples")
+    close(fit.clamp_scan_speed(16.0, 8.0, 400.0, 200), 16.0, 1e-9,
+          "clamp_scan_speed veraendert die Grenzgeschwindigkeit")
+    # Grobsuche ueber 30 mm darf schneller: 30 mm * 400 / 200 = 60 mm/s
+    close(fit.clamp_scan_speed(40.0, 30.0, 400.0, 200), 40.0, 1e-9,
+          "clamp_scan_speed bremst die Grobsuche unnoetig")
+    try:
+        fit.clamp_scan_speed(5.0, 8.0, 400.0, 0)
+        ok(False, "clamp_scan_speed akzeptiert min_samples 0")
+    except ValueError:
+        ok(True, "")
+
+    # --- 16: Basislinie neben der Spule -- Ausweichrichtung in X ---
+    # Auf park_z steht die Duese 7 mm ueber der Spule und hebt die
+    # Basislinie um ~1.400 Hz (8.6). Also seitlich weg: baseline_side
+    # liefert das Ziel-x, das um `offset` von x entfernt liegt und in den
+    # Achsgrenzen bleibt; bevorzugt +X, sonst -X, sonst Fehler.
+    close(fit.baseline_side(125.0, 40.0, 0.0, 250.0), 165.0, 1e-9,
+          "baseline_side geht nicht nach +X")
+    close(fit.baseline_side(230.0, 40.0, 0.0, 250.0), 190.0, 1e-9,
+          "baseline_side weicht nicht nach -X aus, wenn +X nicht passt")
+    try:
+        fit.baseline_side(20.0, 40.0, 0.0, 50.0)
+        ok(False, "baseline_side erfindet ein Ziel ausserhalb der Achse")
+    except ValueError:
+        ok(True, "")
+    # Genau auf der Grenze ist erlaubt
+    close(fit.baseline_side(210.0, 40.0, 0.0, 250.0), 250.0, 1e-9,
+          "baseline_side lehnt ein Ziel genau auf der Achsgrenze ab")
+
     print("%d Zusicherungen geprueft" % CHECKS[0])
     if FINDINGS:
         for f in FINDINGS:

@@ -73,6 +73,14 @@ class NozzleLocator:
         # ein; dann stimmen auch die Einzelsweeps.
         self.sample_latency = config.getfloat('sample_latency', 0.0,
                                               minval=0.)
+        # Mindestzahl Samples je Scan-Fenster. Liegt scan_speed darueber,
+        # wird gebremst statt abgebrochen (fit.clamp_scan_speed).
+        self.min_samples = config.getint('min_samples', 200, minval=3)
+        # Seitlicher Versatz in X fuer die Basislinie: auf park_z steht die
+        # Duese noch 7 mm ueber der Spule und hebt die Basislinie um
+        # ~1.400 Hz. Neben der Spule ist sie wirklich leer.
+        self.baseline_offset = config.getfloat('baseline_offset', 40.0,
+                                               minval=0.)
         self.runs = config.getint('runs', 3, minval=1)
         self.runs_tolerance = config.getfloat('runs_tolerance', 0.05, above=0.)
         # X->Y-Runden gegen die Kreuzkopplung der 2D-Glocke. 1 genuegt, wenn
@@ -122,6 +130,7 @@ class NozzleLocator:
         self._hold_flag = None
         # Dateiname des letzten Rasters (NOZZLE_LOCATOR_MAP), fuer den Viewer
         self.last_map_file = None
+        self.last_baseline = None
         # Zuletzt per NOZZLE_LOCATOR_PARK angefahrene Position. Der
         # Messlauf nimmt sie, damit eine im Assistenten geaenderte Position
         # ohne FIRMWARE_RESTART gilt.
@@ -133,6 +142,9 @@ class NozzleLocator:
             'NOZZLE_LOCATOR_DUMP', self.cmd_DUMP, desc=self.cmd_DUMP_help)
         self.gcode.register_command(
             'NOZZLE_LOCATOR_MAP', self.cmd_MAP, desc=self.cmd_MAP_help)
+        self.gcode.register_command(
+            'NOZZLE_LOCATOR_CALIBRATE_DRIVE', self.cmd_CALIBRATE_DRIVE,
+            desc=self.cmd_CALIBRATE_DRIVE_help)
         self.gcode.register_command(
             'NOZZLE_LOCATOR_PARK', self.cmd_PARK, desc=self.cmd_PARK_help)
         self.gcode.register_command(
@@ -157,6 +169,8 @@ class NozzleLocator:
             'scan_speed': self.scan_speed,
             'sweeps_logged': len(self.sweep_log),
             'last_map_file': self.last_map_file,
+            'last_baseline': self.last_baseline,
+            'drive_current': self.sensor.dccal.get_drive_current(),
         }
 
     # ------------------------------------------------------------------
@@ -417,6 +431,67 @@ class NozzleLocator:
                peak[0] - (baseline or 0.0), peak[1], peak[2],
                self.last_map_file))
 
+    cmd_CALIBRATE_DRIVE_help = (
+        "Calibrate the LDC1612 drive current (reg_drive_current) with the "
+        "nozzle at measuring height above the coil. The chip needs a coil "
+        "amplitude of 1.2-1.8 V; below that the conversion noise rises. "
+        "The new value takes effect at the next sensor start (no restart "
+        "needed) and is staged for SAVE_CONFIG. Run SAVE_CONFIG only after "
+        "the holder is off the bed -- it restarts Klipper and clears homing.")
+
+    def cmd_CALIBRATE_DRIVE(self, gcmd):
+        """Wie Klippers LDC_CALIBRATE_DRIVE_CURRENT, aber mit Hoehenpruefung
+        und sofort wirksam: der Chip bestimmt im Auto-Amplituden-Modus den
+        Strom selbst, wir lesen das Register aus und setzen dccal.drive_cur,
+        das _start_measurements beim naechsten Sensorstart schreibt.
+        """
+        self._require_homed()
+        toolhead = self.printer.lookup_object('toolhead')
+        here = toolhead.get_position()
+        z_lo = self._z_floor()
+        z_hi = self.holder_top_z + 3.0
+        if not (z_lo <= here[2] <= z_hi):
+            raise gcmd.error(
+                "nozzle_locator: Z %.3f muss auf Messhoehe liegen (%.2f bis "
+                "%.2f, Duese ueber der Spule) -- der Drive-Current haengt "
+                "vom Ziel im Feld ab" % (here[2], z_lo, z_hi))
+        dccal = self.sensor.dccal
+        old = dccal.get_drive_current()
+        sensor = self.sensor
+        active = [True]
+        sensor.add_client(lambda msg: active[0])
+        try:
+            toolhead.dwell(0.100)
+            toolhead.wait_moves()
+            old_config = sensor.read_reg(ldc1612.REG_CONFIG)
+            # Auto-Amplituden-Modus (Bit 9 gesetzt, Bit 12 geloescht): der
+            # Chip regelt den Strom auf 1,2-1,8 V ein -- so macht es
+            # Klippers cmd_LDC_CALIBRATE.
+            sensor.set_reg(ldc1612.REG_CONFIG, 0x001 | (1 << 9))
+            toolhead.wait_moves()
+            toolhead.dwell(0.100)
+            toolhead.wait_moves()
+            reg = sensor.read_reg(ldc1612.REG_DRIVE_CURRENT0)
+            sensor.set_reg(ldc1612.REG_CONFIG, old_config)
+        finally:
+            active[0] = False
+        new = (reg >> 6) & 0x1f
+        dccal.drive_cur = new
+        configfile = self.printer.lookup_object('configfile')
+        configfile.set(self.name, 'reg_drive_current', "%d" % new)
+        # Wirkung sofort pruefen: BatchBulkHelper stoppt den Sensor erst,
+        # wenn der Kalibrier-Client beim naechsten Batch False liefert --
+        # kurz warten, damit der naechste Start den neuen Strom schreibt.
+        reactor = self.printer.get_reactor()
+        reactor.pause(reactor.monotonic() + 0.4)
+        mean, sd, n, errors = self.read_frequency(1.0)
+        gcmd.respond_info(
+            "nozzle_locator: reg_drive_current %d -> %d (gilt ab jetzt; "
+            "%.0f Hz, sd %.1f Hz ueber %d Samples). SAVE_CONFIG traegt den "
+            "Wert dauerhaft ein -- erst wenn die Halterung vom Bett ist, "
+            "der Neustart loescht das Homing."
+            % (old, new, mean, sd, n))
+
     def _coil_temp(self):
         """Spulentemperatur, wenn ein [temperature_sensor xyprobe_coil]
         existiert (Vorlage xy_probe.cfg); sonst None."""
@@ -443,18 +518,45 @@ class NozzleLocator:
     # ------------------------------------------------------------------
     # Messschritte
     # ------------------------------------------------------------------
-    def measure_baseline(self):
-        """Freiluft-Basislinie. Der Aufrufer stellt sicher, dass die Duese
-        weit von der Spule weg ist -- auf park_z (60 mm) ist sie praktisch
-        unsichtbar. Eine Basislinie mit der Duese in Reichweite ist der
+    def measure_baseline(self, aside=True):
+        """Freiluft-Basislinie. Der Aufrufer steht auf park_z ueber der
+        Spule. Dort ist die Duese aber noch 7 mm ueber der Spule und hebt
+        die Basislinie um ~1.400 Hz (offene Arbeiten 8.6) -- deshalb faehrt
+        der Kopf um baseline_offset seitlich weg, liest, und kommt zurueck.
+        park_z ist per Definition die freie Fahrhoehe, der Weg ist sicher.
+        aside=False liest an Ort und Stelle (Rueckfall, wenn seitlich kein
+        Platz ist). Eine Basislinie mit der Duese in Reichweite ist der
         Fehler, der im Vorversuch 12 kHz Versatz erzeugt hat.
         """
         self.state = 'baseline'
-        mean, sd, n, errors = self.read_frequency(self.dwell_time * 2.0)
+        toolhead = self.printer.lookup_object('toolhead')
+        here = toolhead.get_position()
+        moved = False
+        if aside and self.baseline_offset > 0.:
+            now = self.printer.get_reactor().monotonic()
+            status = toolhead.get_status(now)
+            x_min = status['axis_minimum'][0]
+            x_max = status['axis_maximum'][0]
+            try:
+                x_aside = fit.baseline_side(here[0], self.baseline_offset,
+                                            x_min, x_max)
+            except ValueError as e:
+                logging.info("nozzle_locator: Basislinie an Ort und Stelle "
+                             "-- %s", e)
+                x_aside = None
+            if x_aside is not None:
+                self._move([x_aside, None, None], self.move_speed)
+                moved = True
+        try:
+            mean, sd, n, errors = self.read_frequency(self.dwell_time * 2.0)
+        finally:
+            if moved:
+                self._move([here[0], None, None], self.move_speed)
         if errors:
             raise self.printer.command_error(
                 "nozzle_locator: %d Sensorfehler waehrend der Basislinie"
                 % errors)
+        self.last_baseline = mean
         return mean
 
     def approach_z(self, baseline, target_amplitude=None):
@@ -550,6 +652,16 @@ class NozzleLocator:
         """
         if speed is None:
             speed = self.scan_speed
+        # Geschwindigkeitsklemme: lieber langsamer als zu duenn abgetastet.
+        rate = self.sensor.get_samples_per_second()
+        clamped = fit.clamp_scan_speed(speed, abs(hi - lo), rate,
+                                       self.min_samples)
+        if clamped < speed:
+            logging.info("nozzle_locator %s: Scan auf %.1f mm/s gebremst "
+                         "(%d Samples ueber %.1f mm bei %d Hz)",
+                         label, clamped, self.min_samples, abs(hi - lo),
+                         rate)
+            speed = clamped
         self.state = 'sweeping'
         toolhead = self.printer.lookup_object('toolhead')
         motion = self.printer.lookup_object('motion_report')
