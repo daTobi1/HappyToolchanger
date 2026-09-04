@@ -83,14 +83,25 @@ Dazu noch später: **Raster (C-Scan)** per `NOZZLE_LOCATOR_MAP` und Viewer
 direkt (§9.5). Beim Bau fiel ein Fehler der Scan-Bahn vom Nachmittag auf
 (X-Sweep hätte Y auf 0 gefahren), behoben in `fit.scan_line`, nie gefahren.
 
-**Zustand des 250ers beim Verlassen:** Klipper läuft auf dem Commit mit
-dem Scanmodus (Service neu gestartet, daher **ungehomt**). **Halterung und
-Sonde stehen noch auf dem Bett** — vor dem Homen runter. `xy_probe.cfg` auf
-dem Drucker hat `scan_speed` noch **nicht** eingetragen, der Code-Default 5
-gilt; die Vorlage `xy_probe.cfg.disabled` hat die Zeile. Sonde ist aktiv und
-steckt; vor dem Abstecken über den Assistenten deaktivieren. Die Ergebnisse
-des Amplituden-Laufs liegen in `printer.offset.xy_results` und
-`.offset_xy_results.json`.
+**Mittags am 2026-09-04 gefahren — der Messtag (offene Arbeiten §10, das
+zuerst lesen).** Kurz: das starke Signal an T0 ist die **Kupferplatine der
+Eddy-NG-Sonde** 16,7 mm neben der Düse, nicht der Heizblock; der schwache
+Buckel (9 kHz bei 1 mm) ist die Düse mit magnetischem Stahlblock, auf allen
+Tools gleich. Alle bisherigen Läufe haben die Düse gemessen; T0 taugt nur
+wegen der Platine nicht als Referenz. **Lauf mit `REF_TOOL=1 TOOLS=1,2,3`
+im Scan- und Spaltmodus: 298 s, Spannweite 1–3 µm, Abweichung zur Kamera
+0,1–0,27 mm** (vorher 0,45–0,64). Offen ist, ob Kamera oder Sonde recht hat
+und ob die 180°-Drehung der Hotends den Block-Schwerpunkt kippt.
+
+**Zustand des 250ers beim Verlassen (Mittag):** gehomt, QGL, **T1
+montiert**, Kopf auf Z 60 über der Sonde, Idle-Timeout 3600 s. **Halterung
+und Sonde stehen auf dem Bett**, Düsenbuckel von T1 bei ≈ X 123,9 / Y 120,9.
+Klipper läuft auf dem Scanmodus-Commit; `xy_probe.cfg` auf dem Drucker hat
+`scan_speed` nicht eingetragen (Default 5 gilt), Drive-Current bleibt 15,
+kein `SAVE_CONFIG` nötig. Ergebnisse in `printer.offset.xy_results`
+(`ref_tool` 1) und `.offset_xy_results.json`; Raster und Rohsweeps als JSON
+in `~/printer_data/logs/` (`nozzle_locator_map_*.json`, `map_T*_wide.json`,
+`scan_x_speeds.json`).
 
 **Nächste Schritte in dieser Reihenfolge** (Details §9.4 der offenen Arbeiten):
 
@@ -167,12 +178,13 @@ einem Homing, das sich mit Halterung auf dem Bett verbietet. Der
 XY-Lauf prüft den Status vorher und wechselt bei Abbruch selbst zurück
 auf das Referenztool. → `xy-offset-offene-arbeiten.md` §8.1
 
-**f) Die Spule misst den Metallschwerpunkt, nicht die Spitze.** Der
-Heizblock liegt in +Y hinter der Düse und zieht den Y-Scheitel um
-~240 µm je mm Spalt; T0 trägt zusätzlich die Eddy-NG-Sonde. Deshalb
-gleicher Spalt aus den Z-Switch-Daten und ein kleiner Feinspalt — und
-deshalb ist die Grobsuche ein *lokaler* Buckel, nie das globale Maximum.
-→ `xy-offset-offene-arbeiten.md` §8.3
+**f) Die Spule misst den Metallschwerpunkt, nicht die Spitze — und an T0
+sitzt 16,7 mm neben der Düse die Kupferplatine der Eddy-NG-Sonde.** Sie
+liefert 136 kHz gegen 9 kHz der Düse und zieht T0s Y-Scheitel um ~240 µm
+je mm Spalt (früher dem Heizblock zugeschrieben, §8.3 — falsch, siehe §10).
+Deshalb: T0 nicht als Referenz, gleicher Spalt aus den Z-Switch-Daten,
+Grobsuche als *lokaler* Buckel nahe der Vorhersage, nie das globale
+Maximum. → `xy-offset-offene-arbeiten.md` §10.1
 
 **g) Die Zeitstempel des Sensors sind nach dem Start zwei Sekunden lang
 unzuverlässig.** Klippers `FixedFreqReader` setzt seine Regression bei

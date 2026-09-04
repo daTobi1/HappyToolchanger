@@ -463,6 +463,51 @@ Tests: Fit 80 Zusicherungen, Klipper-API-Wächter um die `ldc1612`-Register und 
 | Kommando | `NOZZLE_LOCATOR_CALIBRATE_DRIVE`; Klippers `LDC_CALIBRATE_DRIVE_CURRENT CHIP=nozzle_locator` (Mux, nur mit CHIP) | `PROBE_EDDY_NG_*`, `EDDYNG_*`; kein `LDC_CALIBRATE_DRIVE_CURRENT` | keine Namensüberschneidung |
 | Config | `[nozzle_locator] reg_drive_current` (Autosave) | `[probe_eddy_ng my_eddy] reg_drive_current = 16`, `tap_drive_current = 16`, `calibrated_drive_currents` | getrennte Sektionen; `SAVE_CONFIG` schreibt beide Blöcke neu, mischt sie aber nicht. `reg_drive_current` in `xy_probe.cfg` **auskommentiert lassen**, den Wert verwaltet der Autosave-Block |
 
-**Physik, die bleibt:** beide Schwingkreise liegen im selben Band (Eddy-NG Freiluft 3,15–3,23 MHz laut Kalibrierung, XY-Spule 3,13 MHz) und stehen bei T0 16 mm auseinander. Solange die Eddy-NG-Sonde **nicht angesteuert** wird, ist ihre Spule ein passiver Resonator im Feld — ein konstanter Anteil des T0-Bias, den das Differenzbild ohnehin zeigt. Werden **beide gleichzeitig getrieben**, ist Frequenzziehen möglich. Eddy-NG startet seinen Sensor nur bei Probe, Tap oder `EDDYNG_START_STREAM_EXPERIMENTAL`; die XY-Kommandos rufen nichts davon auf, und mit Halterung auf dem Bett ist Probing ohnehin verboten. Regel: **während XY-Läufen kein Eddy-NG-Stream und kein Probing.** Der Drive-Current der XY-Spule wird mit T0 auf Messhöhe kalibriert (Referenztool, Sonde passiv im Feld); der Auto-Amplituden-Bereich 1,2–1,8 V ist breit genug für die anderen Tools ohne Sonde.
+**Physik, die bleibt** (siehe 10.1: die Kupferplatine der Sonde ist als Ziel 16,7 mm neben T0s Duese mit 136 kHz sichtbar): beide Schwingkreise liegen im selben Band (Eddy-NG Freiluft 3,15–3,23 MHz laut Kalibrierung, XY-Spule 3,13 MHz) und stehen bei T0 16 mm auseinander. Solange die Eddy-NG-Sonde **nicht angesteuert** wird, ist ihre Spule ein passiver Resonator im Feld — ein konstanter Anteil des T0-Bias, den das Differenzbild ohnehin zeigt. Werden **beide gleichzeitig getrieben**, ist Frequenzziehen möglich. Eddy-NG startet seinen Sensor nur bei Probe, Tap oder `EDDYNG_START_STREAM_EXPERIMENTAL`; die XY-Kommandos rufen nichts davon auf, und mit Halterung auf dem Bett ist Probing ohnehin verboten. Regel: **während XY-Läufen kein Eddy-NG-Stream und kein Probing.** Der Drive-Current der XY-Spule wird mit T0 auf Messhöhe kalibriert (Referenztool, Sonde passiv im Feld); der Auto-Amplituden-Bereich 1,2–1,8 V ist breit genug für die anderen Tools ohne Sonde.
 
 **Live-3D-Ansicht in der Offset-UI (Tobis Wunsch, 2026-09-04, spät):** `cmd_MAP` legt nach jeder Zeile das Gitter bis dahin in den Status (`printer.nozzle_locator.map`: `xs`, `ys`, `values`, `rows_done`/`rows_total`, `done`, `file`, Basislinie, Spalt). Der XY-Block der Webapp hat ein aufklappbares Panel „Raster (C-Scan) mit Live-3D-Ansicht": Felder Breite/Höhe/Raster/Label, Knopf „Raster starten" (baut das Kommando über `xyMapCommand()` mit Validierung, sendet über `xySendMounted`, kein Recovery-Knopf, weil die Halterung auf dem Bett steht), und die Fläche wird im 2-s-Poll der Sparkline aus dem Status nachgezeichnet — man sieht das Bild Zeile für Zeile wachsen. Zeichnen übernimmt `js/map3d.js` mit plotly.js (gl3d-Bundle vom CDN, erst beim ersten Bild geladen; ohne Netz sagt das Panel das, die 2D-Heatmap in `map.html` braucht kein CDN). Nach der letzten Zeile: Knopf wieder frei, Link zu `map.html` mit der Datei. `map.html` hat denselben Renderer als „3D-Ansicht"-Knopf, auch für A − B. Tests: `check_nozzle_map.js` (mapToSurface), `check_xy_offset_ui.js` (xyMapCommand). Nie im Browser gesehen.
+
+---
+
+## 10. Messtag am 250er mit Scanmodus und Raster (2026-09-04, Mittag)
+
+Alles aus Abschnitt 9 ist gefahren. Die wichtigsten Befunde stellen Abschnitt 8.3 und Teile von 9.1/9.5 auf den Kopf; **was dort über „den Heizblock" steht, ist falsch gedeutet** und bleibt nur als Protokoll stehen.
+
+### 10.1 Was die Raster zeigen
+
+Raster (`NOZZLE_LOCATOR_MAP`) mit T0, T1, T2 bei ~3 mm Spalt, 30–40 mm hoch, und ein Feinraster T2 bei 0,9 mm:
+
+| Tool | schwacher Buckel (Düse + Block) | starkes Signal 16,7 mm daneben |
+|---|---|---|
+| T0 | 2,6 kHz bei 3 mm, 9,3 kHz bei 1 mm, Scheitel (123,45 / 126,44) | **77 kHz bei 3 mm, 136 kHz bei 0,75 mm**, Scheitel (123,9 / 109,7) |
+| T1 | 2,5 kHz, Scheitel ≈ (123,9 / 120,9) | nichts |
+| T2 | 2,6 kHz, Scheitel ≈ (124,1 / 121,7) | nichts |
+
+Tobis Auskunft: alle Tools tragen dasselbe Hotend (Bambu-Bauart, Stahlblock direkt über der Düse), T1/T2 um 180° um die Hochachse gedreht. Daraus folgt:
+
+- **Der schwache Buckel ist die Düse mit Block.** Der Block ist ferromagnetischer Stahl, dessen Permeabilität den Wirbelstromeffekt bei 3 MHz weitgehend aufhebt — darum nur ~9 kHz bei 1 mm statt der 100 kHz, die ein Kupferblock gäbe. Auf allen Tools gleich stark. **Alle bisherigen Kalibrierläufe haben also die Düse gemessen, wie beabsichtigt.**
+- **Das starke Signal an T0 ist die Kupferplatine der Eddy-NG-Sonde**, 16,7 mm neben der Düse (Config `y_offset: 16.0`; das Vorzeichen in Rohkoordinaten ist **−Y**, das wäre für die Bettmesh-Anfahrt einmal zu prüfen). Eine große Kupferfläche 3,5 mm über der Spule, mit sehr sauberem, spaltunabhängigem Scheitel (Höhenserie 3 → 0,75 mm: 4 µm/mm, Spannweite ≤ 1,5 µm) — sie ist ein hervorragendes Ziel, aber das falsche.
+- **Der „Heizblock-Effekt" aus 8.3 (240 µm je mm Spalt) ist die Platine.** Sie zieht T0s Düsenscheitel spaltabhängig; T1–T3 haben das nicht. Deshalb: **T0 taugt nicht als Referenztool**, solange die Sonde dran ist. Tobis Vorschlag, nur T1–T3 zu messen, war richtig.
+
+### 10.2 Ergebnis des Laufs mit T1 als Referenz (Scanmodus, Spaltmodus)
+
+`CALIBRATE_XY_OFFSETS REF_TOOL=1 TOOLS=1,2,3`, 298 s statt 15–19 min, Feinspalt um 0,275 mm angehoben (T3 am Boden), Spule 37 °C:
+
+| Tool | Sonde (Differenz zu T1) | Kamera (Differenz zu T1) | Abweichung | Spannweite X/Y | Amplitude |
+|---|---|---|---|---|---|
+| T2 | +0,2096 / +0,7352 | +0,110 / +0,490 | **+100 / +245 µm** | 0,8 / 1,5 µm | 9,9 kHz |
+| T3 | −0,2415 / −0,7054 | −0,510 / −0,790 | **+269 / +85 µm** | 3,4 / 1,1 µm | 9,2 kHz |
+
+Wiederholbarkeit weiter 1–3 µm. Die Abweichungen zur Kamera liegen bei 0,1–0,27 mm — deutlich unter den 0,45–0,64 mm mit T0 als Referenz, aber nicht bei null. Kandidaten: (a) die Kamera-Offsets selbst (nie auf Wiederholbarkeit geprüft, 6.5), (b) der Schwerpunkt von Düse + Block liegt nicht exakt auf der Düsenachse (Heizpatronen-/Thermistorbohrung), und **bei um 180° gedrehten Hotends kippt dieser Versatz das Vorzeichen** — Tobi weiß, welche Tools wie herum sitzen; die Feinraster der Buckel (12 × 12 mm, 0,5 mm) würden die Asymmetrie zeigen. Offen.
+
+### 10.3 Weitere Befunde des Tages
+
+- **Scanmodus läuft**, Bahnfehler (`fit.scan_line`) real bestätigt behoben, Y blieb während X-Scans stehen.
+- **Aufwärmen:** der erste Lauf nach dem Sensorstart lag 80 µm daneben und hatte 15 % weniger Krümmung; nach ~1 min Dauerbetrieb stabil auf 5 µm. Die Haltung muss vor der ersten Messung eines Laufs eine Aufwärmzeit bekommen (offen, Code).
+- **Hin-Rück-Differenz** ist keine Sensorlatenz (wächst mit der Sweep*dauer*, nicht mit der Geschwindigkeit; Latenz ≈ 0): eine Zeitrampe von 12–29 Hz/s nur *während* der Fahrt, zwischen den Sweeps kein Niveauunterschied. Ursache unklar; kürzt sich im bidirektionalen Mittel weg. Rohdaten: `scan_x_speeds.json` (18 Sweeps bei 2,5/5/10 mm/s). 5 mm/s bleibt die beste Wahl (Spannweite 2 µm).
+- **Drive-Current** kalibriert: bleibt 15.
+- **`NOZZLE_LOCATE` ohne Grobsuche fällt auf Flanken herein:** Y-Scheitel am Fensterrand → Fit auf der Flanke lieferte Y 109 statt 126, und `sweep_quality` fing es nicht (Maximum einen Korb neben dem Rand). Offen: Randabstand in `sweep_quality`, Grobsuche in `NOZZLE_LOCATE`.
+- **Jeder Abbruch setzt den Toolchanger auf `uninitialized`** (8.1) — heute dreimal; `INITIALIZE_TOOLCHANGER` reicht, kein Homing nötig.
+- **`G1` mit T1/T2 rechnet den Tool-Offset ein**, die Locator-Kommandos arbeiten in Maschinenkoordinaten. Manuelle Anfahrten dazwischen sind um den Offset verschoben — `NOZZLE_LOCATOR_PARK` und die Locator-Kommandos nehmen.
+- Krümmung des Düsenbuckels: Y ~250 Hz/mm² gegen X ~100 — der Buckel ist in X deutlich breiter (Block länger in X?). `AXIS=DIAG` steht noch aus.
+- Live-3D-Panel und Viewer funktionieren; die Z-Achse muss logarithmisch sein, sonst überstrahlt die Platine alles (behoben).
