@@ -896,6 +896,69 @@ class NozzleLocator:
             'curvature': sum(curvs) / len(curvs),
         }
 
+    def locate2d(self, cx, cy, baseline, width=6.0, pitch=0.5, radius=2.0,
+                 speed=None, label="2D"):
+        """2D-Ortung: kleines Serpentinen-Raster um (cx, cy), Paraboloid-
+        Fit ueber alle Punkte im Radius (fit.paraboloid_fit).
+        -> {'x','y','axx','ayy','axy','rho','n','amplitude'}
+
+        Gegen zwei Linien: nutzt alle Punkte und den Kreuzterm zugleich,
+        und alle Tools werden mit demselben Fenster und derselben Form
+        gemessen -- der Buckel ist keine Parabel, also misst jedes Fenster
+        einen etwas anderen "Scheitel"; als Differenz kuerzt sich das nur
+        bei gleichem Fenster weg (offene Arbeiten 10.7). Die Serpentine
+        wechselt je Zeile die Richtung, ein Zeitdrift kippt die Zeilen
+        abwechselnd und mittelt sich im Fit weitgehend weg. 6 x 6 mm bei
+        0,5 mm sind 13 Zeilen, ~20 s.
+        """
+        if speed is None:
+            speed = self.scan_speed
+        n_rows = int(round(width / pitch)) + 1
+        x_lo, x_hi = cx - width / 2.0, cx + width / 2.0
+        y_lo = cy - width / 2.0
+        lead = 3.0 * self.sweep_step
+        toolhead = self.printer.lookup_object('toolhead')
+        z = toolhead.get_position()[2]
+        rows = []
+        self._hold_sensor()
+        try:
+            for j in range(n_rows):
+                y = y_lo + j * pitch
+                lo, hi = (x_lo, x_hi) if j % 2 == 0 else (x_hi, x_lo)
+                track = self._scan("%s y=%.2f" % (label, y), (0.0, 0.0),
+                                   (1.0, 0.0), lo, hi, lead, speed,
+                                   through=(cx, y), log=False)
+                rows.append((y, track))
+        finally:
+            self._release_sensor()
+        points = [(x, y, v) for y, track in rows for x, v in track]
+        try:
+            r = fit.paraboloid_fit(points, cx, cy, radius)
+        except ValueError as e:
+            raise self.printer.command_error(
+                "nozzle_locator 2D (%s): %s" % (label, e))
+        amp = max(v for _, _, v in points) - baseline
+        if amp < self.min_amplitude:
+            raise self.printer.command_error(
+                "nozzle_locator 2D (%s): Amplitude nur %.0f Hz, mindestens "
+                "%.0f noetig" % (label, amp, self.min_amplitude))
+        r['amplitude'] = amp
+        # Raster fuer die Live-Ansicht der Webapp
+        try:
+            grid = fit.raster_grid(rows, x_lo, x_hi, pitch)
+            self.live_map = {
+                'label': label, 'x': cx, 'y': cy, 'z': z,
+                'gap': z - self.holder_top_z, 'pitch': pitch,
+                'width': width, 'height': width, 'baseline': baseline,
+                'rows_total': n_rows, 'rows_done': n_rows, 'done': True,
+                'file': None, 'xs': grid['xs'], 'ys': grid['ys'],
+                'values': grid['values'],
+            }
+        except ValueError:
+            pass
+        self._move([r['x'], r['y'], None], self.move_speed)
+        return r
+
     def coarse_locate(self, axis, center, baseline):
         """Grobsuche: ein Sweep ueber search_span in doppelter Schrittweite,
         Ergebnis ist der lokale Buckel, der `center` am naechsten liegt.
@@ -1039,8 +1102,8 @@ class NozzleLocator:
 
     def cmd_LOCATE(self, gcmd):
         axis = gcmd.get('AXIS', 'X').upper()
-        if axis not in ('X', 'Y', 'DIAG'):
-            raise gcmd.error("AXIS muss X, Y oder DIAG sein")
+        if axis not in ('X', 'Y', 'DIAG', 'XY'):
+            raise gcmd.error("AXIS muss X, Y, XY (2D-Raster) oder DIAG sein")
         runs = gcmd.get_int('REPEATS', self.runs, minval=1)
         span = gcmd.get_float('SPAN', self.sweep_span, above=0.)
         step = gcmd.get_float('STEP', self.sweep_step, above=0.)
@@ -1058,7 +1121,7 @@ class NozzleLocator:
                 gaps = [float(g) for g in gaps_raw.split(',') if g.strip()]
             except ValueError:
                 raise gcmd.error("GAPS muss eine Liste von Zahlen sein")
-            if axis == 'DIAG':
+            if axis in ('DIAG', 'XY'):
                 raise gcmd.error("GAPS geht nur mit AXIS=X oder Y")
             for g in gaps:
                 if self.holder_top_z + g < self._z_floor():
@@ -1083,6 +1146,14 @@ class NozzleLocator:
             if gaps:
                 self._height_series(gcmd, axis, here, baseline, gaps, runs,
                                     span, step, speed)
+                return
+            if axis == 'XY':
+                r = self.locate2d(here[0], here[1], baseline, speed=speed)
+                gcmd.respond_info(
+                    "nozzle_locator 2D: X%.4f Y%.4f (Kruemmung x %.0f / "
+                    "y %.0f Hz/mm^2, rho %.3f, %d Punkte, Amplitude "
+                    "%+.0f Hz)" % (r['x'], r['y'], r['axx'], r['ayy'],
+                                   r['rho'], r['n'], r['amplitude']))
                 return
             if axis == 'DIAG':
                 r = self.measure_coupling(here[0], here[1], baseline,

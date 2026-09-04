@@ -1757,7 +1757,8 @@ class Offset:
         "above baseline for Z_MODE=amplitude, higher = smaller gap), "
         "TIP_EXTRAPOLATE (1 = second fine measurement EXTRAPOLATE_DZ mm "
         "higher and linear extrapolation to gap 0 = the nozzle tip, default "
-        "on). Requires homed, "
+        "on), FIT2D (1 = 6x6 mm raster with paraboloid fit instead of two "
+        "lines). Requires homed, "
         "levelled axes, the reference tool parked with NOZZLE_LOCATOR_PARK "
         "and the coil placed under the nozzle. Results are only shown and "
         "stored -- nothing is written to the tool configs.")
@@ -1800,6 +1801,10 @@ class Offset:
         tip_extrapolate = gcmd.get_int('TIP_EXTRAPOLATE', 1) != 0
         extrapolate_dz = gcmd.get_float('EXTRAPOLATE_DZ', 0.5, minval=0.2,
                                         maxval=3.0)
+        # FIT2D=1: Feinmessung als 6x6-mm-Raster mit Paraboloid-Fit statt
+        # zweier Linien (10.7) -- gleiches Fenster fuer alle Tools, Kreuzterm
+        # inklusive. Default aus, bis am Drucker gefahren.
+        fit2d = gcmd.get_int('FIT2D', 0) != 0
         ref_tool, ordered_tools = self._xy_tool_run(gcmd)
         # Nie selbst homen oder leveln: die Halterung steht auf dem Bett.
         locator._require_homed()
@@ -1870,7 +1875,7 @@ class Offset:
             results = self._run_xy_calibration(
                 gcmd, locator, ref_tool, ordered_tools, dry_run, temp,
                 iterations, z_mode, tip_extrapolate=tip_extrapolate,
-                extrapolate_dz=extrapolate_dz)
+                extrapolate_dz=extrapolate_dz, fit2d=fit2d)
         except Exception as e:
             # Bei Abbruch zurueck auf das Referenztool (Tobis Wunsch,
             # 2026-09-04). Das muss HIER passieren, solange der Fehler das
@@ -1992,10 +1997,32 @@ class Offset:
 
     def _run_xy_calibration(self, gcmd, locator, ref_tool, ordered_tools,
                             dry_run, temp, iterations, z_mode='switch',
-                            tip_extrapolate=False, extrapolate_dz=0.5):
+                            tip_extrapolate=False, extrapolate_dz=0.5,
+                            fit2d=False):
         results = {}
         ref_pos = None
         ref_gap = None
+
+        def measure(cx0, cy0, label):
+            """Feinmessung: zwei Linien (X->Y-Iteration) oder ein
+            2D-Raster mit Paraboloid-Fit. -> (rx, ry, extra)"""
+            if fit2d:
+                r = locator.locate2d(cx0, cy0, baseline, label=label)
+                rx = {'center': r['x'], 'fwd': r['x'], 'rev': r['x'],
+                      'spread': 0.0}
+                ry = {'center': r['y'], 'fwd': r['y'], 'rev': r['y'],
+                      'spread': 0.0}
+                return rx, ry, {'rho': r['rho'], 'fit': '2d',
+                                'axx': r['axx'], 'ayy': r['ayy']}
+            rx = ry = None
+            for _ in range(iterations):
+                rx = locator.locate('X', cx0 if rx is None else rx['center'],
+                                    baseline)
+                locator._move([rx['center'], None, None], locator.move_speed)
+                ry = locator.locate('Y', cy0 if ry is None else ry['center'],
+                                    baseline)
+                locator._move([None, ry['center'], None], locator.move_speed)
+            return rx, ry, {'fit': 'lines'}
         ref_z = None
         baseline = None
         # Gleicher Spalt statt gleicher Amplitude (Tobi, 2026-09-04): die
@@ -2126,17 +2153,11 @@ class Offset:
                 % (tool_nr, pred[0], pred[1], cx, amp_x, cy, amp_y,
                    z_reached, z_note, amp))
 
-            # X -> Y -> X: Fixpunktiteration gegen die Kreuzkopplung.
-            # Ein X-Sweep bei festem y liefert x0 - (c/a)*(y - y0); der
-            # Restfehler schrumpft pro voller Runde um rho^2.
-            rx = ry = None
-            for _ in range(iterations):
-                rx = locator.locate('X', cx if rx is None else rx['center'],
-                                    baseline)
-                locator._move([rx['center'], None, None], locator.move_speed)
-                ry = locator.locate('Y', cy if ry is None else ry['center'],
-                                    baseline)
-                locator._move([None, ry['center'], None], locator.move_speed)
+            # Feinmessung: X -> Y -> X (Fixpunktiteration gegen die
+            # Kreuzkopplung; ein X-Sweep bei festem y liefert
+            # x0 - (c/a)*(y - y0), der Restfehler schrumpft je Runde um
+            # rho^2) -- oder ein 2D-Raster mit Paraboloid-Fit (FIT2D=1).
+            rx, ry, extra = measure(cx, cy, "T%d fein" % tool_nr)
 
             entry = {
                 'x_peak': rx['center'], 'y_peak': ry['center'],
@@ -2148,6 +2169,7 @@ class Offset:
                 'amplitude': amp,
                 'z_mode': 'switch' if (zs is not None) else 'amplitude',
             }
+            entry.update(extra)
             if tool_nr == ref_tool:
                 ref_gap = z_reached - locator.holder_top_z
             if tip_extrapolate:
@@ -2162,10 +2184,8 @@ class Offset:
                 gap2 = gap1 + extrapolate_dz
                 locator._move([None, None, z_reached + extrapolate_dz],
                               locator.approach_speed)
-                rx2 = locator.locate('X', rx['center'], baseline)
-                locator._move([rx2['center'], None, None],
-                              locator.move_speed)
-                ry2 = locator.locate('Y', ry['center'], baseline)
+                rx2, ry2, _ = measure(rx['center'], ry['center'],
+                                      "T%d Spalt 2" % tool_nr)
                 tip_x = fit.tip_extrapolate(rx['center'], gap1,
                                             rx2['center'], gap2)
                 tip_y = fit.tip_extrapolate(ry['center'], gap1,

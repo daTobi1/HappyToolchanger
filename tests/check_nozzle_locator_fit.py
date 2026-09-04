@@ -471,6 +471,59 @@ def main():
     close(fit.tip_slope(5.2143, 0.465, 5.5264, 1.0),
           (5.5264 - 5.2143) / 0.535, 1e-9, "tip_slope falsch")
 
+    # --- 19: 2D-Paraboloid-Fit ueber ein kleines Raster ---
+    # z = c + gx x + gy y + axx x^2 + ayy y^2 + axy xy um (cx, cy);
+    # Scheitel aus grad z = 0. Nutzt alle Rasterpunkte und den Kreuzterm
+    # zugleich -- zwei Linien sehen den Kreuzterm nicht (6.4).
+    def bell2d(x0, y0, a, b, c_xy, pts):
+        return [(x, y, 9000.0 - a * (x - x0) ** 2 - b * (y - y0) ** 2
+                 - c_xy * (x - x0) * (y - y0)) for x, y in pts]
+    grid = [(120.0 + 0.5 * i, 128.0 + 0.5 * j)
+            for i in range(13) for j in range(13)]   # 6 x 6 mm, 0,5 mm
+    r = fit.paraboloid_fit(bell2d(123.2, 130.7, 130.0, 240.0, 40.0, grid),
+                           123.0, 131.0, 2.0)
+    close(r['x'], 123.2, 1e-6, "paraboloid_fit trifft x0 nicht")
+    close(r['y'], 130.7, 1e-6, "paraboloid_fit trifft y0 nicht")
+    close(r['axx'], 130.0, 1e-6, "paraboloid_fit: Kruemmung x falsch")
+    close(r['ayy'], 240.0, 1e-6, "paraboloid_fit: Kruemmung y falsch")
+    close(r['axy'], 40.0, 1e-6, "paraboloid_fit: Kreuzterm falsch")
+    close(r['rho'], 40.0 / (2.0 * (130.0 * 240.0) ** 0.5), 1e-9,
+          "paraboloid_fit: rho nicht c/(2 sqrt(ab))")
+    ok(r['n'] > 40, "paraboloid_fit nimmt zu wenige Punkte im Radius",
+       str(r['n']))
+    # Nur Punkte im Radius zaehlen: ein Ausreisser weit draussen stoert nicht
+    far = bell2d(123.2, 130.7, 130.0, 240.0, 0.0, grid) + [(127.0, 135.0, 0.0)]
+    close(fit.paraboloid_fit(far, 123.0, 131.0, 2.0)['x'], 123.2, 1e-6,
+          "paraboloid_fit laesst Punkte ausserhalb des Radius einfliessen")
+    # Konstante Ablage und lineare Drift ueber die Sweep-Reihenfolge: die
+    # Serpentine wechselt je Zeile die Richtung, ein Zeitdrift kippt also
+    # die Zeilen abwechselnd -- das Paraboloid mittelt das. Hier nur die
+    # Ablage: sie darf nichts aendern.
+    shifted = [(x, y, v + 50000.0)
+               for x, y, v in bell2d(123.2, 130.7, 130.0, 240.0, 0.0, grid)]
+    close(fit.paraboloid_fit(shifted, 123.0, 131.0, 2.0)['y'], 130.7, 1e-6,
+          "paraboloid_fit: konstante Ablage verschiebt den Scheitel")
+    # Sattel oder Tal -> Fehler, zu wenige Punkte -> Fehler
+    try:
+        fit.paraboloid_fit(bell2d(123.2, 130.7, -130.0, 240.0, 0.0, grid),
+                           123.0, 131.0, 2.0)
+        ok(False, "paraboloid_fit akzeptiert einen Sattel")
+    except ValueError:
+        ok(True, "")
+    try:
+        fit.paraboloid_fit(bell2d(123.2, 130.7, 130.0, 240.0, 0.0, grid[:5]),
+                           120.0, 128.0, 2.0)
+        ok(False, "paraboloid_fit akzeptiert 5 Punkte")
+    except ValueError:
+        ok(True, "")
+    # Scheitel ausserhalb des Radius -> Fehler statt Extrapolation
+    try:
+        fit.paraboloid_fit(bell2d(126.0, 133.0, 130.0, 240.0, 0.0, grid),
+                           123.0, 131.0, 2.0)
+        ok(False, "paraboloid_fit extrapoliert einen Scheitel ausserhalb")
+    except ValueError:
+        ok(True, "")
+
     print("%d Zusicherungen geprueft" % CHECKS[0])
     if FINDINGS:
         for f in FINDINGS:

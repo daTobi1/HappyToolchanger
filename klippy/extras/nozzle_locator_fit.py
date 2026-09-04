@@ -356,3 +356,76 @@ def tip_extrapolate(p1, g1, p2, g2):
     Arbeiten 10.5), also beide Spalte so klein wie moeglich waehlen.
     """
     return p1 - tip_slope(p1, g1, p2, g2) * g1
+
+
+def _solve(matrix, rhs):
+    """Gauss mit Spaltenpivot fuer kleine, dichte Systeme (6x6)."""
+    n = len(rhs)
+    m = [list(row) + [rhs[i]] for i, row in enumerate(matrix)]
+    for col in range(n):
+        piv = max(range(col, n), key=lambda r: abs(m[r][col]))
+        if abs(m[piv][col]) < 1e-12:
+            raise ValueError("Fit nicht loesbar (entartete Punktlage)")
+        m[col], m[piv] = m[piv], m[col]
+        for r in range(n):
+            if r == col:
+                continue
+            f = m[r][col] / m[col][col]
+            if f:
+                for k in range(col, n + 1):
+                    m[r][k] -= f * m[col][k]
+    return [m[i][n] / m[i][i] for i in range(n)]
+
+
+def paraboloid_fit(points, cx, cy, radius):
+    """2D-Scheitel aus einem kleinen Raster: Kleinstequadrate-Paraboloid
+    z = c + gx x + gy y + axx x^2 + ayy y^2 + axy xy (x, y relativ zu
+    cx, cy) ueber alle Punkte im Umkreis `radius`.
+    -> {'x', 'y', 'axx', 'ayy', 'axy', 'rho', 'n'}; Kruemmungen positiv
+    fuer einen Hochpunkt, rho = axy / (2 sqrt(axx ayy)) der Kreuzterm
+    (6.4), n die Zahl der benutzten Punkte.
+
+    Nutzt alle Rasterpunkte und den Kreuzterm zugleich -- zwei
+    achsparallele Linien sehen den Kreuzterm nicht und messen bei einer
+    verkippten Glocke systematisch daneben. Der Radius haelt den Fit auf
+    dem Buckel (der ist keine Parabel, die Flanken kippen den Scheitel).
+    Wirft ValueError bei zu wenigen Punkten, einem Sattel oder Tal, oder
+    wenn der Scheitel ausserhalb des Radius liegt (dann war die
+    Vorhersage zu weit weg: Grobsuche wiederholen statt extrapolieren).
+    """
+    rows = []
+    for x0, y0, z in points:
+        x, y = x0 - cx, y0 - cy
+        if x * x + y * y > radius * radius:
+            continue
+        rows.append(([1.0, x, y, x * x, y * y, x * y], z))
+    n = len(rows)
+    if n < 6:
+        raise ValueError("2D-Fit braucht mindestens 6 Punkte im Radius, "
+                         "hat %d" % n)
+    S = [[0.0] * 6 for _ in range(6)]
+    t = [0.0] * 6
+    for f, z in rows:
+        for a in range(6):
+            t[a] += f[a] * z
+            fa = f[a]
+            Sa = S[a]
+            for b in range(6):
+                Sa[b] += fa * f[b]
+    c, gx, gy, axx, ayy, axy = _solve(S, t)
+    if axx >= 0.0 or ayy >= 0.0:
+        raise ValueError("2D-Fit hat keinen Hochpunkt (a_xx=%.4g, a_yy=%.4g)"
+                         % (axx, ayy))
+    det = 4.0 * axx * ayy - axy * axy
+    if det <= 0.0:
+        raise ValueError("2D-Fit ist ein Sattel (Kreuzterm zu gross)")
+    # grad = 0: [2axx axy; axy 2ayy] [vx; vy] = -[gx; gy]
+    vx = (-gx * 2.0 * ayy + gy * axy) / det
+    vy = (-gy * 2.0 * axx + gx * axy) / det
+    if vx * vx + vy * vy > radius * radius:
+        raise ValueError("2D-Scheitel liegt ausserhalb des Radius (%.2f mm "
+                         "von der Rastermitte) -- Grobsuche wiederholen"
+                         % ((vx * vx + vy * vy) ** 0.5))
+    a, b = -axx, -ayy
+    return {'x': cx + vx, 'y': cy + vy, 'axx': a, 'ayy': b, 'axy': -axy,
+            'rho': -axy / (2.0 * (a * b) ** 0.5), 'n': n}
