@@ -2893,7 +2893,16 @@ function xyOffsetSection() {
         '<label class="btn btn-outline-secondary" for="xy-method-eddy">' +
           'Eddy-Sweep</label>' +
       '</div>' +
-      '<button class="btn btn-sm btn-primary" id="xy-wizard-btn">Assistent&hellip;</button>' +
+      '<div class="d-flex gap-1">' +
+        // Nur sichtbar, solange die Sonde aktiv ist (nozzle_locator geladen):
+        // direkter Lauf ohne Neustart/Homen/Aufsetzen und das Deaktivieren
+        // fuer den Fall "Sonde aktiv lassen" am Ende des Assistenten.
+        '<button class="btn btn-sm btn-outline-primary d-none" id="xy-run-btn" ' +
+          'title="Sonde ist aktiv: Messlauf direkt starten">Messlauf</button>' +
+        '<button class="btn btn-sm btn-outline-warning d-none" id="xy-deactivate-btn" ' +
+          'title="Sonde aus der Config nehmen, Klipper neu starten">Sonde deaktivieren</button>' +
+        '<button class="btn btn-sm btn-primary" id="xy-wizard-btn">Assistent&hellip;</button>' +
+      '</div>' +
     '</div>' +
     '<div id="xy-sparkline" class="mb-2"></div>' +
     xyMapPanel() +
@@ -3137,7 +3146,7 @@ function xyImageBodyHtml(t, entry, entries, opts) {
       ? '<div class="form-check mb-0"><input type="checkbox" class="form-check-input" id="xy-img-log" checked ' +
         'onchange="xyRenderImages()"><label class="form-check-label" for="xy-img-log">H&ouml;he logarithmisch</label></div>'
       : '') +
-    '<button type="button" class="btn btn-sm btn-outline-primary" onclick="xyShowOverlay(\x27' +
+    '<button type="button" class="btn btn-sm btn-outline-primary" onclick="xyOverlayFromImage(\x27' +
     escapeHtml(String(t)) + '\x27)">Mit anderem Tool &uuml;berlagern&hellip;</button></div>';
   return head + entries.map(function (e, i) {
     var link = (e.kind === 'raster' && opts.ip)
@@ -3226,6 +3235,14 @@ function xyOverlayLayers(results, f) {
     if (b) b = O.normalizeLayer(b);
   }
   return { a: a, b: b, shift: shift };
+}
+
+// Aus dem Messbild-Dialog heraus (Tobi, 2026-09-04: "passiert nichts"):
+// alertDialog reiht Dialoge hintereinander, der Editor kaeme also erst
+// nach dem OK des Messbilds. Deshalb das Messbild erst schliessen.
+function xyOverlayFromImage(t) {
+  $('#confirmModalOk').trigger('click');
+  return xyShowOverlay(t);
 }
 
 var _xyOverlayForm = null;
@@ -3516,6 +3533,7 @@ function xyLocatorAvailable() {
 
 function pollXySparkline() {
   return xyLocatorAvailable().then(function (have) {
+    $('#xy-run-btn, #xy-deactivate-btn').toggleClass('d-none', !have);
     if (!have) { renderXySparkline(null); return null; }
     return Promise.resolve(
       $.get(printerUrl(printerIp, "/printer/objects/query?nozzle_locator"))
@@ -3760,13 +3778,16 @@ function xyProbeActivate() {
         "Drucker ausfuehren, waehrend die Sonde steckt.");
       return updateConfigFile("xy_probe.cfg", function () { return template; });
     })
-    .then(function () { return restartKlipperAndWait(); });
+    .then(function () { return restartKlipperAndWait(); })
+    // Sichtbarkeit von "Messlauf"/"Sonde deaktivieren" haengt daran
+    .then(function (r) { _xyLocatorProbe = null; return r; });
 }
 
 function xyProbeDeactivate() {
   return updateConfigFile("xy_probe.cfg", function () {
     return "# XY-Sonde deaktiviert.\n";
-  }).then(function () { return restartKlipperAndWait(); });
+  }).then(function () { return restartKlipperAndWait(); })
+    .then(function (r) { _xyLocatorProbe = null; return r; });
 }
 
 // FIRMWARE_RESTART und warten, bis Klipper wieder 'ready' meldet. Ein
@@ -4378,22 +4399,38 @@ function xyWizard() {
         }
         return updateAllProbeResults();
       }).then(function () {
+        // Zwei Wege (Tobi, 2026-09-04: "das soll der Nutzer sich aussuchen
+        // koennen"): deaktivieren und abstecken wie bisher, oder die Sonde
+        // aktiv und angesteckt lassen -- dann kann der naechste Lauf direkt
+        // ueber den Knopf "Messlauf" im XY-Block starten, ohne Neustart,
+        // Homen und Aufsetzen.
         return alertDialog("Abschließen",
-          "Die Sonde wird jetzt aus der Config entfernt und Klipper neu " +
-          "gestartet. Erst DANACH die Halterung abnehmen und die Sonde " +
-          "abziehen.",
-          { okLabel: "Deaktivieren" });
-      }).then(function () {
+          "<p class=\"mb-2\"><b>Deaktivieren:</b> die Sonde wird aus der Config " +
+          "entfernt und Klipper neu gestartet. Erst DANACH die Halterung " +
+          "abnehmen und die Sonde abziehen.</p>" +
+          "<p class=\"mb-0\"><b>Aktiv lassen:</b> Sonde und Halterung bleiben, wie " +
+          "sie sind. Ein weiterer Lauf startet dann direkt über „Messlauf“ im " +
+          "XY-Block; deaktivieren geht später über „Sonde deaktivieren“ dort. " +
+          "Vor jedem Homen muss die Halterung trotzdem runter.</p>",
+          { okLabel: "Deaktivieren",
+            extraLabel: "Sonde aktiv lassen", extraClass: "btn-outline-secondary" });
+      }).then(function (choice) {
+        if (choice === 'extra') {
+          return alertDialog("Sonde bleibt aktiv",
+            "Sonde und Halterung bleiben. Nächster Lauf: „Messlauf“ im " +
+            "XY-Block. Nicht homen, solange die Halterung auf dem Bett steht.",
+            { okClass: "btn-secondary" }).then(function () { return 'kept'; });
+        }
         // Schlaegt das Deaktivieren selbst fehl, steht die Halterung immer
         // noch auf dem Bett -- der catch() unten muss das wissen.
         return xyProbeDeactivate().catch(function (e) {
           e.xyHolderMounted = true;
           throw e;
+        }).then(function () {
+          return alertDialog("Fertig",
+            "Sonde ist deaktiviert. Halterung jetzt vom Bett nehmen und die " +
+            "Sonde abziehen.");
         });
-      }).then(function () {
-        return alertDialog("Fertig",
-          "Sonde ist deaktiviert. Halterung jetzt vom Bett nehmen und die " +
-          "Sonde abziehen.");
       });
   }).catch(function (err) {
     var mounted = !!(err && err.xyHolderMounted);
@@ -4440,6 +4477,76 @@ function xyWizard() {
     });
   });
 }
+
+// Direkter Messlauf bei aktiver Sonde (Tobi, 2026-09-04: nach "Sonde
+// aktiv lassen" am Ende des Assistenten). Kein Neustart, kein Homen, kein
+// Aufsetzen: Halterung und Sonde stehen noch, das Referenztool steht auf
+// der Anfahrposition, wohin der letzte Lauf es zurueckgebracht hat. Das
+// Kommando selbst prueft Homing, Leveling und Toolchanger-Status.
+function xyRunDirect() {
+  var cmd;
+  try {
+    cmd = xyCalibrateCommand(xySelectedTools(), getSelectedReferenceTool(0));
+  } catch (e) {
+    cmd = "CALIBRATE_XY_OFFSETS";
+  }
+  return confirmDialog({
+    title: "XY-Messlauf starten",
+    body: '<p class="small">Sonde und Halterung stehen noch unter der D&uuml;se ' +
+          'des Referenztools, das Referenztool ist montiert und steht auf der ' +
+          'Anfahrposition (wie am Ende des letzten Laufs). Es wird nicht gehomt.</p>' +
+          '<p class="mb-0"><code>' + escapeHtml(cmd) + '</code></p>',
+    okLabel: "Starten"
+  }).then(function (ok) {
+    if (!ok) return null;
+    var progress = xyRunProgressDialog("XY-Messlauf läuft");
+    return xySendMounted(cmd, "XY-Messlauf").then(function () {
+      return progress;
+    }, function (e) {
+      $("#confirmModalOk").prop("disabled", false).trigger("click");
+      throw e;
+    }).then(function () {
+      return waitForPrinterIdle(3600000);
+    }).then(function () {
+      return updateAllProbeResults();
+    });
+  }).catch(function (err) {
+    var detail = gcodeErrorMessage(err) || (err && err.message) || "Unbekannter Fehler";
+    return alertDialog("XY-Messlauf abgebrochen",
+      '<p class="mb-0">' + escapeHtml(detail) + '</p>' +
+      '<p class="mt-2 mb-0 text-warning">Die Halterung steht noch auf dem Bett -- ' +
+      'nicht homen, solange sie draufsteht.</p>');
+  });
+}
+
+$(document).on("click", "#xy-run-btn", function () {
+  var $btn = $(this);
+  $btn.prop("disabled", true);
+  xyRunDirect().then(function () { $btn.prop("disabled", false); },
+                     function () { $btn.prop("disabled", false); });
+});
+
+$(document).on("click", "#xy-deactivate-btn", function () {
+  var $btn = $(this);
+  $btn.prop("disabled", true);
+  confirmDialog({
+    title: "Sonde deaktivieren",
+    body: "Die Sonde wird aus der Config entfernt und Klipper neu gestartet " +
+          "(das Homing geht dabei verloren). Erst DANACH die Halterung " +
+          "abnehmen und die Sonde abziehen.",
+    okLabel: "Deaktivieren", okClass: "btn-warning"
+  }).then(function (ok) {
+    if (!ok) return null;
+    return xyProbeDeactivate().then(function () {
+      return alertDialog("Fertig",
+        "Sonde ist deaktiviert. Halterung jetzt vom Bett nehmen und die " +
+        "Sonde abziehen.");
+    });
+  }).catch(function (err) {
+    var detail = gcodeErrorMessage(err) || (err && err.message) || "Unbekannter Fehler";
+    return alertDialog("Deaktivieren fehlgeschlagen", '<p class="mb-0">' + escapeHtml(detail) + '</p>');
+  }).then(function () { $btn.prop("disabled", false); });
+});
 
 $(document).on("click", "#xy-wizard-btn", function () {
   var $btn = $(this);

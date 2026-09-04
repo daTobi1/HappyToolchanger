@@ -534,6 +534,19 @@ function runXyWizardGateTest() {
     });
   });
 
+  // --- "Abschliessen": Sonde aktiv lassen (Tobi, 2026-09-04: der Nutzer
+  // soll sich aussuchen koennen, ob er abstecken und deaktivieren muss) ---
+  seq = seq.then(function () {
+    return runWizard([true, true, 'extra', true], { idle: true }).then(function (r) {
+      check('Sonde aktiv lassen: kein Deaktivieren, kein FIRMWARE_RESTART',
+        r.deactivate === 0, 'deactivate=' + r.deactivate);
+      check('Sonde aktiv lassen: Abschluss-Dialog sagt, dass sie aktiv bleibt',
+        r.confirms.indexOf('Abschließen') !== -1 &&
+        r.confirms.indexOf('Sonde bleibt aktiv') !== -1,
+        JSON.stringify(r.confirms));
+    });
+  });
+
   // --- Messlauf laeuft noch (nie idle) -> kein FIRMWARE_RESTART ---
   seq = seq.then(function () {
     return runWizard([true, true, null], { idle: false })
@@ -1055,4 +1068,42 @@ function runParkTest() {
         xyCalibrateCommand([], 2) === 'CALIBRATE_XY_OFFSETS REF_TOOL=2 TOOLS=2');
   check('xyCalibrateCommand: ohne Angaben das nackte Kommando',
         xyCalibrateCommand(null, null) === 'CALIBRATE_XY_OFFSETS');
+}
+
+// --------------------------------------------------------------------
+// Teil N+6: Sonde aktiv lassen -- Knoepfe "Messlauf" und "Sonde
+// deaktivieren" im XY-Block (nur bei geladenem nozzle_locator sichtbar)
+// und der direkte Lauf xyRunDirect(): Fortschrittsdialog vor dem Senden,
+// Kommando aus Auswahl und Referenz, kein Homen.
+// --------------------------------------------------------------------
+{
+  var sec = grab('xyOffsetSection');
+  check('XY-Block: Knopf Messlauf (versteckt bis die Sonde aktiv ist)',
+        /id="xy-run-btn"/.test(sec) && /d-none" id="xy-run-btn"/.test(sec));
+  check('XY-Block: Knopf Sonde deaktivieren', /id="xy-deactivate-btn"/.test(sec));
+  check('Poll blendet die Knoepfe nach nozzle_locator ein/aus',
+        /xy-run-btn, #xy-deactivate-btn/.test(grab('pollXySparkline')));
+
+  // Stubs unter eigenem Namen (Suffix RD), damit sie nicht in die spaeter
+  // laufenden Assistenten-Tests hineinwirken -- die teilen sich die globals.
+  var sent = [], progressCalls = [], confirms = [];
+  global.confirmDialogRD = function (o) { confirms.push(o.title); return Promise.resolve(true); };
+  global.alertDialogRD = function (t) { confirms.push(t); return Promise.resolve(true); };
+  global.xyRunProgressDialogRD = function () { progressCalls.push(sent.length); return Promise.resolve(true); };
+  global.xySendMountedRD = function (s) { sent.push(s); return Promise.resolve({ transport: true }); };
+  global.waitForPrinterIdleRD = function () { return Promise.resolve(true); };
+  global.updateAllProbeResultsRD = function () { return Promise.resolve(); };
+  global.xySelectedToolsRD = function () { return [0, 1]; };
+  global.getSelectedReferenceToolRD = function () { return 0; };
+  var rd = grab('xyRunDirect').replace(
+    /\b(confirmDialog|alertDialog|xyRunProgressDialog|xySendMounted|waitForPrinterIdle|updateAllProbeResults|xySelectedTools|getSelectedReferenceTool)\(/g,
+    '$1RD(');
+  eval(grab('escapeHtml') + grab('gcodeErrorMessage') + grab('xyCalibrateCommand') + rd);
+  xyRunDirect().then(function () {
+    check('xyRunDirect: Kommando aus Auswahl und Referenz, ohne G28',
+          sent.length === 1 && sent[0] === 'CALIBRATE_XY_OFFSETS REF_TOOL=0 TOOLS=0,1', JSON.stringify(sent));
+    check('xyRunDirect: Fortschrittsdialog vor dem Senden', progressCalls.length === 1 && progressCalls[0] === 0);
+    check('xyRunDirect: nur ein Bestaetigungsdialog, kein Abbruch-Dialog',
+          JSON.stringify(confirms) === JSON.stringify(['XY-Messlauf starten']), JSON.stringify(confirms));
+  });
 }
