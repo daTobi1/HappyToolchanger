@@ -543,3 +543,19 @@ T2/T3 reproduzieren den ersten Lauf (10.2) auf 15 µm — bei anderer Halterungs
 **Der eigentliche Befund: die Spalte waren im Lauf nicht gleich.** Amplituden bei „gleichem Spalt": T1 8,1 kHz, T2 11,7, T3 10,8, T0 15,7. Und die Feinraster: T1 bei Z 53,76 hat dieselbe Amplitude (8,47 kHz) wie T0 bei Z 54,12 (8,58 kHz) — T1s Spitze steht also bei gleichem Z rund 0,36 mm **höher** als T0s, T1 ist kürzer. Der Spaltmodus rechnet mit dem Gegenteil (z_trigger T1 1,337 > T0 1,026 → „T1 länger") und hat T0 auf ~0,1 mm und T3 auf wenige Hundertstel über die Halterung gesetzt (kein Schaden, T1-Kontrolle vor/nach dem Lauf stabil). Entweder ist die Vorzeichen-Deutung von `z_trigger` im Spaltmodus falsch, oder T0s Z-Daten sind veraltet (Hotend gewechselt?). **Solange das offen ist, ist `Z_MODE=amplitude` mit identischen Hotends der ehrlichere Gleichspalt** — die Spule selbst setzt den Spalt, unabhängig von Z-Daten; die Platine addiert am Buckel nur ~1 %.
 
 Weitere Code-Punkte: die Höhenserie lässt den Kopf am Sweep-Ende stehen statt auf dem Scheitel (Folgekommando fiel darauf herein); `target_amplitude` als Laufparameter (`TARGET_AMPLITUDE=`), damit der Amplitudenmodus einen kleinen Spalt fahren kann.
+
+### 10.6 Dritter Lauf: Amplitudenmodus, T0 bis T3 (2026-09-04, 14:30)
+
+`CALIBRATE_XY_OFFSETS REF_TOOL=1 TOOLS=0,1,2,3 Z_MODE=amplitude TARGET_AMPLITUDE=8000 MIN_GAP=0.25`, 456 s. Amplituden jetzt 8,5–9,4 kHz für alle (Spaltmodus davor: 8,1–15,7). Messhöhen: T1 53,75, T0 54,00, T2 54,00, T3 53,50 — **T0 steht bei gleicher Amplitude 0,25 mm höher als T1, ist also länger; der Spaltmodus hatte ihn 0,31 tiefer gesetzt.** T3 passt zum Spaltmodus (kürzer). Also sind T0s Z-Switch-Daten falsch oder veraltet, nicht das Vorzeichen im Code.
+
+| Tool | Sonde (zu T1) | Kamera (zu T1) | Abweichung | Spaltmodus-Lauf (10.5) |
+|---|---|---|---|---|
+| T0 | −0,3601 / +5,5264 | −0,330 / +5,050 | −30 / **+476 µm** | −170 / +164 (bei Z 53,465) |
+| T2 | +0,2156 / +0,7149 | +0,110 / +0,490 | +106 / +225 µm | +103 / +240 |
+| T3 | −0,2414 / −0,7231 | −0,510 / −0,790 | +269 / +67 µm | +263 / +70 |
+
+T2 und T3 sind über drei Läufe, zwei Halterungspositionen und zwei Spaltmodi auf ~15 µm stabil. **T0s Y hängt massiv vom Spalt ab:** Spalt ~0,47 → +5,21, Spalt ~1,0 → +5,53, Serie bis 2,3 mm → weiter steigend; Extrapolation auf Spalt 0 ≈ +4,9…5,0, Kamera +5,05.
+
+**Deutung, die alle Befunde zusammenbringt:** der Platinen-Abzug (10.5) zeigte nur ~20 µm additive Wirkung am Buckel. Eine Spaltabhängigkeit von 0,6 mm/mm entsteht aber, wenn **die Düsenspitze nicht auf der Blockachse sitzt** (Gewindespiel, Düse schief eingeschraubt, Spitze beschädigt): bei großem Spalt misst die Spule den Block, bei kleinem die Spitze, und der Scheitel wandert zwischen beiden. T1 zeigt −48 µm/mm (fast zentriert), T0 +600 µm/mm (Spitze ~0,5 mm neben der Blockachse, in −Y). Die Kamera sieht die Bohrung, also die Spitze. **Prüfbar mit der Kamera von unten: liegt T0s Bohrung mittig im Blockumriss?**
+
+**Konsequenz für das Verfahren:** die Spule liefert bei Spalt → 0 die Spitze. Zwei Messungen je Tool bei zwei kleinen Spalten und lineare Extrapolation auf 0 („Spitzen-Extrapolation") machen das Ergebnis unabhängig von Block-Exzentrizität — und nebenbei von jeder additiven Störung, die mit dem Spalt schwächer wird (Platine). Kosten: eine zweite Feinmessung je Tool, ~30 s. Offen: nichtlinear zum kleinen Spalt hin (10.5), also Spalte so klein wie möglich (0,25/0,6) und ggf. drei Stützstellen. Und im Amplitudenmodus die Z-Schritte von 0,25 auf 0,05 mm verfeinern, sonst streut der Spalt je Tool um bis zu 0,25 mm.
