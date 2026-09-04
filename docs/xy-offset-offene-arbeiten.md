@@ -415,3 +415,34 @@ Tobis Einwurf: mit einem Wirbelstromsensor lässt sich per Raster ein Bild des M
 Tests: Fit 71 Zusicherungen (Bahn, Raster-Gitter), `tests/check_nozzle_map.js` 17 (Viewer-Logik ohne DOM).
 
 **Reihenfolge am Drucker, ergänzt:** nach dem Scan-Test (9.4 Schritt 1–2) auf Messhöhe `NOZZLE_LOCATOR_MAP LABEL=T0`, dann `T1`, `NOZZLE_LOCATOR_PARK`-Höhe, gleicher Spalt (Z aus `z_trigger`-Differenz), `NOZZLE_LOCATOR_MAP LABEL=T1`, und beide in `map.html` als A − B ansehen. Erst danach die Höhenserie.
+
+### 9.6 Recherche: was Literatur und Vergleichsprojekte zur Genauigkeit sagen (2026-09-04)
+
+Quellen: TI-Applikationsbericht SNOA931 „LDC1612/LDC1614 Linear Position Sensing", LDC1612-Datenblatt, Mook/Simonin „Eddy current imaging using array probes" (ECNDT 2014), EddySeek (charliemayall, Klipper-Add-on für Düsenausrichtung per LDC1612), BTT-Eddy-Doku.
+
+**Was sich bestätigt hat**
+
+- **Kleiner Spalt ist richtig.** TI: Zielabstand unter einem Spulendurchmesser halten, beste Auflösung beim kleinsten Abstand (Tabelle 1 in SNOA931: 43 Codes/µm bei 1 mm gegen 16 bei 3 mm). Deckt sich mit 8.3 — der Block-Anteil sinkt mit dem Spalt ebenfalls. `fine_gap` 0,75 bleibt; der eigentliche Hebel ist eine **genau bekannte Halterungshöhe** (`holder_top_z`), damit `min_gap` kleiner werden darf.
+- **Die Zeitdrift ist der Referenzoszillator des LDC1612, nicht die Spule.** Datenblatt: interner Referenztakt −13 ppm/K. Bei 3,13 MHz sind das 41 Hz/K — der Vorversuch maß 39,8 Hz/K. Der bidirektionale Sweep bleibt die richtige Antwort; ein Aufwärmen der Sonde vor dem Lauf verkleinert den Rest, und die Spulentemperatur gehört weiter zu jeder Messung.
+- **Sample-Rauschen ist nicht der Engpass.** TI Tabelle 2: σ 0,36 µm bei 26 ms Wandlung, 1,3 µm bei 1,6 ms, 17 µm bei 0,1 ms (ihre Geometrie). Klipper fährt 2,5 ms (400 Hz); unsere 21 Hz σ je Sample ergeben bei ~600 Samples je Sweep und 115 Hz/mm² Krümmung rund 1–2 µm Scheitelrauschen — genau die beobachtete Spannweite. Eine andere Abtastrate (RCOUNT) bringt nichts: weniger Rauschen je Sample gegen weniger Samples, das Produkt bleibt. Klippers `ldc1612` legt 400 Hz ohnehin fest.
+- **EddySeek macht dasselbe, und wir sind wiederholbarer.** Spule auf dem Bett, Düse darüber, kontinuierliche X/Y-Sweeps (20 mm/s grob, 10 mm/s fein), Zeitstempel → Schrittmotorposition wie bei uns, frequenzgewichteter 2D-Schwerpunkt statt Parabel, Standard-Messhöhe **5 mm** über der Spule. Ergebnis laut ihrer Doku: σ 21 µm (X) / 14 µm (Y), maximale Streuung 47 µm, 7,3 s je Suche. Unser Verfahren: 1–4 µm Spannweite bei 0,75–1,5 mm Spalt. Das Heizblock-Problem taucht bei EddySeek nicht auf — es misst wie wir nur relativ zum Referenztool, und mit identischen Tools kürzt sich der Block heraus. Unser Sonderfall ist die Eddy-NG-Sonde an T0.
+
+**Was wir übernehmen sollten**
+
+1. **Drive-Current einmal kalibrieren.** LDC1612 will 1,2–1,8 V Spulenamplitude, darunter steigt das Wandlungsrauschen. `xy_probe.cfg` setzt keinen `reg_drive_current`, Klipper nimmt 15. Einmal `LDC_CALIBRATE_DRIVE_CURRENT CHIP=nozzle_locator` mit der Düse auf Messhöhe fahren und den Wert eintragen. (Achtung TI: ein geänderter Drive-Current verschiebt den Ausgabe-Offset — für Scheitel egal, für Amplitudenschwellen neu prüfen.)
+2. **Geschwindigkeit an die Sampledichte klemmen** wie EddySeek (`min_sweep_samples`): statt bei zu wenigen Samples abzubrechen, die Geschwindigkeit so weit senken, dass mindestens N Samples im Fenster liegen. Bei uns: `scan_speed ≤ 400 · span / N`. Für 8 mm und N = 200: 16 mm/s. Kleine Änderung in `_scan`.
+3. **Gestaffelte Parallel-Sweeps** (EddySeek: 3 Linien im Abstand 0,3 mm in der Grobphase) sind ihr Mittel gegen die Kreuzkopplung. Bei uns misst `AXIS=DIAG` den Kreuzterm einmal; ist ρ klein, brauchen wir das nicht.
+
+**Rasterabstand und Rastergröße**
+
+- Die Spulenantwort auf ein kleines Ziel (PSF) ist bei axialen Spulen ein einzelner Buckel von der Breite etwa des Spulendurchmessers (Mook: Auflösung ≈ Spulenmaß; nicht-axiale Sonden haben eine „Mexican-hat"-PSF mit dunklem Halo, das betrifft uns nicht). Die Breite messen wir mit dem ersten Raster selbst (Halbwertsbreite des Düsenflecks).
+- **Nyquist:** Zeilenabstand ≤ halbe Halbwertsbreite. Bei ~10 mm PSF ist 1 mm reichlich, 2 mm noch sauber. Für die **Zeilen** ist der Abstand egal (12 µm Samples). Für **Differenzbilder und Block-Fit** 0,5 mm nur, wenn die Halbwertsbreite unter 4 mm liegt — sonst kostet es Zeit ohne Information.
+- **Mook „Micro-Scanning"** (Bild mehrfach um Bruchteile des Sensorabstands versetzt aufnehmen und gewichtet überlagern) gewinnt nur bei Sensor-Arrays; ein Einzelsensor mit feinem Raster hat das schon.
+- **Rastergröße:** der Block liegt ~8 mm in +Y, die T0-Sonde 16 mm in +Y. Für das Differenzbild T0 − T1 deshalb `HEIGHT=30` (±15 mm, 30 Zeilen, ~1,5 min) oder `Y=` um +5 mm versetzt. Für die reine Düse reichen `WIDTH=12 HEIGHT=12 PITCH=0.5`.
+- **Entfaltung** (Wiener, PSF-Deconvolution aus der ECT-Literatur) verschiebt einen symmetrischen Scheitel nicht und bringt für die Ortung nichts; für den Block-Hintergrund ist ein Modellfit („Buckel + Kante") der sauberere Weg als Entfaltung.
+
+**Was nicht hilft**
+
+- Höhere oder niedrigere Abtastrate (siehe oben).
+- Schnellere Scans als ~10 mm/s für die Feinmessung: die Latenz-Verschiebung `v·Δt` wächst, der Gewinn an Zeit ist bei 2 s je Sweep bedeutungslos.
+- Ein größerer Spalt zugunsten von „mehr Fläche im Bild": TI und 8.3 zeigen in dieselbe Richtung, klein bleiben.
