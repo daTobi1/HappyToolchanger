@@ -97,3 +97,24 @@ const Map3d = require(path.join(__dirname, '..', 'webapp', 'js', 'map3d.js'));
   if (f2.length) { f2.forEach(f => console.log('BEFUND: ' + f)); process.exit(1); }
   console.log('ALLE TESTS OK (3D)');
 }
+
+// ---- 3D: logarithmische Hoehe ---------------------------------------------
+{
+  let c3 = 0; const f3 = [];
+  const ok3 = (cond, what, detail) => { c3++; if (!cond) f3.push(what + (detail ? ' -- ' + detail : '')); };
+  const live = { label: 'T0', baseline: 0, x: 124, y: 130, pitch: 1, rows_total: 1, rows_done: 1, done: true,
+                 xs: [1, 2, 3], ys: [1], values: [[99, -99, null]] };
+  const s = Map3d.mapToSurface(live, { log: true });
+  ok3(s.z[0][0] === 2 && s.z[0][1] === -2 && s.z[0][2] === null,
+      'mapToSurface log: vorzeichenbehafteter log10(1+|z|) fehlt', JSON.stringify(s.z));
+  ok3(/log/.test(s.zlabel), 'mapToSurface log: Achsentitel nennt log nicht', s.zlabel);
+  const lin = Map3d.mapToSurface(live);
+  ok3(lin.z[0][0] === 99 && !/log/.test(lin.zlabel), 'mapToSurface linear veraendert');
+  // Seitenverhaeltnis aus den Rastermassen: 20 x 30 mm -> y/x = 1.5
+  const wide = Object.assign({}, live, { xs: [0, 10, 20], ys: [0, 15, 30], values: [[1,1,1],[1,1,1],[1,1,1]] });
+  const a = Map3d.mapToSurface(wide).aspect;
+  ok3(a && Math.abs(a.x - 1) < 1e-9 && Math.abs(a.y - 1.5) < 1e-9, 'mapToSurface: Seitenverhaeltnis nicht aus den Rastermassen', JSON.stringify(a));
+  console.log(c3 + ' Zusicherungen (3D log) geprueft');
+  if (f3.length) { f3.forEach(f => console.log('BEFUND: ' + f)); process.exit(1); }
+  console.log('ALLE TESTS OK (3D log)');
+}

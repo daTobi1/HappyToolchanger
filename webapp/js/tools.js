@@ -2912,6 +2912,10 @@ function xyMapPanel() {
       '<input class="form-control form-control-sm" id="xy-map-label" value="T0" style="width:5.5em"></div>' +
       '<div class="col-auto"><button class="btn btn-sm btn-outline-primary" id="xy-map-start" ' +
       'onclick="xyStartMap()">Raster starten</button></div>' +
+      '<div class="col-auto form-check small"><input type="checkbox" class="form-check-input" ' +
+      'id="xy-map-log" checked onchange="renderXyMap3d(_xyMapLastStatus)">' +
+      '<label class="form-check-label" for="xy-map-log">H&ouml;he logarithmisch ' +
+      '(Block &uuml;berstrahlt die D&uuml;se sonst)</label></div>' +
     '</div>' +
     '<div id="xy-map-status" class="small text-muted mt-1"></div>' +
     '<div id="xy-map3d" style="width:100%;max-width:640px;height:420px"></div>' +
@@ -2981,17 +2985,21 @@ function xyStartMap() {
 // Live-3D aus printer.nozzle_locator.map. Laeuft im selben Poll wie die
 // Sparkline. Nach dem letzten Zeile: Knopf wieder frei, Link zur 2D-Ansicht.
 var _xyMapKey = null;
+var _xyMapLastStatus = null;
 function renderXyMap3d(status) {
   var el = document.getElementById('xy-map3d');
   if (!el || typeof NozzleMap3d === 'undefined') return;
   var map = status && status.map;
   if (!map || !map.xs || !map.xs.length) return;
-  var key = (map.label || '') + ':' + map.rows_total + ':' + map.x + ':' + map.y;
+  _xyMapLastStatus = status;
+  var log = $('#xy-map-log').is(':checked');
+  var key = (map.label || '') + ':' + map.rows_total + ':' + map.x + ':' + map.y +
+            ':' + (log ? 'log' : 'lin');
   if (key !== _xyMapKey) {
     _xyMapKey = key;
     $('#xy-map-panel').prop('open', true);
   }
-  NozzleMap3d.renderMap3d(el, map, key);
+  NozzleMap3d.renderMap3d(el, map, key, { log: log });
   var st = $('#xy-map-status');
   if (map.done) {
     $('#xy-map-start').prop('disabled', false);

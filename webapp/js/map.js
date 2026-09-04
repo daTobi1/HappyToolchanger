@@ -130,7 +130,8 @@
                    baseline: 0, x: cur.map.x, y: cur.map.y, gap: cur.map.gap,
                    done: true, rows_total: cur.grid.ys.length, rows_done: cur.grid.ys.length,
                    xs: cur.grid.xs, ys: cur.grid.ys, values: cur.values };
-    NozzleMap3d.renderMap3d(el, pseudo, 'map-' + state.mode);
+    NozzleMap3d.renderMap3d(el, pseudo, 'map-' + state.mode + '-' + state.scale,
+                            { log: state.scale === 'log' });
   }
 
   function draw() {

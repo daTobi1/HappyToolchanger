@@ -20,13 +20,24 @@
   // Klipper-Status (oder Datei-JSON mit .grid) -> Plotly-Flaeche.
   // z relativ zur Basislinie, null bleibt null (Plotly laesst die Zelle
   // aus). progress 0..1, title mit Label und Zeilenstand.
-  function mapToSurface(map) {
+  //
+  // opts.log: vorzeichenbehafteter log10(1+|z|). Der Heizblock am
+  // Rasterrand ist ~12x hoeher als der Duesenbuckel -- linear sieht man
+  // nur seine Flanke wie einen Schnitt, die Duese liegt flach am Boden.
+  // aspect: Seitenverhaeltnis aus den Rastermassen, damit 20 x 30 mm
+  // nicht zum Quadrat verzerrt wird.
+  function mapToSurface(map, opts) {
+    opts = opts || {};
     if (!map) return null;
     var g = map.grid || map;
     if (!g.xs || !g.ys || !g.values || !g.xs.length || !g.ys.length) return null;
     var base = (typeof map.baseline === 'number') ? map.baseline : 0;
     var z = g.values.map(function (row) {
-      return row.map(function (v) { return (v === null || v === undefined) ? null : v - base; });
+      return row.map(function (v) {
+        if (v === null || v === undefined) return null;
+        var d = v - base;
+        return opts.log ? Math.sign(d) * Math.log10(1 + Math.abs(d)) : d;
+      });
     });
     var total = map.rows_total || g.ys.length;
     var done = (map.rows_done !== undefined) ? map.rows_done : g.ys.length;
@@ -34,8 +45,11 @@
     var title = (map.label || 'Raster') + ' · Zeile ' + done + ' / ' + total;
     if (map.done) title = (map.label || 'Raster') + ' · fertig (' + total + ' Zeilen)';
     if (typeof map.gap === 'number') title += ' · Spalt ' + map.gap.toFixed(2) + ' mm';
+    var xr = g.xs[g.xs.length - 1] - g.xs[0], yr = g.ys[g.ys.length - 1] - g.ys[0];
+    var aspect = { x: 1, y: (xr > 0 && yr > 0) ? yr / xr : 1, z: 0.6 };
     return { x: g.xs.slice(), y: g.ys.slice(), z: z, progress: progress,
-             title: title, centre: [map.x, map.y] };
+             title: title, centre: [map.x, map.y], aspect: aspect,
+             zlabel: opts.log ? 'log10(Hz ueber Basislinie)' : 'Hz ueber Basislinie' };
   }
 
   var _loading = null;
@@ -54,8 +68,11 @@
 
   // Zeichnet oder aktualisiert die Flaeche in `el`. `key` haelt die
   // Kameraposition ueber Aktualisierungen hinweg (Plotly uirevision).
-  function renderMap3d(el, map, key) {
-    var s = mapToSurface(map);
+  // opts.log wie bei mapToSurface. Kamera schaut von vorn (-Y) schraeg
+  // auf das Raster, damit der Block-Huegel die Duese nicht verdeckt.
+  function renderMap3d(el, map, key, opts) {
+    opts = opts || {};
+    var s = mapToSurface(map, opts);
     if (!s) {
       el.textContent = '';
       return Promise.resolve(false);
@@ -64,9 +81,10 @@
       var trace = {
         type: 'surface', x: s.x, y: s.y, z: s.z,
         colorscale: 'Viridis', showscale: true,
-        colorbar: { title: 'Hz', thickness: 12, len: 0.6 },
+        colorbar: { title: opts.log ? 'log10' : 'Hz', thickness: 12, len: 0.6 },
         contours: { z: { show: true, usecolormap: true, project: { z: true } } },
-        hovertemplate: 'X %{x:.2f}<br>Y %{y:.2f}<br>%{z:.0f} Hz<extra></extra>'
+        hovertemplate: 'X %{x:.2f}<br>Y %{y:.2f}<br>%{z:.2f}' +
+                       (opts.log ? ' (log10)' : ' Hz') + '<extra></extra>'
       };
       var data = [trace];
       if (s.centre && isFinite(s.centre[0]) && isFinite(s.centre[1])) {
@@ -85,8 +103,9 @@
         uirevision: key || 'map',
         scene: {
           xaxis: { title: 'X (mm)' }, yaxis: { title: 'Y (mm)' },
-          zaxis: { title: 'Hz ueber Basislinie' },
-          aspectmode: 'manual', aspectratio: { x: 1, y: 1, z: 0.6 }
+          zaxis: { title: s.zlabel },
+          aspectmode: 'manual', aspectratio: s.aspect,
+          camera: { eye: { x: 1.2, y: -1.7, z: 0.9 } }
         }
       };
       return Plotly.react(el, data, layout, { responsive: true, displaylogo: false })
