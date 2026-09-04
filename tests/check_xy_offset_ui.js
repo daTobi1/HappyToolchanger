@@ -1018,3 +1018,41 @@ function runParkTest() {
   check('xyOverlayLayers: unbekanntes Tool -> a null', L4.a === null);
 }
 
+
+// --------------------------------------------------------------------
+// Teil N+5: Tool-Auswahl ueber allen Abschnitten (Tobi, 2026-09-04: "uns
+// ist diese Sektion verloren gegangen, bei der Kamera- wie bei der
+// Eddy-Vermessung"). toolSelectionPanel() baut die beiden Kaesten
+// (Tools, Referenz), calibrateButton() enthaelt sie NICHT mehr, und der
+// Eddy-Lauf bekommt Auswahl und Referenz als REF_TOOL/TOOLS mit.
+// --------------------------------------------------------------------
+{
+  global.offsetMasterTool = null;
+  global._offsetZCalcDefault = 'median';
+  global._uiZCalcSelection = 'config';
+  global.tapMinTempHint = function () { return ''; };
+  global.tapMinTempDefault = function () { return 0; };
+  eval(grab('computeDefaultRef') + grab('toolSelectionPanel') + grab('calibrateButton') +
+       grab('xyCalibrateCommand'));
+  var panel = toolSelectionPanel([2, 0, 1]);
+  check('toolSelectionPanel: Tools und Referenz drin',
+        /Tools to calibrate/.test(panel) && /Reference \(Master\) tool/.test(panel), panel.slice(0, 200));
+  check('toolSelectionPanel: eine Checkbox je Tool, sortiert',
+        (panel.match(/id="calibrate-tool-\d"/g) || []).join() === 'id="calibrate-tool-0",id="calibrate-tool-1",id="calibrate-tool-2"');
+  check('toolSelectionPanel: Referenz T0 vorausgewaehlt',
+        /id="calibrate-ref-0" value="0" checked/.test(panel));
+  check('toolSelectionPanel: sagt, dass die Auswahl fuer alle Verfahren gilt',
+        /Kamera/.test(panel) && /Eddy/.test(panel) && /Z-Switch/.test(panel));
+  var zbtn = calibrateButton([0, 1], true);
+  check('calibrateButton: Tool-Auswahl nicht mehr im Z-Switch-Abschnitt',
+        !/Tools to calibrate/.test(zbtn) && !/calibrate-ref-/.test(zbtn) && /CALIBRATE Z-OFFSETS/.test(zbtn));
+
+  check('xyCalibrateCommand: Referenz und Auswahl',
+        xyCalibrateCommand([1, 2, 3], 0) === 'CALIBRATE_XY_OFFSETS REF_TOOL=0 TOOLS=0,1,2,3');
+  check('xyCalibrateCommand: Referenz nicht doppelt, sortiert',
+        xyCalibrateCommand([3, 1, 0], 1) === 'CALIBRATE_XY_OFFSETS REF_TOOL=1 TOOLS=0,1,3');
+  check('xyCalibrateCommand: leere Auswahl -> nur Referenz',
+        xyCalibrateCommand([], 2) === 'CALIBRATE_XY_OFFSETS REF_TOOL=2 TOOLS=2');
+  check('xyCalibrateCommand: ohne Angaben das nackte Kommando',
+        xyCalibrateCommand(null, null) === 'CALIBRATE_XY_OFFSETS');
+}

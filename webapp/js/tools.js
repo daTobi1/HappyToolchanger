@@ -1181,7 +1181,14 @@ function startProbeResultsUpdatesOnce() {
 // --------------------------
 // Calibration UI
 // --------------------------
-function calibrateButton(toolNumbers = [], enabled = false) {
+// Tool-Auswahl und Referenztool ueber ALLEN Abschnitten (Tobi,
+// 2026-09-04: "uns ist diese Sektion verloren gegangen, bei der Kamera-
+// wie bei der Eddy-Vermessung"). Sie sass bis dahin nur im zugeklappten
+// Z-Switch-Abschnitt, obwohl Kamera-Block (Master) und Eddy-Lauf
+// (REF_TOOL/TOOLS) dieselben Checkboxen lesen. Jetzt einmal sichtbar
+// oberhalb des Akkordeons; die Klassen bleiben, damit alle Leser
+// (getSelectedReferenceTool, #calibrate-all-btn, xyRefTool) weiter passen.
+function toolSelectionPanel(toolNumbers = []) {
   const sortedTools = [...toolNumbers].sort((a, b) => a - b);
   const defaultRef = computeDefaultRef(sortedTools);
 
@@ -1199,6 +1206,34 @@ function calibrateButton(toolNumbers = [], enabled = false) {
     </div>
   `).join("");
 
+  return `
+  <div class="row g-2">
+    <div class="col-md-6">
+      <div class="border border-secondary-subtle rounded p-2 bg-dark h-100">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <span class="fs-6">Tools to calibrate</span>
+          <div class="form-check mb-0">
+            <input class="form-check-input" type="checkbox" id="calibrate-select-all" checked>
+            <label class="form-check-label" for="calibrate-select-all"><small class="text-secondary">Select all</small></label>
+          </div>
+        </div>
+        <div>${toolsMarkup}</div>
+      </div>
+    </div>
+    <div class="col-md-6">
+      <div class="border border-secondary-subtle rounded p-2 bg-dark h-100">
+        <div class="d-flex justify-content-between align-items-center mb-1">
+          <span class="fs-6">Reference (Master) tool</span>
+          <small class="text-secondary">Default: ${defaultRef === 0 ? "T0" : `T${defaultRef}`}</small>
+        </div>
+        <div>${refMarkup}</div>
+      </div>
+    </div>
+    <div class="col-12"><small class="text-secondary">Gilt f&uuml;r Kamera (XY Offsets), Z-Switch und Eddy-Messlauf.</small></div>
+  </div>`;
+}
+
+function calibrateButton(toolNumbers = [], enabled = false) {
   const btnClass = enabled ? "btn-primary" : "btn-secondary";
   const disabledAttr = enabled ? "" : "disabled";
 
@@ -1211,36 +1246,11 @@ function calibrateButton(toolNumbers = [], enabled = false) {
   const selAvg    = sel === "average" ? "selected" : "";
   const selTrim   = sel === "trimmed" ? "selected" : "";
 
+  // Tool-Auswahl und Referenz: siehe toolSelectionPanel() ueber dem
+  // Akkordeon -- hier nur noch Z-Rechnung, Temperatur und der Knopf.
   return `
 <li class="list-group-item bg-body-tertiary p-2">
   <div class="container">
-    <div class="row pb-2">
-      <div class="col-12">
-        <div class="border border-secondary-subtle rounded p-2 bg-dark">
-          <div class="d-flex justify-content-between align-items-center mb-2">
-            <span class="fs-6">Tools to calibrate</span>
-            <div class="form-check mb-0">
-              <input class="form-check-input" type="checkbox" id="calibrate-select-all" checked>
-              <label class="form-check-label" for="calibrate-select-all"><small class="text-secondary">Select all</small></label>
-            </div>
-          </div>
-          <div>${toolsMarkup}</div>
-        </div>
-      </div>
-    </div>
-
-    <div class="row pb-2">
-      <div class="col-12">
-        <div class="border border-secondary-subtle rounded p-2 bg-dark">
-          <div class="d-flex justify-content-between align-items-center mb-1">
-            <span class="fs-6">Reference (Master) tool</span>
-            <small class="text-secondary">Default: ${defaultRef === 0 ? "T0" : `T${defaultRef}`}</small>
-          </div>
-          <div>${refMarkup}</div>
-        </div>
-      </div>
-    </div>
-
     <div class="row pb-2">
       <div class="col-12">
         <div class="border border-secondary-subtle rounded p-2 bg-dark">
@@ -4234,6 +4244,30 @@ function xyParkMove(park) {
     });
 }
 
+// Kommando des Eddy-Messlaufs aus Tool-Auswahl und Referenz. Referenz
+// immer dabei, sortiert, ohne Dubletten; ohne Angaben das nackte Kommando
+// (Klipper nimmt dann alle Tools und das konfigurierte Referenztool).
+function xyCalibrateCommand(selectedTools, refTool) {
+  if (refTool === null || refTool === undefined || isNaN(parseInt(refTool, 10))) {
+    return "CALIBRATE_XY_OFFSETS";
+  }
+  var ref = parseInt(refTool, 10);
+  var set = {};
+  set[ref] = true;
+  (selectedTools || []).forEach(function (t) {
+    var n = parseInt(t, 10);
+    if (!isNaN(n)) set[n] = true;
+  });
+  var tools = Object.keys(set).map(Number).sort(function (a, b) { return a - b; });
+  return "CALIBRATE_XY_OFFSETS REF_TOOL=" + ref + " TOOLS=" + tools.join(",");
+}
+
+function xySelectedTools() {
+  return $(".calibrate-tool-checkbox:checked").map(function () {
+    return parseInt(this.value, 10);
+  }).get().filter(function (v) { return !isNaN(v); });
+}
+
 function xyWizard() {
   return confirmDialog({
     title: "XY-Sonde: Anstecken",
@@ -4308,7 +4342,15 @@ function xyWizard() {
         // ist wie gehabt kein Beweis fuer irgendetwas ({transport} =
         // laeuft noch), ein echter Fehler wirft aber sofort.
         var progress = xyRunProgressDialog("XY-Messlauf läuft");
-        return xySendMounted("CALIBRATE_XY_OFFSETS", "XY-Messlauf").then(function (r) {
+        // Auswahl und Referenz aus dem Tool-Panel (Tobi, 2026-09-04) --
+        // ohne Panel (Tests, alte Seite) das nackte Kommando.
+        var cmd;
+        try {
+          cmd = xyCalibrateCommand(xySelectedTools(), getSelectedReferenceTool(0));
+        } catch (e) {
+          cmd = "CALIBRATE_XY_OFFSETS";
+        }
+        return xySendMounted(cmd, "XY-Messlauf").then(function (r) {
           if (r && r.transport && typeof showToast === 'function') {
             showToast("Verbindung zum Messlauf verloren - er laeuft weiter, " +
                       "der Dialog zeigt den Stand.", "warning");
@@ -4749,6 +4791,21 @@ function getTools() {
             var $acc = $("#offset-accordion");
             $acc.html("");
             $acc.next("#global-save-config-wrap").remove();
+            // Tool-Auswahl sichtbar ueber allen Abschnitten (siehe
+            // toolSelectionPanel). Vorherige Auswahl uebernehmen, damit ein
+            // Rerender (getTools nach Referenzwechsel) nichts zuruecksetzt.
+            var prevSel = $(".calibrate-tool-checkbox").map(function () {
+              return this.checked ? this.value : null;
+            }).get();
+            var hadSel = $(".calibrate-tool-checkbox").length > 0;
+            $("#tool-selection-wrap").remove();
+            $acc.before('<div id="tool-selection-wrap" class="mb-2">' +
+                        toolSelectionPanel(tool_numbers) + '</div>');
+            if (hadSel) {
+              $(".calibrate-tool-checkbox").each(function () {
+                this.checked = prevSel.indexOf(this.value) !== -1;
+              });
+            }
 
             $acc.append(accordionSection(
               'accordion-xy',
