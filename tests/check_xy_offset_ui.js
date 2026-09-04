@@ -492,6 +492,14 @@ function runXyWizardGateTest() {
       sent.push(script);
       return Promise.resolve({ transport: true });
     };
+    // Fortschrittsdialog (2026-09-04): geht vor dem Senden auf und loest
+    // auf, wenn Klipper den Lauf beendet meldet. Hier: sofort, aber der
+    // Aufruf und seine Reihenfolge werden festgehalten.
+    var progressCalls = [];
+    global.xyRunProgressDialog = function (title) {
+      progressCalls.push({ title: title, sentBefore: sent.length });
+      return Promise.resolve(true);
+    };
     global.waitForPrinterIdle = function () {
       return Promise.resolve(opts.idle !== false);
     };
@@ -503,7 +511,7 @@ function runXyWizardGateTest() {
 
     eval(grab('gcodeErrorMessage') + grab('xyStepOk') + grab('xyWizard'));
     return xyWizard().then(function () {
-      return { confirms: confirms, sent: sent, deactivate: deactivateCalls };
+      return { confirms: confirms, sent: sent, deactivate: deactivateCalls, progress: progressCalls };
     });
   }
 
@@ -520,6 +528,9 @@ function runXyWizardGateTest() {
       check('DRY_RUN wird nicht gesendet',
         r.sent.every(function (s) { return s.indexOf('DRY_RUN') === -1; }),
         JSON.stringify(r.sent));
+      check('Fortschrittsdialog geht VOR dem Senden des Messlaufs auf',
+        r.progress.length === 1 && r.progress[0].sentBefore === 0,
+        JSON.stringify(r.progress));
     });
   });
 
@@ -926,3 +937,81 @@ function runParkTest() {
         /0\.29|290/.test(html) && /quadrat/i.test(html));
   check('xyImageBodyHtml: Toolname drin', /T3/.test(html));
 }
+
+// --------------------------------------------------------------------
+// Teil N+2: Fortschrittsdialog des Messlaufs (Tobi, 2026-09-04: der
+// Dialog soll offen bleiben und zeigen, was gerade passiert).
+// xyProgressHtml() rendert printer.offset.xy_progress plus die letzten
+// Konsolenzeilen, xyProgressDone() entscheidet, wann der Lauf vorbei ist.
+// --------------------------------------------------------------------
+{
+  eval(grab('escapeHtml') + grab('xyProgressHtml') + grab('xyProgressDone'));
+  var t0 = 1700000000000;
+  var p = { running: true, tools: [0, 1, 2], done: [0], tool: 1, step: 'Grobsuche',
+            started: t0 / 1000, ref_tool: 0 };
+  var html = xyProgressHtml(p, ['// T0: Scheitel X120.7 Y111.0', '// T1: <b>Vorhersage</b>'], t0 + 125000);
+  check('xyProgressHtml: alle Tools genannt', /T0/.test(html) && /T1/.test(html) && /T2/.test(html), html);
+  check('xyProgressHtml: Schritt und aktuelles Tool', /Grobsuche/.test(html) && /xy-prog-current/.test(html));
+  check('xyProgressHtml: erledigtes Tool markiert', /xy-prog-done[^>]*>[^<]*T0/.test(html), html);
+  check('xyProgressHtml: Laufzeit in Minuten', /2:05/.test(html), html);
+  check('xyProgressHtml: Konsolenzeilen escaped', /&lt;b&gt;Vorhersage/.test(html) && !/<b>Vorhersage/.test(html));
+  check('xyProgressHtml: Platz fuer das Live-Raster', /id="xy-prog-map3d"/.test(html));
+  check('xyProgressHtml: ohne Status wartet', /wartet|startet/i.test(xyProgressHtml(null, [], t0)));
+  var err = xyProgressHtml({ running: false, error: 'T2: nur 900 Hz', tools: [0, 1, 2], done: [0, 1] }, [], t0);
+  check('xyProgressHtml: Fehler sichtbar', /nur 900 Hz/.test(err) && /abgebrochen|Fehler/i.test(err), err);
+  var fin = xyProgressHtml({ running: false, tools: [0, 1], done: [0, 1], step: 'fertig' }, [], t0);
+  check('xyProgressHtml: fertig gemeldet', /fertig/i.test(fin));
+
+  check('xyProgressDone: laeuft -> nicht fertig', xyProgressDone({ running: true }, true, true, 99999) === false);
+  check('xyProgressDone: lief und ist jetzt aus -> fertig', xyProgressDone({ running: false }, true, false, 5000) === true);
+  check('xyProgressDone: nie laufen gesehen, Drucker steht erst kurz -> warten',
+        xyProgressDone({ running: false }, false, true, 5000) === false);
+  check('xyProgressDone: nie laufen gesehen (altes Klipper), Drucker steht lange -> fertig',
+        xyProgressDone(null, false, true, 30000) === true);
+  check('xyProgressDone: nie laufen gesehen, Drucker arbeitet -> warten',
+        xyProgressDone(null, false, false, 30000) === false);
+}
+
+// --------------------------------------------------------------------
+// Teil N+3: Messbild-Dialog mit Log-Umschalter, 2D-Link und Ueberlagern
+// --------------------------------------------------------------------
+{
+  eval(grab('escapeHtml') + grab('xyImageEntries') + grab('xyImageBodyHtml'));
+  var raster2 = { kind: 'raster', xs: [1, 2], ys: [1, 2], values: [[1, 2], [3, 4]],
+                  baseline: 100, x: 1.5, y: 1.5, pitch: 1 };
+  var entry2 = { images: [Object.assign({ gap: 0.8 }, raster2)], x: 0.5, y: -5.0 };
+  var es2 = xyImageEntries(entry2);
+  var html2 = xyImageBodyHtml('1', entry2, es2, { ip: '192.168.178.60' });
+  check('xyImageBodyHtml: Log-Umschalter', /id="xy-img-log"/.test(html2) && /checked/.test(html2), html2);
+  check('xyImageBodyHtml: 2D-Link je Raster',
+        /map\.html\?ip=192\.168\.178\.60&src=xy&t=1&i=0/.test(html2), html2);
+  check('xyImageBodyHtml: Ueberlagern-Knopf', /xyShowOverlay\(/.test(html2));
+}
+
+// --------------------------------------------------------------------
+// Teil N+4: Ueberlagerungs-Editor -- xyOverlayState() liest die Felder
+// und berechnet die Verschiebung von B (Scheitel + Handverschiebung)
+// --------------------------------------------------------------------
+{
+  global.NozzleOverlay = require(require('path').join(__dirname, '..', 'webapp', 'js', 'overlay.js'));
+  eval(grab('xyOverlayLayers'));
+  var rA = { kind: 'raster', xs: [0, 1, 2], ys: [0, 1, 2], values: [[0, 1, 0], [1, 5, 1], [0, 1, 0]],
+             baseline: 0, x: 1, y: 1, gap: 0.8 };
+  var rB = { kind: 'raster', xs: [10, 11, 12], ys: [5, 6, 7], values: [[0, 2, 0], [2, 8, 2], [0, 2, 0]],
+             baseline: 0, x: 11, y: 6, gap: 0.8 };
+  var results = { ref_tool: 0, '0': { images: [rA] }, '1': { images: [rB] } };
+  var L = xyOverlayLayers(results, { a: '0:0', b: '1:0', align: true, dx: 100, dy: -50, normalize: true });
+  check('xyOverlayLayers: A aus Tool 0', L.a && L.a.vx === 1 && /T0/.test(L.a.label), JSON.stringify(L.a && L.a.label));
+  check('xyOverlayLayers: B auf A geschoben plus Hand-dx/dy in um',
+        L.b && Math.abs(L.b.vx - 1.1) < 1e-9 && Math.abs(L.b.vy - 0.95) < 1e-9, JSON.stringify(L.b && [L.b.vx, L.b.vy]));
+  check('xyOverlayLayers: normiert', L.a.values[1][1] === 1 && L.b.values[1][1] === 1);
+  check('xyOverlayLayers: Verschiebung gemeldet', Math.abs(L.shift.dx - (-9.9)) < 1e-9 && Math.abs(L.shift.dy - (-5.05)) < 1e-9,
+        JSON.stringify(L.shift));
+  var L2 = xyOverlayLayers(results, { a: '0:0', b: '1:0', align: false, dx: 0, dy: 0, normalize: false });
+  check('xyOverlayLayers: ohne Ausrichten bleibt B, wo es gemessen wurde', L2.b.vx === 11 && L2.b.values[1][1] === 8);
+  var L3 = xyOverlayLayers(results, { a: '0:0', b: '', align: true, dx: 0, dy: 0, normalize: true });
+  check('xyOverlayLayers: ohne B nur A', L3.a && L3.b === null);
+  var L4 = xyOverlayLayers(results, { a: '7:0', b: '', align: true, dx: 0, dy: 0 });
+  check('xyOverlayLayers: unbekanntes Tool -> a null', L4.a === null);
+}
+

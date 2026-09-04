@@ -85,6 +85,20 @@
 
   function rgb(c) { return 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')'; }
 
+  // Messbild aus printer.offset.xy_results[t].images[i] (Klick auf den
+  // Toolnamen in der Webapp -> "2D-Ansicht") in das Dateiformat von
+  // NOZZLE_LOCATOR_MAP: dieselbe Heatmap, derselbe Differenzweg.
+  function imageToMap(image, label) {
+    if (!image || image.kind !== 'raster' || !image.xs || !image.ys || !image.values) return null;
+    return {
+      kind: 'nozzle_locator_map', label: label || '',
+      x: image.x, y: image.y, z: image.z, gap: image.gap, pitch: image.pitch,
+      baseline: image.baseline, time: image.time,
+      grid: { xs: image.xs.slice(), ys: image.ys.slice(),
+              values: image.values.map(function (r) { return r.slice(); }) }
+    };
+  }
+
   // ---------------------------------------------------------------- DOM
   var state = { a: null, b: null, mode: 'a', scale: 'linear', hover: null };
 
@@ -295,6 +309,29 @@
       .catch(function (e) { setStatus(name + ': ' + e, true); });
   }
 
+  // map.html?ip=..&src=xy&t=1&i=0[&tb=0&ib=0]: Raster aus dem letzten
+  // Kalibrierlauf (printer.offset.xy_results) statt aus einer Datei.
+  function loadFromResults(spec) {
+    var base = printerBase();
+    if (!base) { setStatus('IP angeben', true); return; }
+    fetch(base + '/printer/objects/query?offset=xy_results')
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function (j) {
+        var res = (j.result && j.result.status && j.result.status.offset &&
+                   j.result.status.offset.xy_results) || {};
+        [['a', spec.t, spec.i], ['b', spec.tb, spec.ib]].forEach(function (row) {
+          if (row[1] === null || row[1] === undefined || row[1] === '') return;
+          var e = res[String(row[1])];
+          var im = e && Array.isArray(e.images) ? e.images[parseInt(row[2] || 0, 10)] : null;
+          var gap = (im && typeof im.gap === 'number') ? im.gap.toFixed(2) + ' mm' : '?';
+          var m = imageToMap(im, 'T' + row[1] + ' Spalt ' + gap);
+          if (!m) { setStatus('T' + row[1] + ': kein Raster-Messbild Nr. ' + row[2], true); return; }
+          acceptMap(row[0], m, 'T' + row[1] + ' aus xy_results');
+        });
+      })
+      .catch(function (e) { setStatus('xy_results: ' + e, true); });
+  }
+
   function listMaps() {
     var base = printerBase();
     if (!base) { setStatus('IP angeben', true); return; }
@@ -348,11 +385,17 @@
     };
     if ($('ip').value && $('file-a').value) loadFromPrinter('a');
     if ($('ip').value && $('file-b').value) loadFromPrinter('b');
+    try {
+      var q2 = new URLSearchParams(location.search);
+      if (q2.get('src') === 'xy' && $('ip').value) {
+        loadFromResults({ t: q2.get('t'), i: q2.get('i'), tb: q2.get('tb'), ib: q2.get('ib') });
+      }
+    } catch (e) { /* egal */ }
   }
 
   var api = {
     rasterValues: rasterValues, rasterDiff: rasterDiff, colorFor: colorFor,
-    valueRange: valueRange, transform: transform, init: init
+    valueRange: valueRange, transform: transform, imageToMap: imageToMap, init: init
   };
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api;            // node: tests/check_nozzle_map.js

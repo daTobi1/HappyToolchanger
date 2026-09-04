@@ -46,6 +46,18 @@ ok(NozzleMap.rasterDiff(A, C) === null, 'rasterDiff akzeptiert verschiedene Gitt
 const D = map('T3', 0, [[1, 2, 3], [4, 5, 6]], [122.5, 123.5, 124.6], ys);
 ok(NozzleMap.rasterDiff(A, D) === null, 'rasterDiff akzeptiert verschobene Spalten');
 
+// 3b: Messbild aus printer.offset.xy_results (Klick auf den Toolnamen ->
+// "2D-Ansicht") in das Dateiformat von NOZZLE_LOCATOR_MAP uebersetzen
+const img = { kind: 'raster', xs: [1, 2], ys: [3, 4], values: [[10, 20], [30, 40]],
+              baseline: 5, x: 1.4, y: 3.6, pitch: 0.5, z: 53.8, gap: 0.8 };
+const M = NozzleMap.imageToMap(img, 'T1 Spalt 0.80');
+ok(M && M.kind === 'nozzle_locator_map' && M.grid && M.grid.values[1][1] === 40,
+   'imageToMap: Gitter uebernommen', JSON.stringify(M));
+ok(M.baseline === 5 && M.x === 1.4 && M.y === 3.6 && M.pitch === 0.5 && M.gap === 0.8 && M.label === 'T1 Spalt 0.80',
+   'imageToMap: Basislinie, Scheitel, Raster, Spalt, Label', JSON.stringify(M));
+ok(NozzleMap.imageToMap({ kind: 'profiles' }) === null && NozzleMap.imageToMap(null) === null,
+   'imageToMap: kein Raster -> null');
+
 // 4: Wertebereich ignoriert null, degeneriert nicht
 ok(JSON.stringify(NozzleMap.valueRange([[1, null, 3]])) === '[1,3]', 'valueRange falsch');
 ok(NozzleMap.valueRange([[null]])[1] > NozzleMap.valueRange([[null]])[0],

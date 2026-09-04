@@ -356,3 +356,25 @@ Seit der Live-3D-Ansicht prüft `check_nozzle_map.js` zusätzlich `mapToSurface`
 aus `webapp/js/map3d.js` (Basislinie, `null`-Zellen, Fortschritt, Titel), und
 `check_xy_offset_ui.js` das Kommando-Bauen `xyMapCommand()` des Raster-Panels
 (Grenzen, Label-Zeichen, Unsinn statt Zahl).
+Seit dem 2026-09-04 (abends) auch `imageToMap()` -- das Messbild aus
+`printer.offset.xy_results` im Dateiformat von `NOZZLE_LOCATOR_MAP`, für
+`map.html?src=xy&t=…&i=…`.
+
+## `check_nozzle_overlay.js`
+
+Prüft die reinen Funktionen des Überlagerungs-Editors `webapp/js/overlay.js`
+(zwei Messbilder übereinander legen): Ebene aus einem Raster-Messbild,
+Ausrichten von B auf den gemessenen Scheitel von A, Verschieben, Normieren
+auf Spitze 1, Höhenlinien per Marching Squares (Kreis um einen Gauss-Buckel,
+geschlossen, `null`-Zellen), Plotly-Spuren für 2D (Linien + Scheitelkreuz) und
+3D (zwei Flächen) sowie die Auswahlliste aus `xy_results`:
+
+```bash
+node tests/check_nozzle_overlay.js
+```
+
+Dazu in `check_xy_offset_ui.js`: `xyOverlayLayers()` (Felder des Editors ->
+Ebenen samt Verschiebung), `xyProgressHtml()`/`xyProgressDone()` des
+Fortschrittsdialogs beim Messlauf und der Messbild-Dialog mit Log-Umschalter,
+2D-Link und Überlagern-Knopf; im Assistenten-Test, dass der Fortschrittsdialog
+VOR dem Senden des Messlaufs aufgeht.

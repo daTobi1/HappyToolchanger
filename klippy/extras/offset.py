@@ -130,6 +130,9 @@ class Offset:
             'CALIBRATE_XY_OFFSETS', self.cmd_CALIBRATE_XY_OFFSETS,
             desc=self.cmd_CALIBRATE_XY_OFFSETS_help)
         self.xy_results = {}
+        # Stand des laufenden XY-Laufs fuer den Fortschrittsdialog der
+        # Webapp (Tobi, 2026-09-04): running, tool, step, done, error.
+        self.xy_progress = {}
         self.gcode.register_command('CALIBRATE_PROBE_OFFSETS',
                                     self.cmd_CALIBRATE_PROBE_OFFSETS,
                                     desc=self.cmd_CALIBRATE_PROBE_OFFSETS_help)
@@ -315,6 +318,7 @@ class Offset:
             'tool_gcode_offsets': tool_gcode_offsets,
             'pid_results': self.pid_results,
             'xy_results': self.xy_results,
+            'xy_progress': self.xy_progress,
             'dock_results': self.dock_results,
             'tool_park_positions': self._tool_park_positions(),
             'dock_defaults': self._dock_defaults(),
@@ -1857,6 +1861,12 @@ class Offset:
         # erste Lauf nach dem Sensorstart lag am Messtag 80 um daneben.
         # Die inneren Haltungen (locate, coarse_locate) zaehlen nur hoch.
         locator._hold_sensor(warmup=warmup)
+        self.xy_progress = {
+            'running': True, 'started': time.time(),
+            'tools': list(ordered_tools), 'ref_tool': ref_tool,
+            'tool': None, 'done': [], 'dry_run': bool(dry_run),
+            'step': 'Sensor waermt %d s auf' % int(warmup),
+        }
         try:
             if bootstrap:
                 gcmd.respond_info("XY: Phase 1/3 -- grob, gleiche Amplitude")
@@ -1893,9 +1903,14 @@ class Offset:
             # INITIALIZE_TOOLCHANGER. Erst auf park_z -- der Kopf kann
             # 0,5 mm ueber der Halterung stehen -- dann wechseln, dann den
             # urspruenglichen Fehler weiterreichen.
+            self._xy_progress(error=str(e).splitlines()[0][:200],
+                              step='abgebrochen')
             self._xy_abort_to_ref_tool(gcmd, locator, ref_tool, e)
             raise
         finally:
+            self._xy_progress(running=False, finished=time.time())
+            if 'error' not in self.xy_progress:
+                self._xy_progress(step='fertig')
             locator._release_sensor()
             (locator.fine_gap, locator.min_gap,
              locator.target_amplitude) = saved_gaps
@@ -1913,6 +1928,11 @@ class Offset:
         self._save_xy_results()
         self._report_xy_results(gcmd, results, ref_tool)
         self._return_to_ref_tool(ref_tool, gcmd)
+
+    def _xy_progress(self, **kw):
+        """Fortschritt des XY-Laufs nachfuehren (Status xy_progress). Immer
+        ein neues dict, damit Moonrakers Aenderungserkennung anspringt."""
+        self.xy_progress = dict(self.xy_progress, updated=time.time(), **kw)
 
     def _xy_abort_to_ref_tool(self, gcmd, locator, ref_tool, err):
         """Nach einem Abbruch: Kopf auf park_z, Referenztool aufnehmen.
@@ -2018,6 +2038,7 @@ class Offset:
             extra['image'] ist das Messbild fuer die Webapp (Tobi,
             2026-09-04: Klick auf den Toolnamen zeigt es): beim Raster das
             Gitter, bei Linien die Koerbe des letzten X- und Y-Sweeps."""
+            self._xy_progress(step='Feinmessung %s' % label)
             if fit2d:
                 r = locator.locate2d(cx0, cy0, baseline, label=label)
                 rx = {'center': r['x'], 'fwd': r['x'], 'rev': r['x'],
@@ -2092,6 +2113,7 @@ class Offset:
             # Erst auf park_z, DANN wechseln -- der Wechselweg ist damit
             # frei, weil die Halterung auf dieser Hoehe untergeschoben wurde.
             locator._move([None, None, park_z], locator.move_speed)
+            self._xy_progress(tool=tool_nr, step='Werkzeugwechsel')
             self._xy_select_tool(gcmd, tool_nr)
             if temp > 0:
                 self.gcode.run_script_from_command("M109 S%.0f" % temp)
@@ -2119,6 +2141,7 @@ class Offset:
                 # der Locator faehrt dafuer seitlich neben die Spule (auf
                 # park_z steht die Duese sonst noch 7 mm darueber, +1.400 Hz)
                 # und kommt zurueck.
+                self._xy_progress(step='Basislinie am Druckerrand')
                 baseline = locator.measure_baseline()
                 gcmd.respond_info("XY: Basislinie %.0f Hz" % baseline)
 
@@ -2134,6 +2157,7 @@ class Offset:
             # Mindestamplitude selbst: sonst liegen die 2-mm-Sweeppunkte
             # neben dem Scheitel eine Haaresbreite unter der Schwelle
             # (250er: 1.987 Hz gegen 2.000 -- kein Kandidat).
+            self._xy_progress(step='Grobsuche')
             locator.approach_z(baseline, 2.0 * locator.min_amplitude)
             cx, amp_x = locator.coarse_locate('X', pred[0], baseline)
             locator._move([cx, None, None], locator.move_speed)
@@ -2291,6 +2315,9 @@ class Offset:
                 ref_pos = (rx['center'], ry['center'], z_reached)
                 ref_peak = (rx['center'], ry['center'])
             results[str(tool_nr)] = entry
+            self._xy_progress(
+                done=list(self.xy_progress.get('done', [])) + [tool_nr],
+                step='T%d fertig' % tool_nr)
             gcmd.respond_info(
                 "T%d: Scheitel X%.4f Y%.4f (Z %.3f, Drift-Bias X %+.1f / "
                 "Y %+.1f um, Spannweite X %.1f / Y %.1f um)"

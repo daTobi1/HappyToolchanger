@@ -3103,7 +3103,8 @@ function xyImageEntries(entry) {
   });
 }
 
-function xyImageBodyHtml(t, entry, entries) {
+function xyImageBodyHtml(t, entry, entries, opts) {
+  opts = opts || {};
   var head = '<div class="mb-2">Messbilder <b>T' + escapeHtml(String(t)) + '</b>';
   var facts = [];
   if (typeof entry.x === 'number') facts.push('Offset ' + entry.x.toFixed(4) + ' / ' + entry.y.toFixed(4));
@@ -3116,8 +3117,21 @@ function xyImageBodyHtml(t, entry, entries) {
   if (typeof entry.rho === 'number') facts.push('&rho; ' + entry.rho.toFixed(3));
   head += (facts.length ? '<div class="small text-muted">' + facts.join(' &middot; ') + '</div>' : '') + '</div>';
   if (!entries.length) return head + '<div class="text-muted">Keine Messbilder im Ergebnis (Lauf vor 2026-09-04?).</div>';
+  // Dieselbe Ansicht wie das Live-Raster im XY-Block (Tobi, 2026-09-04):
+  // Hoehe logarithmisch, dazu je Raster der Weg in die 2D-Ansicht und
+  // der Ueberlagerungs-Editor.
+  var ipq = encodeURIComponent(opts.ip || '');
+  head += '<div class="d-flex flex-wrap gap-3 align-items-center mb-2 small">' +
+    '<div class="form-check mb-0"><input type="checkbox" class="form-check-input" id="xy-img-log" checked ' +
+    'onchange="xyRenderImages()"><label class="form-check-label" for="xy-img-log">H&ouml;he logarithmisch</label></div>' +
+    '<button type="button" class="btn btn-sm btn-outline-primary" onclick="xyShowOverlay(\x27' +
+    escapeHtml(String(t)) + '\x27)">Mit anderem Tool &uuml;berlagern&hellip;</button></div>';
   return head + entries.map(function (e, i) {
-    return '<div class="mb-3"><div class="small fw-semibold">' + escapeHtml(e.label) + '</div>' +
+    var link = (e.kind === 'raster' && opts.ip)
+      ? ' &middot; <a href="map.html?ip=' + ipq + '&src=xy&t=' + encodeURIComponent(String(t)) +
+        '&i=' + e.index + '" target="_blank">2D-Ansicht</a>'
+      : '';
+    return '<div class="mb-3"><div class="small fw-semibold">' + escapeHtml(e.label) + link + '</div>' +
       '<div id="xy-img-' + i + '" style="width:100%;height:' + (e.kind === 'raster' ? '360px' : '120px') + '"></div></div>';
   }).join('');
 }
@@ -3139,23 +3153,280 @@ function xyProfileSvg(points, label) {
     '<text x="' + (W - 40) + '" y="' + (H - 1) + '" font-size="9">' + x1.toFixed(1) + '</text></svg>';
 }
 
+var _xyImageShown = null;
 function xyShowImage(t) {
   var entry = _xyResults[t];
   var entries = xyImageEntries(entry);
-  alertDialog('Messbild T' + t, xyImageBodyHtml(t, entry || {}, entries), { okClass: 'btn-secondary' });
+  _xyImageShown = { t: t, entries: entries };
+  alertDialog('Messbild T' + t, xyImageBodyHtml(t, entry || {}, entries, { ip: printerIp }),
+              { okClass: 'btn-secondary' });
   // Der Dialogrumpf steht jetzt im DOM; Raster per plotly, Profile als SVG.
-  setTimeout(function () {
-    entries.forEach(function (e, i) {
-      var el = document.getElementById('xy-img-' + i);
-      if (!el) return;
-      if (e.kind === 'raster' && typeof NozzleMap3d !== 'undefined') {
-        NozzleMap3d.renderMap3d(el, Object.assign({ done: true, label: 'T' + t + ' ' + e.label },
-                                                   e.data), 'xyimg-' + t + '-' + i, { log: false });
-      } else if (e.kind === 'profiles') {
-        el.innerHTML = xyProfileSvg(e.data.x, 'X') + ' ' + xyProfileSvg(e.data.y, 'Y');
-      }
+  setTimeout(xyRenderImages, 80);
+}
+
+function xyRenderImages() {
+  var s = _xyImageShown;
+  if (!s) return;
+  var log = $('#xy-img-log').is(':checked');
+  s.entries.forEach(function (e, i) {
+    var el = document.getElementById('xy-img-' + i);
+    if (!el) return;
+    if (e.kind === 'raster' && typeof NozzleMap3d !== 'undefined') {
+      NozzleMap3d.renderMap3d(el, Object.assign({ done: true, label: 'T' + s.t + ' ' + e.label },
+                                                 e.data), 'xyimg-' + s.t + '-' + i + (log ? '-log' : ''),
+                              { log: log });
+    } else if (e.kind === 'profiles') {
+      el.innerHTML = xyProfileSvg(e.data.x, 'X') + ' ' + xyProfileSvg(e.data.y, 'Y');
+    }
+  });
+}
+
+// ---------------------------------------------------------------------
+// Ueberlagerungs-Editor (Tobi, 2026-09-04): zwei Messbilder -- je Tool
+// und Spalt -- uebereinander legen. B wird auf den gemessenen Scheitel
+// von A geschoben (dann muessen die Buckel deckungsgleich sein, wenn die
+// Messung stimmt) und darf von Hand um dx/dy in um nachgeschoben werden.
+// Rechnen tut webapp/js/overlay.js (rein, getestet); hier nur Felder und
+// Zeichnen.
+// ---------------------------------------------------------------------
+function xyOverlayLayers(results, f) {
+  var O = NozzleOverlay;
+  function pick(sel) {
+    var m = /^(\d+):(\d+)$/.exec(String(sel || ''));
+    if (!m) return null;
+    var e = results[m[1]];
+    var im = e && Array.isArray(e.images) ? e.images[parseInt(m[2], 10)] : null;
+    if (!im) return null;
+    var gap = (typeof im.gap === 'number') ? im.gap.toFixed(2) + ' mm' : '?';
+    return O.layerFromImage(im, 'T' + m[1] + ' Spalt ' + gap);
+  }
+  var a = pick(f.a), b = pick(f.b);
+  var shift = { dx: 0, dy: 0 };
+  if (a && b) {
+    if (f.align) shift = O.alignShift(a, b);
+    shift = { dx: shift.dx + (parseFloat(f.dx) || 0) / 1000,
+              dy: shift.dy + (parseFloat(f.dy) || 0) / 1000 };
+    b = O.shiftLayer(b, shift.dx, shift.dy);
+  }
+  if (f.normalize) {
+    if (a) a = O.normalizeLayer(a);
+    if (b) b = O.normalizeLayer(b);
+  }
+  return { a: a, b: b, shift: shift };
+}
+
+var _xyOverlayForm = null;
+function xyShowOverlay(toolA) {
+  if (typeof NozzleOverlay === 'undefined') {
+    return alertDialog('&Uuml;berlagerung', 'overlay.js nicht geladen.');
+  }
+  var opts = NozzleOverlay.layerOptions(_xyResults);
+  if (!opts.length) {
+    return alertDialog('&Uuml;berlagerung', 'Keine Raster-Messbilder im Ergebnis. Erst einen Lauf mit FIT2D=1 fahren.');
+  }
+  var ref = String(_xyResults.ref_tool !== undefined ? _xyResults.ref_tool : '0');
+  var prev = _xyOverlayForm || {};
+  function firstOf(t) {
+    var o = opts.filter(function (x) { return x.tool === String(t); })[0];
+    return o ? o.tool + ':' + o.index : '';
+  }
+  var selA = prev.a || firstOf(toolA !== undefined ? toolA : ref) || (opts[0].tool + ':' + opts[0].index);
+  var selB = prev.b || (function () {
+    var other = opts.filter(function (x) { return x.tool !== selA.split(':')[0]; })[0];
+    return other ? other.tool + ':' + other.index : '';
+  })();
+  function select(id, val, allowNone) {
+    var h = '<select class="form-select form-select-sm" id="' + id + '" onchange="xyRenderOverlay()">';
+    if (allowNone) h += '<option value="">&ndash; keins &ndash;</option>';
+    opts.forEach(function (o) {
+      var v = o.tool + ':' + o.index;
+      h += '<option value="' + v + '"' + (v === val ? ' selected' : '') + '>' + escapeHtml(o.label) + '</option>';
     });
-  }, 80);
+    return h + '</select>';
+  }
+  function num(id, label, val) {
+    return '<div class="col-auto"><label class="form-label small mb-0" for="' + id + '">' + label +
+      '</label><input type="number" step="10" class="form-control form-control-sm" id="' + id +
+      '" value="' + val + '" style="width:6em" onchange="xyRenderOverlay()" oninput="xyRenderOverlay()"></div>';
+  }
+  var body =
+    '<div class="row g-2 align-items-end mb-2">' +
+      '<div class="col-sm-5"><label class="form-label small mb-0">A (blau)</label>' + select('xy-ov-a', selA, false) + '</div>' +
+      '<div class="col-sm-5"><label class="form-label small mb-0">B (rot)</label>' + select('xy-ov-b', selB, true) + '</div>' +
+      '<div class="col-sm-2"><label class="form-label small mb-0">Ansicht</label>' +
+        '<select class="form-select form-select-sm" id="xy-ov-mode" onchange="xyRenderOverlay()">' +
+        '<option value="2d"' + (prev.mode === '3d' ? '' : ' selected') + '>2D Linien</option>' +
+        '<option value="3d"' + (prev.mode === '3d' ? ' selected' : '') + '>3D Fl&auml;chen</option></select></div>' +
+    '</div>' +
+    '<div class="row g-2 align-items-end mb-2 small">' +
+      '<div class="col-auto form-check ms-2"><input type="checkbox" class="form-check-input" id="xy-ov-align"' +
+        (prev.align === false ? '' : ' checked') + ' onchange="xyRenderOverlay()">' +
+        '<label class="form-check-label" for="xy-ov-align">B auf den gemessenen Scheitel von A legen</label></div>' +
+      '<div class="col-auto form-check"><input type="checkbox" class="form-check-input" id="xy-ov-norm"' +
+        (prev.normalize === false ? '' : ' checked') + ' onchange="xyRenderOverlay()">' +
+        '<label class="form-check-label" for="xy-ov-norm">H&ouml;he auf Spitze 1 normieren</label></div>' +
+      num('xy-ov-dx', 'B zus&auml;tzlich X (&micro;m)', prev.dx || 0) +
+      num('xy-ov-dy', 'B zus&auml;tzlich Y (&micro;m)', prev.dy || 0) +
+      '<div class="col-auto"><label class="form-label small mb-0" for="xy-ov-op">Deckkraft B</label>' +
+        '<input type="range" class="form-range" id="xy-ov-op" min="0.2" max="1" step="0.05" value="' +
+        (prev.opacity || 0.6) + '" style="width:6em" oninput="xyRenderOverlay()"></div>' +
+    '</div>' +
+    '<div id="xy-ov-status" class="small text-muted mb-1"></div>' +
+    '<div id="xy-ov-plot" style="width:100%;height:440px"></div>' +
+    '<div class="small text-muted mt-2">Kreuz = Scheitel des 2D-Fits je Raster. Liegen die Buckel nach dem ' +
+    'Verschieben um den gemessenen Offset nicht aufeinander, weicht die Form der D&uuml;se (oder der ' +
+    'Messung) ab; die Handverschiebung zeigt, um wie viel.</div>';
+  alertDialog('Messbilder &uuml;berlagern', body, { okClass: 'btn-secondary' });
+  setTimeout(xyRenderOverlay, 80);
+}
+
+function xyRenderOverlay() {
+  var el = document.getElementById('xy-ov-plot');
+  if (!el || typeof NozzleOverlay === 'undefined' || typeof NozzleMap3d === 'undefined') return;
+  var f = {
+    a: $('#xy-ov-a').val(), b: $('#xy-ov-b').val(), mode: $('#xy-ov-mode').val(),
+    align: $('#xy-ov-align').is(':checked'), normalize: $('#xy-ov-norm').is(':checked'),
+    dx: $('#xy-ov-dx').val(), dy: $('#xy-ov-dy').val(), opacity: parseFloat($('#xy-ov-op').val())
+  };
+  _xyOverlayForm = f;
+  var L = xyOverlayLayers(_xyResults, f);
+  var st = $('#xy-ov-status');
+  if (!L.a) { st.text('Ebene A fehlt.'); return; }
+  if (L.b) {
+    st.html('B verschoben um X ' + (L.shift.dx * 1000).toFixed(0) + ' / Y ' +
+            (L.shift.dy * 1000).toFixed(0) + ' &micro;m' +
+            (f.align ? ' (Scheiteldifferenz' + ((parseFloat(f.dx) || parseFloat(f.dy)) ? ' plus Hand' : '') + ')' : ' (nur Hand)'));
+  } else {
+    st.text('Nur A.');
+  }
+  var key = 'xy-ov-' + f.mode;
+  var spec = (f.mode === '3d')
+    ? NozzleOverlay.overlayTraces3d(L.a, L.b, { opacity: f.opacity, key: key,
+                                                 zlabel: f.normalize ? 'Anteil der Spitze' : 'Hz ueber Basislinie' })
+    : NozzleOverlay.overlayTraces2d(L.a, L.b, { key: key, levels: 8 });
+  NozzleMap3d.ensurePlotly().then(function (Plotly) {
+    return Plotly.react(el, spec.data, spec.layout, { responsive: true, displaylogo: false });
+  }, function (e) {
+    el.textContent = '3D-Ansicht nicht verfuegbar: ' + e.message;
+  });
+}
+
+// ---------------------------------------------------------------------
+// Fortschrittsdialog des Messlaufs (Tobi, 2026-09-04: "das sollte offen
+// bleiben, damit der User sieht, dass die Messung noch laeuft und was
+// gerade passiert"). Quelle ist printer.offset.xy_progress, das Klipper
+// je Schritt nachfuehrt, dazu die letzten Konsolenzeilen des Laufs und
+// das Live-Raster aus printer.nozzle_locator.map.
+// ---------------------------------------------------------------------
+function xyProgressHtml(p, lines, nowMs) {
+  function mmss(sec) {
+    sec = Math.max(0, Math.round(sec));
+    return Math.floor(sec / 60) + ':' + ('0' + (sec % 60)).slice(-2);
+  }
+  var h = '';
+  if (!p) {
+    h += '<div class="mb-2"><span class="spinner-border spinner-border-sm me-1"></span> Messlauf startet &hellip; ' +
+         '(wartet auf die erste Meldung von Klipper)</div>';
+  } else {
+    var tools = Array.isArray(p.tools) ? p.tools : [];
+    var done = Array.isArray(p.done) ? p.done.map(String) : [];
+    var cur = (p.tool !== null && p.tool !== undefined) ? String(p.tool) : null;
+    h += '<div class="d-flex flex-wrap gap-2 mb-2">' + tools.map(function (t) {
+      t = String(t);
+      var cls, mark;
+      if (done.indexOf(t) !== -1) { cls = 'bg-success xy-prog-done'; mark = '&#10003; '; }
+      else if (p.running && t === cur) { cls = 'bg-primary xy-prog-current'; mark = '&#9654; '; }
+      else { cls = 'bg-secondary'; mark = ''; }
+      return '<span class="badge ' + cls + '">' + mark + 'T' + escapeHtml(t) + '</span>';
+    }).join('') + '</div>';
+    if (p.running) {
+      var el = (typeof p.started === 'number') ? (nowMs / 1000 - p.started) : 0;
+      h += '<div class="mb-2"><span class="spinner-border spinner-border-sm me-1"></span> ' +
+           (cur !== null ? '<b>T' + escapeHtml(cur) + '</b>: ' : '') +
+           escapeHtml(p.step || '') + ' <span class="text-muted">&middot; Laufzeit ' + mmss(el) + '</span></div>';
+    } else if (p.error) {
+      h += '<div class="mb-2 text-danger"><b>Abgebrochen:</b> ' + escapeHtml(p.error) + '</div>';
+    } else {
+      h += '<div class="mb-2 text-success"><b>Fertig.</b> ' + escapeHtml(p.step || '') + '</div>';
+    }
+  }
+  h += '<div id="xy-prog-map3d" style="width:100%;height:300px"></div>';
+  h += '<pre class="small bg-body-tertiary p-2 mb-0" style="max-height:9em;overflow:auto">' +
+       (lines || []).map(function (l) { return escapeHtml(l); }).join('\n') + '</pre>';
+  return h;
+}
+
+// Fertig, sobald Klipper running=false meldet, nachdem wir es laufen sahen.
+// Ohne xy_progress (aelteres Klipper) bleibt nur der idle-Zustand des
+// Druckers -- und der zaehlt erst nach 20 s, weil idle_timeout mit dem
+// ersten bewegenden Kommando auf Printing springt.
+function xyProgressDone(p, seenRunning, idle, elapsedMs) {
+  if (p && p.running) return false;
+  if (seenRunning) return true;
+  return (elapsedMs > 20000 && idle === true);
+}
+
+function xyRunProgressDialog(title) {
+  var t0 = Date.now();
+  var seenRunning = false;
+  var stopped = false;
+  function fetchAll() {
+    return Promise.all([
+      Promise.resolve($.get(printerUrl(printerIp, '/printer/objects/query?offset=xy_progress&nozzle_locator=map')))
+        .then(function (d) { return (d && d.result && d.result.status) || {}; }, function () { return {}; }),
+      Promise.resolve($.get(printerUrl(printerIp, '/server/gcode_store?count=60')))
+        .then(function (d) {
+          var gs = (d && d.result && d.result.gcode_store) || [];
+          return gs.filter(function (g) {
+            return g.type === 'response' && /^\/\/ (T\d+:|XY[:-]|nozzle_locator)/.test(g.message || '');
+          }).map(function (g) { return g.message.replace(/^\/\/ /, ''); }).slice(-12);
+        }, function () { return []; }),
+      xyPrinterIdle()
+    ]);
+  }
+  var dlg = confirmDialog({
+    title: title || 'XY-Messlauf', body: xyProgressHtml(null, [], t0),
+    okLabel: 'Weiter', hideCancel: true
+  });
+  $('#confirmModalOk').prop('disabled', true);
+  function tick() {
+    if (stopped) return;
+    fetchAll().then(function (r) {
+      if (stopped) return;
+      var st = r[0], lines = r[1], idle = r[2];
+      var p = (st.offset && st.offset.xy_progress) || null;
+      if (p && !p.running && typeof p.started === 'number' && p.started * 1000 < t0 - 5000) {
+        // Rest eines frueheren Laufs -- dieser hier hat noch nicht gemeldet.
+        p = null;
+      }
+      if (p && p.running) seenRunning = true;
+      var body = document.getElementById('confirmModalBody');
+      if (body) {
+        var mapEl = document.getElementById('xy-prog-map3d');
+        var keep = mapEl && mapEl.firstChild ? mapEl : null;
+        body.innerHTML = xyProgressHtml(p, lines, Date.now());
+        var slot = document.getElementById('xy-prog-map3d');
+        if (keep && slot) slot.replaceWith(keep);
+        var map = st.nozzle_locator && st.nozzle_locator.map;
+        var el = document.getElementById('xy-prog-map3d');
+        if (map && map.xs && map.xs.length && el && typeof NozzleMap3d !== 'undefined') {
+          NozzleMap3d.renderMap3d(el, map, 'xy-prog', { log: true });
+        }
+      }
+      var done = xyProgressDone(p, seenRunning, idle, Date.now() - t0);
+      if (done) {
+        stopped = true;
+        $('#confirmModalOk').prop('disabled', false).html(p && p.error ? 'Schlie&szlig;en' : 'Weiter');
+        return;
+      }
+      setTimeout(tick, 2000);
+    });
+  }
+  setTimeout(tick, 1500);
+  return dlg.then(function (ok) {
+    stopped = true;
+    return ok;
+  });
 }
 
 // Zeichnet die laufende Glocke aus nozzle_locator.points. Zeigt sofort,
@@ -4015,18 +4286,29 @@ function xyWizard() {
       // DRY_RUN=1 bleibt als Kommando fuer neue Aufbauten erhalten.
       return null;
     }).then(function () {
-        return xySendMounted("CALIBRATE_XY_OFFSETS", "XY-Messlauf");
-      }).then(function (r) {
-        // Auch hier gilt: das Aufloesen des Requests ist KEIN Beweis, dass
-        // der Lauf fertig ist - bei einem Messlauf ueber alle Tools ist
-        // {transport:true} sogar der Regelfall. Der naechste Schritt waere
-        // xyProbeDeactivate() -> FIRMWARE_RESTART, also ein Abbruch
-        // mitten in der Bewegung. Deshalb nicht am Request weitergehen,
-        // sondern erst, wenn der Drucker selbst wieder idle meldet.
-        if (r && r.transport && typeof showToast === 'function') {
-          showToast("Verbindung zum Messlauf verloren - er laeuft weiter. " +
-                    "Warte, bis der Drucker steht...", "warning");
-        }
+        // Der Fortschrittsdialog geht VOR dem Senden auf (Tobi, 2026-09-04:
+        // "das sollte offen bleiben, damit der User sieht, dass die
+        // Messung noch laeuft"). Er pollt xy_progress, Konsole und das
+        // Live-Raster und gibt "Weiter" erst frei, wenn Klipper den Lauf
+        // beendet meldet. Das Senden selbst laeuft daneben; sein Ergebnis
+        // ist wie gehabt kein Beweis fuer irgendetwas ({transport} =
+        // laeuft noch), ein echter Fehler wirft aber sofort.
+        var progress = xyRunProgressDialog("XY-Messlauf läuft");
+        return xySendMounted("CALIBRATE_XY_OFFSETS", "XY-Messlauf").then(function (r) {
+          if (r && r.transport && typeof showToast === 'function') {
+            showToast("Verbindung zum Messlauf verloren - er laeuft weiter, " +
+                      "der Dialog zeigt den Stand.", "warning");
+          }
+          return progress;
+        }, function (e) {
+          // Dialog schliessen, damit die Fehlermeldung des catch() darf
+          $("#confirmModalOk").prop("disabled", false).trigger("click");
+          throw e;
+        });
+      }).then(function () {
+        // Der naechste Schritt waere xyProbeDeactivate() ->
+        // FIRMWARE_RESTART, also ein Abbruch mitten in der Bewegung.
+        // Deshalb zusaetzlich warten, bis der Drucker selbst idle meldet.
         return waitForPrinterIdle(3600000);
       }).then(function (idle) {
         if (!idle) {
