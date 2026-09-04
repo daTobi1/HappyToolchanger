@@ -648,3 +648,5 @@ Gegen Lauf 8 (Amplitudenmodus, Raster) weichen diese Werte bis 0,65 mm in Y ab (
 Dazu **`FIT2D` jetzt standardmäßig an** — es ist die gewählte Methode, und nur das Raster liefert das Messbild für Dialog und Editor. Der Assistenten-Lauf vom Abend hat deshalb nur Profile (Linien), keine Raster; der Editor meldet das und braucht einen neuen Lauf.
 
 Im Browser geprüft: Messbild-Dialog (Profile des Abendlaufs), Editor in 2D und 3D mit synthetischen Rastern (echte Raster gibt es erst nach dem nächsten Lauf), Fortschrittsdialog ohne laufende Messung (zeigt „startet …" und gibt nach 20 s idle frei). Der Fortschrittsdialog **mit** laufender Messung ist noch nicht gesehen.
+
+**Nachtrag (Tobi: „uns ist diese Sektion verloren gegangen"):** Die Kästen „Tools to calibrate" und „Reference (Master) tool" saßen von Anfang an nur im zugeklappten Z-Switch-Abschnitt, obwohl Kamera-Block (Master) und Eddy-Lauf (Referenz) dieselben Checkboxen lesen. Jetzt stehen sie einmal sichtbar über dem Akkordeon (`toolSelectionPanel()`), die Auswahl überlebt das Neuzeichnen, und der Assistent schickt `CALIBRATE_XY_OFFSETS REF_TOOL=<Referenz> TOOLS=<Auswahl>` statt des nackten Kommandos.
