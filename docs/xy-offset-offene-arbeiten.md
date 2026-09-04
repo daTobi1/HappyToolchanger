@@ -579,3 +579,20 @@ Steigungen je Tool (mm je mm Spalt), stabil über die Läufe: **T0 Y +0,26…+0,
 - **Restabweichung zur Kamera 40–200 µm**, T3 in X mit +195/+201 über alle Läufe konstant. Ob Kamera oder Sonde recht hat, ist ohne die Kamera-Wiederholbarkeit nicht zu entscheiden (6.5, weiterhin offen).
 
 **Nächste Schritte (Vorschlag):** (1) Kamera-Wiederholbarkeit messen: 8–10 Zentrierungen eines Tools. (2) T0 mit der Kamera ansehen: liegt die Bohrung mittig im Blockumriss? (3) 2D-Paraboloid-Fit über ein kleines Raster statt zweier Linien, gleiches Fenster für alle Tools. (4) Für T0 eine dritte Stützstelle und quadratische Extrapolation, oder T0 bei kleinem Spalt gegen ein Tool ohne Exzentrizität messen.
+
+### 10.8 Lauf 7: 2D-Fit plus quadratische Extrapolation (2026-09-04, 19 Uhr)
+
+`CALIBRATE_XY_OFFSETS REF_TOOL=0 Z_MODE=amplitude TARGET_AMPLITUDE=11000 MIN_GAP=0.2 EXTRAPOLATE_DZ=0.4 FIT2D=1`, 682 s, Halterung neu gesetzt (T0-Grobsuche 120,55 / 115,42).
+
+| Tool | Steigung X / Y (mm/mm) | Spitze (Methode) | Offset zu T0 | Kamera | Abweichung |
+|---|---|---|---|---|---|
+| T0 | **+0,141 / +0,505** | quadratisch (linear hätte X +0,12 / Y +0,13 anders ergeben) | Referenz | | |
+| T1 | +0,017 / −0,069 | linear | +0,6524 / −4,6879 | +0,330 / −5,050 | **+322 / +362 µm** |
+| T2 | +0,014 / −0,043 | linear | +0,8658 / −3,9525 | +0,440 / −4,560 | **+426 / +608 µm** |
+| T3 | +0,014 / −0,050 | linear | +0,4200 / −5,4337 | −0,180 / −5,840 | **+600 / +406 µm** |
+
+**Der 2D-Fit selbst funktioniert:** T2−T1 = (+0,213 / +0,735) und T3−T1 = (−0,232 / −0,746) stimmen mit allen bisherigen Läufen (1D-Linien, beide Spaltmodi, drei Halterungspositionen) auf 30–40 µm überein. Die Steigungen von T1–T3 bleiben klein.
+
+**T0 ist damit endgültig das Problem, nicht das Verfahren.** Mit dem 2-mm-Radius des 2D-Fits verdoppelt sich T0s Steigung gegenüber der 8-mm-Parabel (Y 0,29 → 0,50, X −0,04 → +0,14): der lokale Scheitel folgt bei kleinem Spalt der Spitze, bei großem dem Block, und beide liegen bei T0 offenbar ~0,5 mm auseinander. Die quadratische Hochrechnung über 0,8 mm verschiebt T0s „Spitze" gegenüber der linearen um 0,12/0,13 mm und gegenüber dem 1D-Verfahren um ~0,35/0,45 mm — alle Offsets gegen T0 wandern gemeinsam mit. **Solange T0s Düse so sitzt, ist ihre Spitze per Spule nicht besser als ±0,3 mm zu bestimmen**, egal mit welcher Extrapolation; die Kamera-Abweichungen von 300–600 µm in diesem Lauf sind genau dieser Fehler.
+
+Konsequenz: (a) T0s Düse unter der Kamera prüfen und ggf. tauschen/neu setzen (10.7, Weg 3); (b) bis dahin T1 als Referenz und T0s Offset aus der Kamera; (c) `FIT2D=1` und die Extrapolation bleiben für Tools mit Steigung < 0,1 die bessere Methode (gleiches Fenster, Kreuzterm), `QUAD_SLOPE` als Warnschwelle. Der Nebeneffekt der 2D-Messung: `spread` und Drift-Bias sind dort 0 (ein Raster, kein Hin/Rück) — die Webapp zeigt das entsprechend.
