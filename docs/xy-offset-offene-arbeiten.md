@@ -605,3 +605,30 @@ Die Ungenauigkeit durch T0s Düse wird vorerst akzeptiert, T0 bleibt Referenz. Z
 - **Extrapolation immer über drei Spalte:** `QUAD_SLOPE` Default 0, also bekommt jedes Tool die dritte Stützstelle und die Parabel, auch mit gerader Düse. Gleiche Behandlung für alle; die Steigung bleibt als Warnung im Ergebnis. Kostet ~25 s je Tool.
 
 Nie gefahren (Restart nötig).
+
+### 10.10 Lauf 8: Endlauf nach den Entscheidungen aus 10.9 (2026-09-04, spät)
+
+Nach `sudo systemctl restart klipper`, Bett leer, `G28`, QGL, `G28 Z`, `NOZZLE_LOCATOR_PARK`, Halterung drauf. Vorher geprüft: alle `gcode_move`-Offsets 0/0/0 (die Zeile „gcode-Offset aktiv" steht jetzt je Tool im Protokoll), `xy_results` leer, Config-Offset von T0 0/0 → keine Aufaddierung möglich, der Lauf schreibt nichts. Der Trockenlauf ist aus dem Assistenten raus; „Aufsetzen" startet direkt `CALIBRATE_XY_OFFSETS`.
+
+```
+CALIBRATE_XY_OFFSETS REF_TOOL=0 Z_MODE=amplitude TARGET_AMPLITUDE=11000 MIN_GAP=0.2 EXTRAPOLATE_DZ=0.4 FIT2D=1
+```
+
+803 s, Basislinie 3 133 679 Hz am Druckerrand, je Tool drei Raster (Spalt 0,8 / 1,2 / 1,6 mm, 13 × 12 Zellen) mit 2D-Fit und quadratischer Extrapolation auf Spalt 0.
+
+| Tool | Eddy X / Y | Kamera X / Y | Δ X / Y (µm) | Steigung X / Y (µm je mm Spalt) | Messhöhe Z |
+|---|---|---|---|---|---|
+| T0 | 0 / 0 (Referenz) | 0 / 0 | – | +166 / +556 | 53,80 |
+| T1 | +0,6670 / −4,5829 | +0,330 / −5,050 | +337 / +467 | +23 / −51 | 53,30 |
+| T2 | +0,9009 / −3,8635 | +0,440 / −4,560 | +461 / +696 | +24 / −30 | 53,60 |
+| T3 | +0,5008 / −5,3286 | −0,180 / −5,840 | +681 / +511 | +13 / −34 | 53,20 |
+
+T1–T3 untereinander bleiben in den 30–40 µm der früheren Läufe (T2−T1 +234/+719, Kamera +110/+490; T3−T1 −166/−746, Kamera −510/−790 — hier ist die Abweichung zur Kamera wieder 0,04–0,35 mm, wie in §10.2/10.8). Der gemeinsame Versatz aller Tools gegen die Kamera (~+0,35…+0,68 mm in X, +0,47…+0,70 in Y) ist T0s eigene Spitze: Steigung 0,17/0,56 mm je mm Spalt, die Parabel über drei Spalte setzt den Scheitel bei Spalt 0 auf X 120,70 / Y 110,98, linear wären es 120,87 / 111,16. Das ist die akzeptierte Ungenauigkeit aus 10.9.
+
+**Webapp im Browser gesehen (erstmals):** Verbindung über „Change Printer / Camera" (IP, Kamera „Gantry"), Akkordeon „XY-Offsets: Eddy vs. Kamera", Umschalter „Eddy-Sweep". Klick auf „T1" in der Tabelle öffnet den Dialog „Messbild T1" mit Kopfzeile (Offset, Amplitude, Steigung, Extrapolation, ρ) und den drei Rastern als plotly-3D-Flächen; keine Konsolenfehler. Die Ergebnisse stehen im Block, aber sind **nicht übernommen** — die Kamera-Werte bleiben in den `T<n>.cfg`.
+
+**Zustand beim Verlassen:** gehomt, T0 montiert, Kopf X 121,4 / Y 111,5 / Z 60,2 über der Sonde, Halterung und Sonde auf dem Bett, Idle-Timeout 3600 s. `printer.offset.xy_results` hat `ref_tool` 0 mit `images` (drei Raster je Tool, 45 KB), Datei `.offset_xy_results.json`.
+
+**Was jetzt noch offen ist**
+- Übernahme in die Config: erst entscheiden, ob Kamera oder Sonde für T0 recht hat. Nächster Schritt dafür: T0s Düse unter der Kamera (Bohrung) gegen den Sonden-Scheitel legen; oder T0-Düse tauschen und Lauf 8 wiederholen.
+- Wenn T0 gerade sitzt (Steigung < 0,05), sollte der Lauf die Kamera-Werte auf ~0,1 mm treffen (Referenz: T1-Läufe §10.2, §10.8).

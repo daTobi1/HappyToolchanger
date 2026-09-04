@@ -17,7 +17,7 @@ Stand: 2026-09-03, alles auf `main` und gepusht. Die Spule ist da, haengt per US
 | 4 — Extraktion `_resolve_tool_run()` | **gestrichen**, siehe §4 |
 | 5 — `CALIBRATE_XY_OFFSETS` | **fertig**, ein kompletter Lauf über T0–T3 am 2026-09-04 |
 | 6 — Extraktion `updateConfigFile()` | **fertig** |
-| 7–9 — Webapp (Block, Assistent, Kamera) | **fertig gebaut, nie im Browser gesehen** |
+| 7–9 — Webapp (Block, Assistent, Kamera) | **fertig**, XY-Block und Messbild-Dialog am 2026-09-04 im Browser gesehen |
 
 Tests heute: 80 (Fit, Python) + 77 (Klipper-API, Python, auf dem Pi) + 63 (Webapp, node) + 19 (Recovery, node) + 17 (Raster-Viewer, node).
 Ein Abschluss-Review über den gesamten Umfang ist gelaufen und sauber.
@@ -95,15 +95,9 @@ und ob die 180°-Drehung der Hotends den Block-Schwerpunkt kippt.
 
 **Nachmittag (offene Arbeiten §10.5–10.7):** Spaltmodus-Lauf mit T0, Höhenserien, Platinen-Abzug, Amplitudenmodus, dann **Spitzen-Extrapolation** (`TIP_EXTRAPOLATE`, Default an) mit T0 als Referenz. Ergebnis Lauf 6: Abweichung zur Kamera 40–200 µm, T0 mit Steigung 0,29 mm/mm („Düse schief im Block"), Amplituden-Z passt nicht zu den Z-Switch-Daten.
 
-**Zustand des 250ers beim Verlassen (Abend):** gehomt, QGL, **T0
-montiert**, Kopf auf Z 60 über der Sonde, Idle-Timeout 3600 s. **Halterung
-und Sonde stehen auf dem Bett**, Düsenbuckel von T0 bei ≈ X 121,0 / Y 119,7.
-Klipper läuft auf dem Scanmodus-Commit; `xy_probe.cfg` auf dem Drucker hat
-`scan_speed` nicht eingetragen (Default 5 gilt), Drive-Current bleibt 15,
-kein `SAVE_CONFIG` nötig. Ergebnisse in `printer.offset.xy_results`
-(`ref_tool` 1) und `.offset_xy_results.json`; Raster und Rohsweeps als JSON
-in `~/printer_data/logs/` (`nozzle_locator_map_*.json`, `map_T*_wide.json`,
-`scan_x_speeds.json`).
+**Spät (offene Arbeiten §10.8–10.10):** 2D-Fit über ein kleines Raster (`FIT2D=1`) plus quadratische Extrapolation über drei Spalte, für alle Tools immer; Basislinie am Druckerrand; Trockenlauf aus dem Assistenten raus. **Lauf 8 (803 s, T0 Referenz):** T1 +0,667/−4,583, T2 +0,901/−3,864, T3 +0,501/−5,329 — untereinander wie immer auf 30–40 µm, gegen die Kamera aber gemeinsam 0,35–0,7 mm daneben, weil T0s Düse schief sitzt (Steigung 0,17/0,56 mm je mm Spalt). Akzeptiert (Tobi), **nichts in die Config übernommen**. Messbild-Dialog (Klick auf den Toolnamen) im Browser geprüft.
+
+**Zustand des 250ers beim Verlassen (spät):** gehomt, **T0 montiert**, Kopf X 121,4 / Y 111,5 / Z 60,2 über der Sonde, Idle-Timeout 3600 s. **Halterung und Sonde stehen auf dem Bett** — vor jedem `G28` runter. Klipper läuft auf dem Commit von Lauf 8 (Service-Neustart gemacht), `xy_probe.cfg` unverändert, kein `SAVE_CONFIG` nötig. Ergebnisse in `printer.offset.xy_results` (`ref_tool` 0, drei Raster je Tool) und `.offset_xy_results.json`; Raster als JSON in `~/printer_data/logs/`.
 
 **Nächste Schritte in dieser Reihenfolge** (Details §9.4 und §10 der offenen Arbeiten; **nach dem Messtag gilt: Referenztool ohne Sonde oder T0 mit kleinem Spalt, `FINE_GAP=`, Parkpunkt über dem Düsenbuckel des Referenztools, nicht über der Platine**):
 
