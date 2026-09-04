@@ -93,9 +93,11 @@ im Scan- und Spaltmodus: 298 s, Spannweite 1–3 µm, Abweichung zur Kamera
 0,1–0,27 mm** (vorher 0,45–0,64). Offen ist, ob Kamera oder Sonde recht hat
 und ob die 180°-Drehung der Hotends den Block-Schwerpunkt kippt.
 
-**Zustand des 250ers beim Verlassen (Mittag):** gehomt, QGL, **T1
+**Nachmittag (offene Arbeiten §10.5–10.7):** Spaltmodus-Lauf mit T0, Höhenserien, Platinen-Abzug, Amplitudenmodus, dann **Spitzen-Extrapolation** (`TIP_EXTRAPOLATE`, Default an) mit T0 als Referenz. Ergebnis Lauf 6: Abweichung zur Kamera 40–200 µm, T0 mit Steigung 0,29 mm/mm („Düse schief im Block"), Amplituden-Z passt nicht zu den Z-Switch-Daten.
+
+**Zustand des 250ers beim Verlassen (Abend):** gehomt, QGL, **T0
 montiert**, Kopf auf Z 60 über der Sonde, Idle-Timeout 3600 s. **Halterung
-und Sonde stehen auf dem Bett**, Düsenbuckel von T1 bei ≈ X 123,9 / Y 120,9.
+und Sonde stehen auf dem Bett**, Düsenbuckel von T0 bei ≈ X 121,0 / Y 119,7.
 Klipper läuft auf dem Scanmodus-Commit; `xy_probe.cfg` auf dem Drucker hat
 `scan_speed` nicht eingetragen (Default 5 gilt), Drive-Current bleibt 15,
 kein `SAVE_CONFIG` nötig. Ergebnisse in `printer.offset.xy_results`

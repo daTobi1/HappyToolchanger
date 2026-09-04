@@ -559,3 +559,23 @@ T2 und T3 sind über drei Läufe, zwei Halterungspositionen und zwei Spaltmodi a
 **Deutung, die alle Befunde zusammenbringt:** der Platinen-Abzug (10.5) zeigte nur ~20 µm additive Wirkung am Buckel. Eine Spaltabhängigkeit von 0,6 mm/mm entsteht aber, wenn **die Düsenspitze nicht auf der Blockachse sitzt** (Gewindespiel, Düse schief eingeschraubt, Spitze beschädigt): bei großem Spalt misst die Spule den Block, bei kleinem die Spitze, und der Scheitel wandert zwischen beiden. T1 zeigt −48 µm/mm (fast zentriert), T0 +600 µm/mm (Spitze ~0,5 mm neben der Blockachse, in −Y). Die Kamera sieht die Bohrung, also die Spitze. **Prüfbar mit der Kamera von unten: liegt T0s Bohrung mittig im Blockumriss?**
 
 **Konsequenz für das Verfahren:** die Spule liefert bei Spalt → 0 die Spitze. Zwei Messungen je Tool bei zwei kleinen Spalten und lineare Extrapolation auf 0 („Spitzen-Extrapolation") machen das Ergebnis unabhängig von Block-Exzentrizität — und nebenbei von jeder additiven Störung, die mit dem Spalt schwächer wird (Platine). Kosten: eine zweite Feinmessung je Tool, ~30 s. Offen: nichtlinear zum kleinen Spalt hin (10.5), also Spalte so klein wie möglich (0,25/0,6) und ggf. drei Stützstellen. Und im Amplitudenmodus die Z-Schritte von 0,25 auf 0,05 mm verfeinern, sonst streut der Spalt je Tool um bis zu 0,25 mm.
+
+### 10.7 Läufe mit Spitzen-Extrapolation, T0 als Referenz (2026-09-04, 15–16 Uhr)
+
+Amplitudenmodus, feine Z-Tastung (0,05 mm), zwei Spalte je Tool, Gerade auf Spalt 0. Halterung unverändert zwischen den Läufen (T0-Grobsuche beide Male 121,04 / 119,73).
+
+| Lauf | Ziel-Amplitude | Spalte T0 | T1 (Kamera +0,330 / −5,050) | T2 (+0,440 / −4,560) | T3 (−0,180 / −5,840) |
+|---|---|---|---|---|---|
+| 4 | 8.000 Hz | 1,20 / 1,70 | +0,2866 / −5,2168 → **−43 / −167 µm** | +0,4903 / −4,5236 → **+50 / +36** | +0,0207 / −5,9651 → **+201 / −125** |
+| 5 | 12.000 Hz | 0,70 / 1,10 | abgebrochen: T1 erreicht am Boden (Z 53,25) nur 11.578 Hz | | |
+| 6 | 11.000 Hz | 0,75 / 1,15 | +0,2765 / −5,1665 → **−54 / −117 µm** | +0,4842 / −4,4640 → **+44 / +96** | +0,0149 / −5,8964 → **+195 / −56** |
+
+Steigungen je Tool (mm je mm Spalt), stabil über die Läufe: **T0 Y +0,26…+0,29** („Düse sitzt schief im Block"), X −0,02…−0,06; T1 Y −0,04/−0,05; T2 Y −0,03; T3 Y −0,03/−0,04. Spannweiten 1,6–4,9 µm.
+
+**Befunde:**
+
+- Zwischen Lauf 4 und 6 wandern alle drei Offsets um ~+60 µm in Y gemeinsam: das ist T0s Spitzen-Extrapolation, die von 1,2 mm auf 0,75 mm Spalt noch nicht konvergiert ist (Kurve zum kleinen Spalt hin steiler, 10.5). Kleinere Spalte für T0 gehen nicht, weil T1 und T3 rund 0,5 mm kürzer sind und am Boden (0,2 mm) die Amplitude begrenzen — im Amplitudenmodus haben alle Tools denselben Spalt.
+- **Amplituden-Z gegen Z-Switch:** Z-Vergleich (Amplitude) T1 −0,45, T2 −0,15, T3 −0,55 gegen Z-Switch-Differenzen +0,31 / +0,04 / −0,21. Die Abweichung ist je Tool verschieden (0,76 / 0,19 / 0,34 mm), also nicht nur ein veralteter T0-Wert. Amplitude als Z-Quelle ist damit vorerst vom Tisch (siehe Diskussion 15 Uhr: Spitze/Block-Bild ≠ Kontakt); eher sind Z-Switch-Daten mehrerer Tools veraltet oder die Amplitudenkurve ist doch nicht für alle gleich.
+- **Restabweichung zur Kamera 40–200 µm**, T3 in X mit +195/+201 über alle Läufe konstant. Ob Kamera oder Sonde recht hat, ist ohne die Kamera-Wiederholbarkeit nicht zu entscheiden (6.5, weiterhin offen).
+
+**Nächste Schritte (Vorschlag):** (1) Kamera-Wiederholbarkeit messen: 8–10 Zentrierungen eines Tools. (2) T0 mit der Kamera ansehen: liegt die Bohrung mittig im Blockumriss? (3) 2D-Paraboloid-Fit über ein kleines Raster statt zweier Linien, gleiches Fenster für alle Tools. (4) Für T0 eine dritte Stützstelle und quadratische Extrapolation, oder T0 bei kleinem Spalt gegen ein Tool ohne Exzentrizität messen.
