@@ -180,6 +180,13 @@ der letzte Client weg ist. Im Scanmodus sind 5 ms Zeitfehler 25 µm. Deshalb
 hält `_hold_sensor()` den Sensor über die ganze Ortung; wer neue Messwege
 baut, muss durch diese Haltung hindurch. → §9.2
 
+**h) Zwei LDC1612 im selben Band, 16 mm auseinander.** Die XY-Spule
+(3,13 MHz) und die Eddy-NG-Sonde an T0 (3,15–3,23 MHz) sind getrennte
+Chips mit getrennten Config-Sektionen und Kommandos — der Drive-Current
+der einen berührt die andere nicht. Aber: werden beide gleichzeitig
+getrieben, können sie sich die Frequenz ziehen. Während XY-Läufen also
+kein Eddy-NG-Probing und kein `EDDYNG_START_STREAM_EXPERIMENTAL`. → §9.6
+
 ---
 
 ## 4. Entscheidungen, die schon getroffen sind

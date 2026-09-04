@@ -454,3 +454,13 @@ Quellen: TI-Applikationsbericht SNOA931 „LDC1612/LDC1614 Linear Position Sensi
 - **Basislinie neben der Spule** (Tobis Einwand): auf `park_z` steht die Düse noch 7 mm über der Spule und hebt die Basislinie um ~1.400 Hz (8.6). `measure_baseline()` fährt jetzt um `baseline_offset` (Default 40 mm) in X zur Seite (bevorzugt +X, sonst −X, innerhalb der Achsgrenzen, `fit.baseline_side`), liest, und kommt zurück; `park_z` ist per Definition die freie Fahrhöhe. Gilt für `NOZZLE_LOCATE`, `NOZZLE_LOCATOR_MAP` und `CALIBRATE_XY_OFFSETS`. Folge: die Amplituden (`min_amplitude`, `target_amplitude`, Raster-Werte) sind ab jetzt ~1.400 Hz größer als bisher gemeldet — Schwellen sind davon nicht betroffen (Düse bei 6.000 Hz bleibt weit darüber), aber alte und neue Amplituden nicht direkt vergleichen. Status: `last_baseline`.
 
 Tests: Fit 80 Zusicherungen, Klipper-API-Wächter um die `ldc1612`-Register und `DriveCurrentCalibrate` erweitert.
+
+**Drive-Current und die Eddy-NG-Sonde an T0 (Tobis Frage, 2026-09-04):** geprüft an Quelle und Drucker, kein Konflikt auf Software-Ebene.
+
+| Ebene | XY-Spule | T0 Eddy-NG | Befund |
+|---|---|---|---|
+| Chip | LDC1612 auf `xyprobe` (USB) | LDC1612 auf `eddy` (CAN) | getrennte Chips, das Register ist je Chip |
+| Kommando | `NOZZLE_LOCATOR_CALIBRATE_DRIVE`; Klippers `LDC_CALIBRATE_DRIVE_CURRENT CHIP=nozzle_locator` (Mux, nur mit CHIP) | `PROBE_EDDY_NG_*`, `EDDYNG_*`; kein `LDC_CALIBRATE_DRIVE_CURRENT` | keine Namensüberschneidung |
+| Config | `[nozzle_locator] reg_drive_current` (Autosave) | `[probe_eddy_ng my_eddy] reg_drive_current = 16`, `tap_drive_current = 16`, `calibrated_drive_currents` | getrennte Sektionen; `SAVE_CONFIG` schreibt beide Blöcke neu, mischt sie aber nicht. `reg_drive_current` in `xy_probe.cfg` **auskommentiert lassen**, den Wert verwaltet der Autosave-Block |
+
+**Physik, die bleibt:** beide Schwingkreise liegen im selben Band (Eddy-NG Freiluft 3,15–3,23 MHz laut Kalibrierung, XY-Spule 3,13 MHz) und stehen bei T0 16 mm auseinander. Solange die Eddy-NG-Sonde **nicht angesteuert** wird, ist ihre Spule ein passiver Resonator im Feld — ein konstanter Anteil des T0-Bias, den das Differenzbild ohnehin zeigt. Werden **beide gleichzeitig getrieben**, ist Frequenzziehen möglich. Eddy-NG startet seinen Sensor nur bei Probe, Tap oder `EDDYNG_START_STREAM_EXPERIMENTAL`; die XY-Kommandos rufen nichts davon auf, und mit Halterung auf dem Bett ist Probing ohnehin verboten. Regel: **während XY-Läufen kein Eddy-NG-Stream und kein Probing.** Der Drive-Current der XY-Spule wird mit T0 auf Messhöhe kalibriert (Referenztool, Sonde passiv im Feld); der Auto-Amplituden-Bereich 1,2–1,8 V ist breit genug für die anderen Tools ohne Sonde.

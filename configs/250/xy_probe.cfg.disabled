@@ -61,8 +61,10 @@ min_samples: 200
 # Duese noch 7 mm ueber der Spule (+1.400 Hz). 0 = an Ort und Stelle lesen.
 baseline_offset: 40
 # Spulenstrom des LDC1612 (0-31). Einmal mit der Duese auf Messhoehe
-# NOZZLE_LOCATOR_CALIBRATE_DRIVE fahren; SAVE_CONFIG traegt den Wert ein
-# (erst wenn die Halterung vom Bett ist -- der Neustart loescht das Homing).
+# NOZZLE_LOCATOR_CALIBRATE_DRIVE fahren; SAVE_CONFIG traegt den Wert in den
+# Autosave-Block ein (erst wenn die Halterung vom Bett ist -- der Neustart
+# loescht das Homing). Hier auskommentiert lassen. Getrennt vom
+# reg_drive_current der Eddy-NG-Sonde ([probe_eddy_ng ...], eigener Chip).
 #reg_drive_current: 15
 runs: 3
 runs_tolerance: 0.05
