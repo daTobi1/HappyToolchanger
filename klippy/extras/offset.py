@@ -2303,10 +2303,18 @@ class Offset:
         if dry_run or ref_pos is None:
             return results
         # Differenzen bilden -- hier kuerzt sich die Spulenposition weg.
+        # Dazu der KONFIGURIERTE Offset des Referenztools (Tobi,
+        # 2026-09-04, "Aufaddierungsfehler?"): Klippers gcode-Offsets sind
+        # gegen T0 definiert, die Sonde misst gegen das Referenztool. Mit
+        # T0 als Referenz ist ref_off 0/0; mit REF_TOOL=1 fehlte sonst
+        # dessen eigener Offset in jedem geschriebenen Wert. Geschrieben
+        # wird absolut (SET_TOOL_GCODE_OFFSET setzt, addiert nicht).
         for key, entry in results.items():
-            entry['x'] = entry['x_peak'] - ref_pos[0]
-            entry['y'] = entry['y_peak'] - ref_pos[1]
+            entry['x'] = entry['x_peak'] - ref_pos[0] + ref_off[0]
+            entry['y'] = entry['y_peak'] - ref_pos[1] + ref_off[1]
             entry['z_compare'] = entry['z_reached'] - ref_pos[2]
+            entry['ref_offset_x'] = ref_off[0]
+            entry['ref_offset_y'] = ref_off[1]
             # Plausibilitaet: Abweichung von der VORHERSAGE, nicht vom
             # Referenztool -- Offsets von 5 mm sind auf Tobis 250er normal
             # und kein Fehler. Weit weg von der Vorhersage heisst dagegen:
@@ -2334,8 +2342,10 @@ class Offset:
 
     def _xy_tool_offset(self, tool_nr):
         """(gcode_x_offset, gcode_y_offset) eines Tools aus der Config,
-        (0, 0) wenn unbekannt. Dient nur als Vorhersage fuer das
-        Suchfenster -- gemessen wird unabhaengig davon."""
+        (0, 0) wenn unbekannt. Dient als Vorhersage fuer das Suchfenster
+        (gemessen wird unabhaengig davon) und als Rahmen des
+        Referenztools: die Differenzen werden um dessen Offset ergaenzt,
+        damit die Ergebnisse immer gegen T0 stehen."""
         try:
             tool_obj = self.printer.lookup_object('tool T%d' % tool_nr)
             return (float(tool_obj.gcode_x_offset or 0.0),
@@ -2357,8 +2367,11 @@ class Offset:
             return None
 
     def _report_xy_results(self, gcmd, results, ref_tool):
-        gcmd.respond_info("XY-Offsets gegen T%d (nur gemessen, nichts "
-                          "geschrieben):" % ref_tool)
+        ref_off = self._xy_tool_offset(ref_tool)
+        gcmd.respond_info("XY-Offsets im T0-Rahmen, gemessen gegen T%d "
+                          "(dessen Config-Offset X%+.3f Y%+.3f ist "
+                          "eingerechnet; nur gemessen, nichts geschrieben):"
+                          % (ref_tool, ref_off[0], ref_off[1]))
         for key in sorted((k for k in results if str(k).isdigit()), key=int):
             e = results[key]
             gcmd.respond_info(
