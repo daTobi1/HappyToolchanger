@@ -3121,9 +3121,12 @@ function xyImageBodyHtml(t, entry, entries, opts) {
   // Hoehe logarithmisch, dazu je Raster der Weg in die 2D-Ansicht und
   // der Ueberlagerungs-Editor.
   var ipq = encodeURIComponent(opts.ip || '');
+  var anyRaster = entries.some(function (e) { return e.kind === 'raster'; });
   head += '<div class="d-flex flex-wrap gap-3 align-items-center mb-2 small">' +
-    '<div class="form-check mb-0"><input type="checkbox" class="form-check-input" id="xy-img-log" checked ' +
-    'onchange="xyRenderImages()"><label class="form-check-label" for="xy-img-log">H&ouml;he logarithmisch</label></div>' +
+    (anyRaster
+      ? '<div class="form-check mb-0"><input type="checkbox" class="form-check-input" id="xy-img-log" checked ' +
+        'onchange="xyRenderImages()"><label class="form-check-label" for="xy-img-log">H&ouml;he logarithmisch</label></div>'
+      : '') +
     '<button type="button" class="btn btn-sm btn-outline-primary" onclick="xyShowOverlay(\x27' +
     escapeHtml(String(t)) + '\x27)">Mit anderem Tool &uuml;berlagern&hellip;</button></div>';
   return head + entries.map(function (e, i) {
@@ -3218,11 +3221,11 @@ function xyOverlayLayers(results, f) {
 var _xyOverlayForm = null;
 function xyShowOverlay(toolA) {
   if (typeof NozzleOverlay === 'undefined') {
-    return alertDialog('&Uuml;berlagerung', 'overlay.js nicht geladen.');
+    return alertDialog('Überlagerung', 'overlay.js nicht geladen.');
   }
   var opts = NozzleOverlay.layerOptions(_xyResults);
   if (!opts.length) {
-    return alertDialog('&Uuml;berlagerung', 'Keine Raster-Messbilder im Ergebnis. Erst einen Lauf mit FIT2D=1 fahren.');
+    return alertDialog('Überlagerung', 'Keine Raster-Messbilder im Ergebnis. Erst einen Lauf mit FIT2D=1 fahren.');
   }
   var ref = String(_xyResults.ref_tool !== undefined ? _xyResults.ref_tool : '0');
   var prev = _xyOverlayForm || {};
@@ -3276,7 +3279,7 @@ function xyShowOverlay(toolA) {
     '<div class="small text-muted mt-2">Kreuz = Scheitel des 2D-Fits je Raster. Liegen die Buckel nach dem ' +
     'Verschieben um den gemessenen Offset nicht aufeinander, weicht die Form der D&uuml;se (oder der ' +
     'Messung) ab; die Handverschiebung zeigt, um wie viel.</div>';
-  alertDialog('Messbilder &uuml;berlagern', body, { okClass: 'btn-secondary' });
+  alertDialog('Messbilder überlagern', body, { okClass: 'btn-secondary' });
   setTimeout(xyRenderOverlay, 80);
 }
 

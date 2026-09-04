@@ -1762,7 +1762,8 @@ class Offset:
         "TIP_EXTRAPOLATE (1 = second fine measurement EXTRAPOLATE_DZ mm "
         "higher and linear extrapolation to gap 0 = the nozzle tip, default "
         "on), FIT2D (1 = 6x6 mm raster with paraboloid fit instead of two "
-        "lines), QUAD_SLOPE (mm per mm gap from which a third gap and a "
+        "lines, default on since 2026-09-04 -- the raster is also the image "
+        "the webapp shows and overlays), QUAD_SLOPE (mm per mm gap from which a third gap and a "
         "quadratic extrapolation are used, default 0 = always). Requires "
         "homed, "
         "levelled axes, the reference tool parked with NOZZLE_LOCATOR_PARK "
@@ -1809,8 +1810,10 @@ class Offset:
                                         maxval=3.0)
         # FIT2D=1: Feinmessung als 6x6-mm-Raster mit Paraboloid-Fit statt
         # zweier Linien (10.7) -- gleiches Fenster fuer alle Tools, Kreuzterm
-        # inklusive. Default aus, bis am Drucker gefahren.
-        fit2d = gcmd.get_int('FIT2D', 0) != 0
+        # inklusive. Seit Lauf 8 (2026-09-04) Default an: das ist die
+        # gewaehlte Methode, und nur das Raster liefert das Messbild fuer
+        # den Dialog und den Ueberlagerungs-Editor der Webapp.
+        fit2d = gcmd.get_int('FIT2D', 1) != 0
         # Ab dieser Steigung (mm je mm Spalt) eine dritte Stuetzstelle und
         # quadratische Extrapolation. Default 0: immer drei Spalte, auch
         # bei gerader Duese (Tobi, 2026-09-04) -- gleiche Behandlung fuer
