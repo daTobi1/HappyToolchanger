@@ -130,3 +130,19 @@ const Map3d = require(path.join(__dirname, '..', 'webapp', 'js', 'map3d.js'));
   if (f3.length) { f3.forEach(f => console.log('BEFUND: ' + f)); process.exit(1); }
   console.log('ALLE TESTS OK (3D log)');
 }
+
+// ---- 3D: Spitzenpunkt im Messbild (Tobi, 2026-09-04) ------------------------
+{
+  let c4 = 0; const f4 = [];
+  const ok4 = (cond, what, detail) => { c4++; if (!cond) f4.push(what + (detail ? ' -- ' + detail : '')); };
+  const t = Map3d.tipTrace({ x: 120.7, y: 111.0, label: 'T0 Spitze' }, -5, 300);
+  ok4(t && t.type === 'scatter3d' && t.x[0] === 120.7 && t.x[1] === 120.7 && t.y[1] === 111.0,
+      'tipTrace: Lot senkrecht durch den Spitzenpunkt fehlt', JSON.stringify(t));
+  ok4(t.z[0] === -5 && t.z[1] === 300, 'tipTrace: Lot ueber die ganze Hoehe', JSON.stringify(t.z));
+  ok4(/Spitze/.test(t.name) && t.line && t.line.color !== '#fff', 'tipTrace: Name und eigene Farbe (nicht weiss wie der Scheitel)');
+  ok4(Map3d.tipTrace(null, 0, 1) === null && Map3d.tipTrace({ x: 'a', y: 1 }, 0, 1) === null,
+      'tipTrace: ohne gueltige Spitze null');
+  console.log(c4 + ' Zusicherungen (Spitze) geprueft');
+  if (f4.length) { f4.forEach(f => console.log('BEFUND: ' + f)); process.exit(1); }
+  console.log('ALLE TESTS OK (Spitze)');
+}

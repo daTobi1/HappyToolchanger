@@ -1001,6 +1001,9 @@ function runParkTest() {
   check('xyImageBodyHtml: Log-Umschalter', /id="xy-img-log"/.test(html2) && /checked/.test(html2), html2);
   check('xyImageBodyHtml: 2D-Link je Raster',
         /map\.html\?ip=192\.168\.178\.60&src=xy&t=1&i=0/.test(html2), html2);
+  var entryTip = Object.assign({ x_peak: 120.7028, y_peak: 110.9841 }, entry2);
+  var htmlTip = xyImageBodyHtml('1', entryTip, xyImageEntries(entryTip), { ip: '1.2.3.4' });
+  check('xyImageBodyHtml: Spitzenpunkt in der Kopfzeile', /Spitze/.test(htmlTip) && /120.703/.test(htmlTip) && /110.984/.test(htmlTip), htmlTip.slice(0, 300));
   check('xyImageBodyHtml: Ueberlagern-Knopf schliesst erst das Messbild', /xyOverlayFromImage\(/.test(html2));
 }
 

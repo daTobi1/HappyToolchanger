@@ -3133,6 +3133,12 @@ function xyImageBodyHtml(t, entry, entries, opts) {
                (entry.tip_slope_y * 1000).toFixed(0) + ' &micro;m je mm Spalt');
   }
   if (entry.tip_method) facts.push('Extrapolation ' + escapeHtml(entry.tip_method === 'quadratic' ? 'quadratisch' : 'linear'));
+  if (typeof entry.x_peak === 'number' && typeof entry.y_peak === 'number') {
+    // Spitzenpunkt in Maschinenkoordinaten (Tobi, 2026-09-04) -- im Raster
+    // als oranges Lot neben der weissen Scheitel-Linie
+    facts.push('Spitze (Spalt 0) X ' + entry.x_peak.toFixed(3) + ' / Y ' + entry.y_peak.toFixed(3) +
+               ' <span style="color:#ff7f0e">&#9646;</span>');
+  }
   if (typeof entry.rho === 'number') facts.push('&rho; ' + entry.rho.toFixed(3));
   head += (facts.length ? '<div class="small text-muted">' + facts.join(' &middot; ') + '</div>' : '') + '</div>';
   if (!entries.length) return head + '<div class="text-muted">Keine Messbilder im Ergebnis (Lauf vor 2026-09-04?).</div>';
@@ -3190,13 +3196,16 @@ function xyRenderImages() {
   var s = _xyImageShown;
   if (!s) return;
   var log = $('#xy-img-log').is(':checked');
+  var entry = _xyResults[s.t] || {};
+  var tip = (typeof entry.x_peak === 'number' && typeof entry.y_peak === 'number')
+    ? { x: entry.x_peak, y: entry.y_peak, label: 'T' + s.t + ' Spitze (Spalt 0)' } : null;
   s.entries.forEach(function (e, i) {
     var el = document.getElementById('xy-img-' + i);
     if (!el) return;
     if (e.kind === 'raster' && typeof NozzleMap3d !== 'undefined') {
       NozzleMap3d.renderMap3d(el, Object.assign({ done: true, label: 'T' + s.t + ' ' + e.label },
                                                  e.data), 'xyimg-' + s.t + '-' + i + (log ? '-log' : ''),
-                              { log: log });
+                              { log: log, tip: tip });
     } else if (e.kind === 'profiles') {
       el.innerHTML = xyProfileSvg(e.data.x, 'X') + ' ' + xyProfileSvg(e.data.y, 'Y');
     }

@@ -52,6 +52,20 @@
              zlabel: opts.log ? 'log10(Hz ueber Basislinie)' : 'Hz ueber Basislinie' };
   }
 
+  // Lot durch den ermittelten Spitzenpunkt des Tools (Extrapolation auf
+  // Spalt 0, xy_results[t].x_peak/y_peak) -- im Messbild neben der weissen
+  // Scheitel-Linie des Rasters (Tobi, 2026-09-04). Orange, damit es sich
+  // von der Scheitel-Linie und der Viridis-Flaeche abhebt.
+  function tipTrace(tip, zlo, zhi) {
+    if (!tip || typeof tip.x !== 'number' || typeof tip.y !== 'number') return null;
+    return { type: 'scatter3d', mode: 'lines+markers',
+             x: [tip.x, tip.x], y: [tip.y, tip.y], z: [zlo, zhi],
+             name: tip.label || 'Spitze (Spalt 0)',
+             line: { color: '#ff7f0e', width: 6 }, marker: { size: 4, color: '#ff7f0e' },
+             hovertemplate: 'Spitze X %{x:.3f}<br>Y %{y:.3f}<extra>' + (tip.label || '') + '</extra>',
+             showlegend: false };
+  }
+
   var _loading = null;
   function ensurePlotly() {
     if (global.Plotly) return Promise.resolve(global.Plotly);
@@ -87,16 +101,18 @@
                        (opts.log ? ' (log10)' : ' Hz') + '<extra></extra>'
       };
       var data = [trace];
+      var zs = [].concat.apply([], s.z).filter(function (v) { return v !== null; });
+      var zlo = zs.length ? Math.min.apply(null, zs) : 0;
+      var zhi = zs.length ? Math.max.apply(null, zs) : 1;
       if (s.centre && isFinite(s.centre[0]) && isFinite(s.centre[1])) {
         // Senkrechte durch die Rastermitte (Duesenposition beim Start)
-        var zs = [].concat.apply([], s.z).filter(function (v) { return v !== null; });
-        var zlo = zs.length ? Math.min.apply(null, zs) : 0;
-        var zhi = zs.length ? Math.max.apply(null, zs) : 1;
         data.push({ type: 'scatter3d', mode: 'lines',
                     x: [s.centre[0], s.centre[0]], y: [s.centre[1], s.centre[1]],
                     z: [zlo, zhi], line: { color: '#fff', width: 4 },
                     hoverinfo: 'skip', showlegend: false });
       }
+      var tt = tipTrace(opts.tip, zlo, zhi);
+      if (tt) data.push(tt);
       var layout = {
         title: { text: s.title, font: { size: 13 } },
         margin: { l: 0, r: 0, t: 30, b: 0 },
@@ -117,7 +133,7 @@
     });
   }
 
-  var api = { mapToSurface: mapToSurface, renderMap3d: renderMap3d,
+  var api = { mapToSurface: mapToSurface, renderMap3d: renderMap3d, tipTrace: tipTrace,
               ensurePlotly: ensurePlotly, PLOTLY_URL: PLOTLY_URL };
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api;
