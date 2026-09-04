@@ -378,3 +378,19 @@ Ebenen samt Verschiebung), `xyProgressHtml()`/`xyProgressDone()` des
 Fortschrittsdialogs beim Messlauf und der Messbild-Dialog mit Log-Umschalter,
 2D-Link und Überlagern-Knopf; im Assistenten-Test, dass der Fortschrittsdialog
 VOR dem Senden des Messlaufs aufgeht.
+
+## `check_fit_radius.js`
+
+Prüft die Fit-Radius-Ermittlung `webapp/js/fitradius.js`: den Paraboloid-Fit
+(Kleinstequadrate wie `nozzle_locator_fit.paraboloid_fit`, exakte Parabel bei
+jedem Radius, Sattel und zu wenige Punkte werfen), `imagePoints` (Basislinie,
+`null`), `radiusSweep` und den Vorschlag `suggestFitRadius` (Plateau-Kriterium:
+größter Radius, bei dem der Scheitel aller Tools innerhalb 25 µm um seinen
+Median bleibt; ein einseitiger Ausläufer wirft die großen Radien raus):
+
+```bash
+node tests/check_fit_radius.js
+```
+
+Dazu in `check_xy_offset_ui.js`: Knopf „ermitteln" am Feld, Tabelle
+`xyFitRadiusTableHtml()`, Übernahme des Vorschlags als Default.

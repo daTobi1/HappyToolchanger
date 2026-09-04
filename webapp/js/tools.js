@@ -2912,6 +2912,9 @@ function xyOffsetSection() {
           '<input type="number" class="form-control" id="xy-fit-radius" min="0.75" max="3" step="0.25" placeholder="2.0" value="' +
           escapeHtml(_xyFitRadiusStored()) + '">' +
           '<span class="input-group-text">mm</span>' +
+          '<button type="button" class="btn btn-outline-secondary" id="xy-fit-radius-suggest" ' +
+            'title="Aus den Rastern des letzten Laufs den Radius ermitteln, bei dem der Scheitel am wenigsten vom Radius abhaengt" ' +
+            'onclick="xyShowFitRadius()">ermitteln</button>' +
         '</div>' +
         // Nur sichtbar, solange die Sonde aktiv ist (nozzle_locator geladen):
         // direkter Lauf ohne Neustart/Homen/Aufsetzen und das Deaktivieren
@@ -4354,6 +4357,62 @@ function xyFitRadiusValue() {
 
 function _xyFitRadiusStored() {
   try { return localStorage.getItem('offset_xy_fit_radius') || ''; } catch (e) { return ''; }
+}
+
+// Fit-Radius selbst ermitteln (Tobi, 2026-09-05): Sweep ueber die
+// gespeicherten Raster (webapp/js/fitradius.js), Tabelle je Radius, der
+// Vorschlag laesst sich als Default ins Feld uebernehmen (bleibt im
+// Browser, geht als FIT_RADIUS mit jedem Lauf).
+function xyFitRadiusTableHtml(sug) {
+  var h = '';
+  if (sug.radius === null) {
+    return '<p class="mb-0 text-warning">' + escapeHtml(sug.reason) + '</p>';
+  }
+  h += '<p class="mb-2"><b>Vorschlag: ' + sug.radius.toFixed(2) + ' mm</b><br>' +
+       '<span class="small text-muted">' + escapeHtml(sug.reason) + '</span></p>';
+  h += '<table class="table table-sm small mb-2"><thead><tr><th>Radius</th><th>Punkte (min.)</th>' +
+       '<th>Abweichung vom Bezug (max. &uuml;ber Tools)</th><th></th></tr></thead><tbody>';
+  sug.rows.forEach(function (r) {
+    var cls = (r.radius === sug.radius) ? ' class="table-primary"' : (r.ok ? '' : ' class="text-muted"');
+    h += '<tr' + cls + '><td>' + r.radius.toFixed(2) + ' mm</td><td>' + r.nMin + '</td><td>' +
+         (r.ok ? r.devUm.toFixed(0) + ' &micro;m' : '&mdash;') + '</td><td>' +
+         (r.ok ? (r.devUm <= sug.tolUm ? 'im Plateau' : '') : escapeHtml(r.why || 'nicht passend')) + '</td></tr>';
+  });
+  h += '</tbody></table>';
+  // Scheitel je Tool und Radius (mm), zum Nachlesen
+  h += '<details><summary class="small text-muted">Scheitel je Tool und Radius</summary>' +
+       '<table class="table table-sm small mb-0"><thead><tr><th>Radius</th>' +
+       sug.tools.map(function (t) { return '<th>T' + escapeHtml(t.tool) + '</th>'; }).join('') +
+       '</tr></thead><tbody>' +
+       sug.rows.map(function (r, k) {
+         return '<tr><td>' + r.radius.toFixed(2) + '</td>' + sug.tools.map(function (t) {
+           var s = t.sweep[k];
+           return '<td>' + (s.error ? '&mdash;' : s.x.toFixed(3) + ' / ' + s.y.toFixed(3)) + '</td>';
+         }).join('') + '</tr>';
+       }).join('') + '</tbody></table></details>';
+  return h;
+}
+
+function xyShowFitRadius() {
+  if (typeof NozzleFitRadius === 'undefined') {
+    return alertDialog('Fit-Radius', 'fitradius.js nicht geladen.');
+  }
+  var sug = NozzleFitRadius.suggestFitRadius(_xyResults, {});
+  var opts = { okClass: 'btn-secondary' };
+  if (sug.radius !== null) {
+    opts.extraLabel = 'Als Default übernehmen (' + sug.radius.toFixed(2) + ' mm)';
+    opts.extraClass = 'btn-primary';
+  }
+  return alertDialog('Fit-Radius ermitteln', xyFitRadiusTableHtml(sug), opts).then(function (choice) {
+    if (choice === 'extra' && sug.radius !== null) {
+      $('#xy-fit-radius').val(String(sug.radius));
+      xyFitRadiusValue();
+      if (typeof showToast === 'function') {
+        showToast('Fit-Radius ' + sug.radius.toFixed(2) + ' mm als Default gesetzt', 'success');
+      }
+    }
+    return sug;
+  });
 }
 
 function xySelectedTools() {

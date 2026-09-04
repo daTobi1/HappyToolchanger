@@ -1144,3 +1144,25 @@ function runParkTest() {
           JSON.stringify(confirms) === JSON.stringify(['XY-Messlauf starten']), JSON.stringify(confirms));
   });
 }
+
+// --------------------------------------------------------------------
+// Teil N+7: Fit-Radius ermitteln (Tobi, 2026-09-05) -- Knopf am Feld,
+// Tabelle aus dem Vorschlag, Vorschlag als Default uebernehmbar.
+// --------------------------------------------------------------------
+{
+  eval(grab('escapeHtml') + grab('xyFitRadiusTableHtml'));
+  check('XY-Block: Knopf "ermitteln" am Fit-Radius', /id="xy-fit-radius-suggest"/.test(grab('xyOffsetSection')));
+  var sugOk = { radius: 2.0, tolUm: 25, reason: 'Bis 2.00 mm bleibt der Scheitel',
+    rows: [{ radius: 1.0, nMin: 13, devUm: 12, ok: true, why: '' }, { radius: 2.0, nMin: 49, devUm: 8, ok: true, why: '' },
+           { radius: 3.0, nMin: 0, devUm: null, ok: false, why: 'T0: kein Hochpunkt' }],
+    tools: [{ tool: '0', sweep: [{ x: 124.1, y: 126.2 }, { x: 124.11, y: 126.19 }, { error: 'x' }] }] };
+  var h = xyFitRadiusTableHtml(sugOk);
+  check('xyFitRadiusTableHtml: Vorschlag genannt', /Vorschlag: 2.00 mm/.test(h), h.slice(0, 120));
+  check('xyFitRadiusTableHtml: gewaehlte Zeile hervorgehoben', /table-primary[^]*2.00 mm/.test(h));
+  check('xyFitRadiusTableHtml: Grund fuer unpassenden Radius', /kein Hochpunkt/.test(h));
+  check('xyFitRadiusTableHtml: Scheitel je Tool', /124\.100 \/ 126\.200/.test(h));
+  var hNone = xyFitRadiusTableHtml({ radius: null, rows: [], tools: [], reason: 'Keine Raster-Messbilder' });
+  check('xyFitRadiusTableHtml: ohne Raster nur der Grund', /Keine Raster/.test(hNone) && !/<table/.test(hNone));
+  check('xyShowFitRadius: Vorschlag wird als Default ins Feld geschrieben',
+        /xy-fit-radius'\)\.val\(String\(sug\.radius\)\)/.test(grab('xyShowFitRadius')) && /extraLabel/.test(grab('xyShowFitRadius')));
+}
