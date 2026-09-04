@@ -2899,10 +2899,10 @@ function xyOffsetSection() {
       '</div>' +
       '<div class="d-flex gap-1 align-items-center">' +
         // Feinspalt fuer den Messlauf (FINE_GAP), leer = Klipper-Default
-        // 0,75 mm. Kleinerer Spalt = Spitze dominiert (offene Arbeiten 10.12).
-        '<div class="input-group input-group-sm flex-nowrap" style="width:13.5em" title="Messspalt ueber der Spule fuer alle Tools (FINE_GAP); leer = Config-Default 0,75 mm. Kleiner = Spitze dominiert, mindestens 0,2 mm.">' +
+        // 0,4 mm. Kleinerer Spalt = Spitze dominiert (offene Arbeiten 10.12).
+        '<div class="input-group input-group-sm flex-nowrap" style="width:13.5em" title="Messspalt ueber der Spule fuer alle Tools (FINE_GAP); leer = Config-Default 0,4 mm. Kleiner = Spitze dominiert, mindestens 0,2 mm.">' +
           '<span class="input-group-text">Feinspalt</span>' +
-          '<input type="number" class="form-control" id="xy-fine-gap" min="0.2" max="3" step="0.05" placeholder="0.75" value="' +
+          '<input type="number" class="form-control" id="xy-fine-gap" min="0.2" max="3" step="0.05" placeholder="0.4" value="' +
           escapeHtml(_xyFineGapStored()) + '">' +
           '<span class="input-group-text">mm</span>' +
         '</div>' +

@@ -38,8 +38,8 @@ i2c_bus: i2c0f
 park_z: 60
 search_span: 30
 holder_top_z: 53
-min_gap: 0.5
-fine_gap: 0.75
+min_gap: 0.2
+fine_gap: 0.4
 
 sweep_span: 8
 sweep_step: 1

@@ -47,12 +47,14 @@ class NozzleLocator:
         self.park_z = config.getfloat('park_z', 60.0, above=0.)
         self.search_span = config.getfloat('search_span', 30.0, above=0.)
         self.holder_top_z = config.getfloat('holder_top_z', 0.0, minval=0.)
-        self.min_gap = config.getfloat('min_gap', 0.5, above=0.)
+        self.min_gap = config.getfloat('min_gap', 0.2, above=0.)
         # Spalt der Feinmessung ueber der Halterungsoberkante, wenn die
         # Duesenlaengen aus den Z-Switch-Daten bekannt sind. Klein, weil der
         # Heizblock den Scheitel um ~240 um je mm Spalt verzieht; setzt
         # eine auf 0,2 mm genau gemessene holder_top_z voraus.
-        self.fine_gap = config.getfloat('fine_gap', 0.75, above=0.)
+        # Default 0,4 mm seit 2026-09-04 (Lauf 11, Tobi): kleiner Spalt, damit
+        # die Spitze gegen Block und Platine dominiert; min_gap 0,2 als Boden.
+        self.fine_gap = config.getfloat('fine_gap', 0.4, above=0.)
 
         # Messparameter
         self.sweep_span = config.getfloat('sweep_span', 8.0, above=0.)
