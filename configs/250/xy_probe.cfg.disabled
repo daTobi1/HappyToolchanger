@@ -33,8 +33,8 @@ i2c_bus: i2c0f
 # park_x/park_y weglassen = Bettmitte aus den Achsgrenzen. park_z ist die
 # Freihoehe zum Unterschieben und die Fahrhoehe aller Verfahrwege. Der
 # Assistent schreibt geaenderte Werte hierher zurueck.
-#park_x: 125
-#park_y: 125
+park_x: 125.0
+park_y: 130.0
 park_z: 60
 search_span: 30
 holder_top_z: 53
