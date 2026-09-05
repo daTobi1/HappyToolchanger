@@ -17,7 +17,10 @@
         <td v-if="!isResponsiveMobile" class="state">
             <v-tooltip v-if="state !== null" top>
                 <template #activator="{ on, attrs }">
-                    <div v-bind="attrs" v-on="on">{{ formatState }}</div>
+                    <div v-bind="attrs" v-on="on">
+                        <v-icon v-if="isHeater" x-small class="state-icon">{{ mdiFire }}</v-icon>
+                        {{ formatState }}
+                    </div>
                 </template>
                 <span>{{ $t('Panels.TemperaturePanel.Avg') }}: {{ avgState }} %</span>
             </v-tooltip>
@@ -121,6 +124,7 @@ export default class TemperaturePanelListItem extends Mixins(BaseMixin) {
     mdiCog = mdiCog
     mdiSnowflake = mdiSnowflake
     mdiFan = mdiFan
+    mdiFire = mdiFire
 
     @Prop({ type: String, required: true }) readonly objectName!: string
     @Prop({ type: Boolean, required: true }) readonly isResponsiveMobile!: boolean
@@ -497,6 +501,12 @@ export default class TemperaturePanelListItem extends Mixins(BaseMixin) {
 .hotend-fan .v-icon {
     margin-right: 2px;
     vertical-align: -1px;
+}
+
+.state-icon {
+    margin-right: 2px;
+    vertical-align: -1px;
+    opacity: 0.7;
 }
 
 
