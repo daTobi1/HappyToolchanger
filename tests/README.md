@@ -11,6 +11,7 @@ ssh biqu@<IP> '~/klippy-env/bin/python /tmp/check_klipper_api.py'
 ssh biqu@<IP> '~/klippy-env/bin/python /tmp/check_qgl_probe_choice.py'
 ssh biqu@<IP> '~/klippy-env/bin/python /tmp/check_homing_rebound.py'
 ssh biqu@<IP> '~/klippy-env/bin/python /tmp/check_tool_extruders.py'
+ssh biqu@<IP> 'python3 /tmp/check_htc_heater_fan.py'   # braucht htc_heater_fan.py daneben
 ```
 
 Exit-Code 0 = sauber, 1 = Befunde.
@@ -340,6 +341,41 @@ extruder 'extruder'`.
 **Deckt nicht ab:** ob die Zuordnung *physisch* stimmt. Dass T3 auf
 `extruder3` zeigt heißt nicht, dass an T3 auch das Kabel von `extruder3`
 steckt.
+
+## `check_htc_heater_fan.py`
+
+Prüft die Entscheidungslogik von `klippy/extras/htc_heater_fan.py` — den
+Hotend-Lüfter mit Drehzahl je Zustand. Braucht **kein Klipper und keinen
+Drucker**, nur Python 3 (auf dem Windows-Rechner also über den Pi):
+
+```bash
+scp tests/check_htc_heater_fan.py klippy/extras/htc_heater_fan.py biqu@<IP>:/tmp/
+ssh biqu@<IP> 'cd /tmp && python3 check_htc_heater_fan.py'
+```
+
+Der Anlass: Klippers `[heater_fan]` kennt eine feste Drehzahl und kein
+Kommando dagegen. Die Lüfter an den Hotends sind zu stark, und bei warmem
+Gehäuse sollen sie mehr Luft geben. Bewusst **keine** Kennlinie nach
+Hotend-Temperatur — die wird schon per PID geregelt, ein zweiter Regler auf
+derselben Größe könnte schwingen.
+
+| Zusicherung | warum sie zählt |
+|---|---|
+| Sollwert gesetzt → an, auch wenn noch kalt | wie `[heater_fan]`: Luft, sobald geheizt wird |
+| Sollwert 0, noch über `heater_temp` → `cooldown` | Abkühlen braucht Luft, egal ob montiert |
+| genau `heater_temp` ist noch nicht „über" | Klipper prüft `>`; ein `>=` hielte den Lüfter einen Tick länger an |
+| `min_speed` hebt an, schaltet aber kalt nicht ein | Untergrenze gegen Heat-Creep, kein Dauerläufer |
+| `SPEED=` ersetzt nur die Zustandsdrehzahl, `min_speed` bleibt | ein Tippfehler im Override darf die Düse nicht verstopfen |
+| Gehäuse-Anhebung senkt nie unter die Zustandsdrehzahl | `chamber_max_speed` unter `fan_speed` darf nicht drosseln |
+| Sensorausfall (`None`) → Zustandsdrehzahl, nicht 0 | ein kaputter Gehäusesensor darf den Hotend-Lüfter nicht stoppen |
+| `temp_full <= temp_start` → keine Anhebung | statt Division durch 0 |
+| Totband 2 % für die Anhebung, Zustandswechsel und Ein/Aus immer sofort | die Anhebung soll nicht jede Sekunde ein PWM-Update schicken |
+
+**Deckt nicht ab:** die Klipper-Anbindung — Tool-Zuordnung über den
+Extruder, Timer, `SET_HEATER_FAN`. Das sichert `check_klipper_api.py`
+(Signaturen von `fan.Fan`, `heater.get_temp`, `tool.extruder_name`) und ein
+Blick auf `printer["htc_heater_fan Tn_hotend_fan"].state` am laufenden
+Drucker.
 
 ## `check_nozzle_map.js`
 

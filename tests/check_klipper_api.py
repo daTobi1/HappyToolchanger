@@ -328,6 +328,42 @@ def main():
         has_attrs(th, ["manual_move", "set_position", "get_position",
                        "wait_moves", "get_status"], "toolhead.ToolHead")
 
+    # --- fan / heaters: htc_heater_fan.py baut fan.Fan direkt und liest
+    #     heater.get_temp() wie Klippers eigenes heater_fan.py ---
+    from extras import fan as fan_mod
+    fc = getattr(fan_mod, "Fan", None)
+    ok(fc is not None, "fan.Fan fehlt")
+    if fc is not None:
+        p = arg_names(fc.__init__)
+        ok(p[:3] == ["self", "config", "default_shutdown_speed"],
+           "fan.Fan.__init__ Signatur geaendert",
+           "htc_heater_fan setzt default_shutdown_speed=1., ist %s" % p)
+        p = arg_names(fc.set_speed)
+        ok(p in (["self", "value", "print_time"], ["self", "print_time", "value"]),
+           "fan.Fan.set_speed Signatur geaendert",
+           "htc_heater_fan kennt (value, print_time=None) und die alte "
+           "(print_time, value), ist %s" % p)
+        has_attrs(fc, ["get_status", "get_mcu"], "fan.Fan")
+        src = source_of(fc._apply_speed) if hasattr(fc, "_apply_speed") else ""
+        ok("kick_start_time" in src,
+           "fan.Fan._apply_speed macht keinen Kick-Start mehr",
+           "htc_heater_fan verlaesst sich darauf, dass ein Luefter beim "
+           "Einschalten kurz voll laeuft (kick_start_time)")
+    if hc is not None:
+        has_attrs(hc, ["get_temp"], "heaters.Heater")
+    ph = getattr(heaters, "PrinterHeaters", None)
+    ok(ph is not None and hasattr(ph, "lookup_heater"),
+       "heaters.PrinterHeaters.lookup_heater fehlt")
+    # Tool-Zuordnung ueber den Extruder: unser eigenes tool.py, aber die
+    # Felder muessen fuer htc_heater_fan._find_tool() bestehen bleiben.
+    from extras import tool as tool_mod, toolchanger as tc_mod
+    src = source_of(getattr(tool_mod, "Tool", None).__init__) \
+        if hasattr(tool_mod, "Tool") else ""
+    ok("self.extruder_name = " in src,
+       "tool.Tool haelt den Extruder nicht mehr in extruder_name")
+    ok(hasattr(getattr(tc_mod, "Toolchanger", None), "get_selected_tool"),
+       "toolchanger.Toolchanger.get_selected_tool fehlt")
+
     print("geprueft: %d Zusicherungen gegen Klipper in %s"
           % (CHECKS[0], args.klipper))
     if FINDINGS:

@@ -53,6 +53,10 @@ git pull
 
 Tools can reference an external Z probe (Eddy, Cartographer) via the `z_probe` config parameter. BED_MESH/QGL/PROBE automatically route to the best available probe. Tap remains for crash detection and tool detection. See `examples/z_probe_example.cfg`.
 
+## htc_heater_fan
+
+`[htc_heater_fan]` replaces `[heater_fan]` for hotend fans: separate speeds for the active tool, parked tools and cool-down, an optional ramp-up with chamber temperature, and `SET_HEATER_FAN` to change speeds at runtime. Pure Klipper extra, survives Klipper updates. See `docs/htc_heater_fan.md`.
+
 ## License
 
 Based on [klipper-toolchanger-easy](https://github.com/jwellman80/klipper-toolchanger-easy) and [Eddy-NG](https://github.com/Cartographer3D/eddy-ng).

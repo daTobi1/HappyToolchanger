@@ -161,6 +161,7 @@ export const actions: ActionTree<FarmPrinterState, RootState> = {
             'heaters',
             'heater_bed',
             'heater_fan',
+            'htc_heater_fan',
             'fan',
             'temperature_fan',
             'temperature_sensor',

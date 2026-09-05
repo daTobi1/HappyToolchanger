@@ -189,7 +189,7 @@ export const getters: GetterTree<PrinterState, RootState> = {
 
     getFans: (state, getters) => {
         const fans: PrinterStateFan[] = []
-        const supportedFans = ['temperature_fan', 'controller_fan', 'heater_fan', 'fan_generic', 'fan']
+        const supportedFans = ['temperature_fan', 'controller_fan', 'heater_fan', 'htc_heater_fan', 'fan_generic', 'fan']
         const objects = getters.getPrinterObjects(supportedFans)
 
         const controllableFans = ['fan_generic', 'fan']
@@ -222,6 +222,7 @@ export const getters: GetterTree<PrinterState, RootState> = {
         const supportedObjects = [
             'controller_fan',
             'heater_fan',
+            'htc_heater_fan',
             'fan_generic',
             'fan',
             'output_pin',
