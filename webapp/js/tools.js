@@ -2900,6 +2900,15 @@ function xyOffsetSection() {
           'Eddy-Sweep</label>' +
       '</div>' +
       '<div class="d-flex flex-wrap gap-1 align-items-center">' +
+        // Z-Modus (Z_MODE): amplitude = Zielamplitude je Tool (Default seit
+        // 2026-09-05), switch = gleicher Spalt aus den Z-Switch-Daten.
+        '<div class="input-group input-group-sm flex-nowrap w-auto" title="Wie die Messhoehe je Tool bestimmt wird: Amplitude = jedes Tool bis zur Zielamplitude (target_amplitude) absenken, braucht keinen Z-Switch-Lauf; Spalt = gleicher Spalt fuer alle aus den Z-Switch-Daten.">' +
+          '<span class="input-group-text">Z-Modus</span>' +
+          '<select class="form-select" id="xy-z-mode" style="width:8.5em;flex:0 0 8.5em">' +
+            '<option value="amplitude"' + (_xyZModeStored() === 'switch' ? '' : ' selected') + '>Amplitude</option>' +
+            '<option value="switch"' + (_xyZModeStored() === 'switch' ? ' selected' : '') + '>Spalt (Z-Switch)</option>' +
+          '</select>' +
+        '</div>' +
         // Feinspalt fuer den Messlauf (FINE_GAP), leer = Klipper-Default
         // 0,4 mm. Kleinerer Spalt = Spitze dominiert (offene Arbeiten 10.12).
         '<div class="input-group input-group-sm flex-nowrap w-auto" title="Messspalt ueber der Spule fuer alle Tools (FINE_GAP); leer = Config-Default 0,4 mm. Kleiner = Spitze dominiert, mindestens 0,2 mm.">' +
@@ -4432,7 +4441,28 @@ function xyCalibrateCommand(selectedTools, refTool, opts) {
     }
     cmd += " FIT_RADIUS=" + String(+fr.toFixed(3));
   }
+  // Z-Modus (Tobi, 2026-09-05: Umstellung auf Amplitude): amplitude = jedes
+  // Tool auf die Zielamplitude, switch = gleicher Spalt aus den Z-Switch-
+  // Daten. Leer = Klipper-Default (amplitude).
+  var zm = opts.zMode;
+  if (zm !== undefined && zm !== null && String(zm).trim() !== '') {
+    zm = String(zm).trim().toLowerCase();
+    if (zm !== 'amplitude' && zm !== 'switch') {
+      throw new Error("Z-Modus muss amplitude oder switch sein");
+    }
+    cmd += " Z_MODE=" + zm;
+  }
   return cmd;
+}
+
+function xyZModeValue() {
+  var v = $('#xy-z-mode').val();
+  try { localStorage.setItem('offset_xy_z_mode', v || ''); } catch (e) { /* egal */ }
+  return v;
+}
+
+function _xyZModeStored() {
+  try { return localStorage.getItem('offset_xy_z_mode') || 'amplitude'; } catch (e) { return 'amplitude'; }
 }
 
 function xyFitRadiusValue() {
@@ -4518,7 +4548,8 @@ function xyFineGapValue() {
 // Meldung statt eines Laufs.
 function xyBuildRunCommand() {
   return xyCalibrateCommand(xySelectedTools(), getSelectedReferenceTool(0),
-                            { fineGap: xyFineGapValue(), fitRadius: xyFitRadiusValue() });
+                            { fineGap: xyFineGapValue(), fitRadius: xyFitRadiusValue(),
+                              zMode: xyZModeValue() });
 }
 
 function xyWizard() {

@@ -1753,9 +1753,10 @@ class Offset:
         "REF_TOOL, TOOLS (subset), DRY_RUN (1 = travel only, never descend), "
         "TEMP (nozzle temperature, 0 = cold), XY_ITERATIONS (X-Y rounds "
         "against cross-coupling, default from config; run NOZZLE_LOCATE "
-        "AXIS=DIAG once to find out whether 2 is needed), Z_MODE (switch = "
-        "same gap for every tool from the Z-switch data, default; "
-        "amplitude = same signal amplitude), FINE_GAP and MIN_GAP (mm above "
+        "AXIS=DIAG once to find out whether 2 is needed), Z_MODE (amplitude = "
+        "same signal amplitude per tool, default since 2026-09-05, needs no "
+        "Z-switch run; switch = same gap for every tool from the Z-switch "
+        "data), FINE_GAP and MIN_GAP (mm above "
         "holder_top_z for this run, MIN_GAP >= 0.15), WARMUP (seconds of "
         "sensor warm-up before the first measurement), TARGET_AMPLITUDE (Hz "
         "above baseline for Z_MODE=amplitude, higher = smaller gap), "
@@ -1784,7 +1785,13 @@ class Offset:
         temp = gcmd.get_float('TEMP', 0., minval=0.)
         iterations = gcmd.get_int('XY_ITERATIONS', locator.xy_iterations,
                                   minval=1, maxval=4)
-        z_mode = (gcmd.get('Z_MODE', 'switch') or 'switch').strip().lower()
+        # Default amplitude seit 2026-09-05 (Tobi): jedes Tool auf die
+        # Zielamplitude statt auf den Spalt aus den Z-Switch-Daten. Damit
+        # braucht der Lauf keinen Z-Switch-Lauf mehr; die Spalte je Tool
+        # sind dann verschieden (Signal je Spitze verschieden), der
+        # Z-Vergleich ist die Hoehe gleicher Amplitude. Z_MODE=switch
+        # bleibt waehlbar (Webapp: Z-Modus im XY-Block).
+        z_mode = (gcmd.get('Z_MODE', 'amplitude') or 'amplitude').strip().lower()
         if z_mode not in ('switch', 'amplitude'):
             raise gcmd.error("Z_MODE muss switch oder amplitude sein")
         # Spalt fuer diesen Lauf (Tobi, Messtag 2026-09-04: T0 soll mit

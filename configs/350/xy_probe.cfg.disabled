@@ -76,5 +76,8 @@ runs_tolerance: 0.05
 xy_iterations: 1
 
 min_amplitude: 2000
-target_amplitude: 6000
+# Zielamplitude fuer Z_MODE=amplitude (Default seit 2026-09-05): bei 0,4 mm
+# Spalt liefern die Duesen 8.600-16.000 Hz (250er, Lauf 12); 12.000 legt das
+# schwaechste Tool nahe min_gap, die staerkeren etwas hoeher.
+target_amplitude: 12000
 max_offset: 8.0

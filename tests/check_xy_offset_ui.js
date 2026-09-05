@@ -1132,8 +1132,9 @@ function runParkTest() {
   global.getSelectedReferenceToolRD = function () { return 0; };
   global.xyFineGapValueRD = function () { return ''; };
   global.xyFitRadiusValueRD = function () { return ''; };
+  global.xyZModeValueRD = function () { return ''; };
   var rd = (grab('xyBuildRunCommand') + grab('xyRunDirect')).replace(
-    /\b(confirmDialog|alertDialog|xyRunProgressDialog|xySendMounted|waitForPrinterIdle|updateAllProbeResults|xySelectedTools|getSelectedReferenceTool|xyFineGapValue|xyFitRadiusValue|xyBuildRunCommand)\(/g,
+    /\b(confirmDialog|alertDialog|xyRunProgressDialog|xySendMounted|waitForPrinterIdle|updateAllProbeResults|xySelectedTools|getSelectedReferenceTool|xyFineGapValue|xyFitRadiusValue|xyZModeValue|xyBuildRunCommand)\(/g,
     '$1RD(');
   eval(grab('escapeHtml') + grab('gcodeErrorMessage') + grab('xyCalibrateCommand') + rd);
   xyRunDirect().then(function () {
@@ -1193,4 +1194,23 @@ function runParkTest() {
   check('Z aus der Sonde: immer mit Warnung, Z-Switch als Quelle genannt',
         /Option mit Vorbehalt/.test(grab('applyProbeZOffsets')) && /Trotzdem/.test(grab('applyProbeZOffsets')) &&
         /btn-outline-warning/.test(grab('renderXyBlock')));
+}
+
+// --------------------------------------------------------------------
+// Teil N+9: Z-Modus (Tobi, 2026-09-05: Umstellung auf Amplitude) -- Auswahl
+// im XY-Block, geht als Z_MODE mit; Default amplitude.
+// --------------------------------------------------------------------
+{
+  eval(grab('xyCalibrateCommand'));
+  check('xyCalibrateCommand: Z-Modus amplitude wird angehaengt',
+        xyCalibrateCommand([1], 0, { zMode: 'amplitude' }) === 'CALIBRATE_XY_OFFSETS REF_TOOL=0 TOOLS=0,1 Z_MODE=amplitude');
+  check('xyCalibrateCommand: Z-Modus switch wird angehaengt',
+        xyCalibrateCommand([1], 0, { zMode: 'switch', fineGap: 0.4 }) === 'CALIBRATE_XY_OFFSETS REF_TOOL=0 TOOLS=0,1 FINE_GAP=0.4 Z_MODE=switch');
+  check('xyCalibrateCommand: leerer Z-Modus weggelassen', xyCalibrateCommand([1], 0, { zMode: '' }) === 'CALIBRATE_XY_OFFSETS REF_TOOL=0 TOOLS=0,1');
+  var threwZ = false;
+  try { xyCalibrateCommand([1], 0, { zMode: 'foo' }); } catch (e) { threwZ = /Z-Modus/.test(e.message); }
+  check('xyCalibrateCommand: unbekannter Z-Modus wirft', threwZ);
+  var secZ = grab('xyOffsetSection');
+  check('XY-Block: Auswahl Z-Modus mit Amplitude als Default',
+        /id="xy-z-mode"/.test(secZ) && /value="amplitude"/.test(secZ) && /value="switch"/.test(secZ));
 }
