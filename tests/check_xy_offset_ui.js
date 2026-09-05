@@ -508,10 +508,13 @@ function runXyWizardGateTest() {
       deactivateCalls++;
       return Promise.resolve();
     };
+    // Z-Modus-Abfrage (2026-09-05): Wahl wird festgehalten
+    var zModes = [];
+    global.xySetZMode = function (m) { zModes.push(m); return m; };
 
     eval(grab('gcodeErrorMessage') + grab('xyStepOk') + grab('xyWizard'));
     return xyWizard().then(function () {
-      return { confirms: confirms, sent: sent, deactivate: deactivateCalls, progress: progressCalls };
+      return { confirms: confirms, sent: sent, deactivate: deactivateCalls, progress: progressCalls, zModes: zModes };
     });
   }
 
@@ -520,7 +523,7 @@ function runXyWizardGateTest() {
   // --- Kein Trockenlauf mehr im Ablauf (Tobi, 2026-09-04): nach dem
   // Aufsetzen startet direkt der Messlauf, DRY_RUN wird nie gesendet ---
   seq = seq.then(function () {
-    return runWizard([true, true, null], { idle: false }).then(function (r) {
+    return runWizard([true, true, true, null], { idle: false }).then(function (r) {
       check('kein Trockenlauf-Dialog mehr',
         r.confirms.indexOf('Trockenlauf') === -1 &&
         r.confirms.indexOf('Trockenlauf beendet?') === -1,
@@ -537,7 +540,7 @@ function runXyWizardGateTest() {
   // --- "Abschliessen": Sonde aktiv lassen (Tobi, 2026-09-04: der Nutzer
   // soll sich aussuchen koennen, ob er abstecken und deaktivieren muss) ---
   seq = seq.then(function () {
-    return runWizard([true, true, 'extra', true], { idle: true }).then(function (r) {
+    return runWizard([true, true, true, 'extra', true], { idle: true }).then(function (r) {
       check('Sonde aktiv lassen: kein Deaktivieren, kein FIRMWARE_RESTART',
         r.deactivate === 0, 'deactivate=' + r.deactivate);
       check('Sonde aktiv lassen: Abschluss-Dialog sagt, dass sie aktiv bleibt',
@@ -547,9 +550,29 @@ function runXyWizardGateTest() {
     });
   });
 
+  // --- Z-Modus-Abfrage (Tobi, 2026-09-05): "Spalt" ueber den Extra-Knopf,
+  // Abbruch im Modus-Dialog -> kein Messlauf, Deaktivieren wird angeboten ---
+  seq = seq.then(function () {
+    return runWizard([true, true, 'extra', true, true], { idle: true }).then(function (r) {
+      check('Z-Modus-Dialog: Spalt gewaehlt -> xySetZMode(switch)',
+        JSON.stringify(r.zModes) === JSON.stringify(['switch']) && r.sent.length === 1, JSON.stringify(r.zModes));
+    });
+  });
+  seq = seq.then(function () {
+    return runWizard([true, true, true, true, true], { idle: true }).then(function (r) {
+      check('Z-Modus-Dialog: OK -> Amplitude', JSON.stringify(r.zModes) === JSON.stringify(['amplitude']));
+    });
+  });
+  seq = seq.then(function () {
+    return runWizard([true, true, false, null], { idle: true }).then(function (r) {
+      check('Z-Modus-Dialog abgebrochen -> kein Messlauf, Abbruch-Dialog',
+        r.sent.length === 0 && r.confirms.indexOf('XY-Assistent abgebrochen') !== -1, JSON.stringify(r.confirms));
+    });
+  });
+
   // --- Messlauf laeuft noch (nie idle) -> kein FIRMWARE_RESTART ---
   seq = seq.then(function () {
-    return runWizard([true, true, null], { idle: false })
+    return runWizard([true, true, true, null], { idle: false })
       .then(function (r) {
         check('Messlauf wird direkt nach dem Aufsetzen gestartet',
           r.sent.length === 1 && r.sent[0] === 'CALIBRATE_XY_OFFSETS',
@@ -564,13 +587,13 @@ function runXyWizardGateTest() {
 
   // --- Regelfall: transport, aber der Drucker meldet sich wieder idle ---
   seq = seq.then(function () {
-    return runWizard([true, true, true, true]).then(function (r) {
+    return runWizard([true, true, true, true, true]).then(function (r) {
       check('idle nach dem Messlauf -> "Abschliessen" und Deaktivieren',
         r.confirms.indexOf('Abschließen') !== -1 && r.deactivate === 1,
         JSON.stringify(r.confirms) + ' calls=' + r.deactivate);
       check('vollstaendige Dialogfolge des Regelfalls',
         JSON.stringify(r.confirms) === JSON.stringify([
-          'XY-Sonde: Anstecken', 'XY-Sonde: Aufsetzen', 'Abschließen', 'Fertig'
+          'XY-Sonde: Anstecken', 'XY-Sonde: Aufsetzen', 'XY-Messlauf: Z-Modus', 'Abschließen', 'Fertig'
         ]), JSON.stringify(r.confirms));
     });
   });

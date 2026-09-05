@@ -4465,6 +4465,14 @@ function _xyZModeStored() {
   try { return localStorage.getItem('offset_xy_z_mode') || 'amplitude'; } catch (e) { return 'amplitude'; }
 }
 
+// Wahl aus dem Assistenten in die Auswahl im XY-Block und den Browser.
+function xySetZMode(mode) {
+  mode = (mode === 'switch') ? 'switch' : 'amplitude';
+  $('#xy-z-mode').val(mode);
+  try { localStorage.setItem('offset_xy_z_mode', mode); } catch (e) { /* egal */ }
+  return mode;
+}
+
 function xyFitRadiusValue() {
   var v = $('#xy-fit-radius').val();
   try { localStorage.setItem('offset_xy_fit_radius', v || ''); } catch (e) { /* egal */ }
@@ -4616,6 +4624,29 @@ function xyWizard() {
       // am 250er ueber viele Laeufe bekannt, und der Messlauf selbst prueft
       // Homing, Leveling und Toolchanger-Status. CALIBRATE_XY_OFFSETS
       // DRY_RUN=1 bleibt als Kommando fuer neue Aufbauten erhalten.
+      // Z-Modus abfragen (Tobi, 2026-09-05): Amplitude oder Spalt, die Wahl
+      // landet in der Auswahl im XY-Block und damit im Kommando.
+      var curMode = (typeof _xyZModeStored === 'function') ? _xyZModeStored() : 'amplitude';
+      return confirmDialog({
+        title: "XY-Messlauf: Z-Modus",
+        body: '<p class="small mb-1"><b>Amplitude:</b> jedes Tool wird bis zur Zielamplitude ' +
+              'abgesenkt. Braucht keinen Z-Switch-Lauf; die Spalte je Tool sind verschieden.</p>' +
+              '<p class="small mb-1"><b>Spalt (Z-Switch):</b> gleicher Spalt f&uuml;r alle aus den ' +
+              'Z-Switch-Daten. Braucht einen aktuellen Z-Switch-Lauf.</p>' +
+              '<p class="small text-muted mb-0">Zuletzt: ' +
+              (curMode === 'switch' ? 'Spalt' : 'Amplitude') + '.</p>',
+        okLabel: "Amplitude", okClass: "btn-primary",
+        extraLabel: "Spalt (Z-Switch)", extraClass: "btn-outline-secondary",
+        cancelLabel: "Abbrechen"
+      });
+    }).then(function (choice) {
+      if (!choice) {
+        var eM = new Error("Messlauf abgebrochen. Die Sonde ist noch aktiv und die " +
+                           "Halterung steht auf dem Bett.");
+        eM.xyHolderMounted = true;
+        throw eM;
+      }
+      xySetZMode(choice === 'extra' ? 'switch' : 'amplitude');
       return null;
     }).then(function () {
         // Der Fortschrittsdialog geht VOR dem Senden auf (Tobi, 2026-09-04:
