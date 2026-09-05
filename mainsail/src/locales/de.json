@@ -1033,6 +1033,13 @@
             "Headline": "Temperaturen",
             "HideMcuHostSensors": "Host/MCU Sensoren ausblenden",
             "HideMonitors": "Monitore ausblenden",
+            "HotendFan": "Hotend-Lüfter {name}",
+            "HotendFanState": {
+                "active": "aktiv",
+                "cooldown": "abkühlen",
+                "off": "aus",
+                "parked": "geparkt"
+            },
             "Max": "max",
             "Min": "min",
             "Name": "Name",

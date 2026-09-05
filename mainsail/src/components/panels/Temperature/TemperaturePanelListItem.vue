@@ -21,6 +21,22 @@
                 </template>
                 <span>{{ $t('Panels.TemperaturePanel.Avg') }}: {{ avgState }} %</span>
             </v-tooltip>
+            <v-tooltip v-if="hotendFan !== null" top>
+                <template #activator="{ on, attrs }">
+                    <div class="hotend-fan" v-bind="attrs" v-on="on">
+                        <v-icon x-small :class="hotendFanIconClass">{{ mdiFan }}</v-icon>
+                        <small>{{ hotendFanFormat }}</small>
+                    </div>
+                </template>
+                <span>
+                    {{ $t('Panels.TemperaturePanel.HotendFan', { name: hotendFan.name }) }}
+                    <template v-if="hotendFanStateText !== null">({{ hotendFanStateText }})</template>
+                    <template v-if="hotendFan.rpm !== null">
+                        <br />
+                        {{ hotendFan.rpm }} RPM
+                    </template>
+                </span>
+            </v-tooltip>
         </td>
         <td class="current">
             <v-tooltip top :disabled="!(measured_min_temp !== null || measured_max_temp !== null)">
@@ -104,6 +120,7 @@ import { ServerSpoolmanStateSpool } from '@/store/server/spoolman/types'
 export default class TemperaturePanelListItem extends Mixins(BaseMixin) {
     mdiCog = mdiCog
     mdiSnowflake = mdiSnowflake
+    mdiFan = mdiFan
 
     @Prop({ type: String, required: true }) readonly objectName!: string
     @Prop({ type: Boolean, required: true }) readonly isResponsiveMobile!: boolean
@@ -293,6 +310,59 @@ export default class TemperaturePanelListItem extends Mixins(BaseMixin) {
         return null
     }
 
+    // Hotend fan belonging to this heater: an [htc_heater_fan] or [heater_fan]
+    // whose "heater:" setting names this object. Klipper hands the setting
+    // over as a list, older versions as a comma-separated string.
+    get hotendFan(): { name: string; speed: number; state: string | null; rpm: number | null } | null {
+        if (!this.isHeater) return null
+
+        const printer = this.$store.state.printer ?? {}
+        const settings = printer.configfile?.settings ?? {}
+
+        for (const key of Object.keys(printer)) {
+            if (!key.startsWith('htc_heater_fan ') && !key.startsWith('heater_fan ')) continue
+
+            const heaterSetting = settings[key.toLowerCase()]?.heater ?? 'extruder'
+            const heaters: string[] = Array.isArray(heaterSetting)
+                ? heaterSetting
+                : String(heaterSetting)
+                      .split(',')
+                      .map((entry: string) => entry.trim())
+            if (!heaters.includes(this.objectName)) continue
+
+            const fan = printer[key] ?? {}
+            return {
+                name: key.split(' ').slice(1).join(' '),
+                speed: fan.speed ?? 0,
+                state: typeof fan.state === 'string' ? fan.state : null,
+                rpm: fan.rpm ?? null,
+            }
+        }
+
+        return null
+    }
+
+    get hotendFanFormat(): string {
+        if (this.hotendFan === null) return ''
+        if (this.hotendFan.speed === 0) return 'off'
+
+        return `${Math.round(this.hotendFan.speed * 100)} %`
+    }
+
+    get hotendFanStateText(): string | null {
+        const state = this.hotendFan?.state ?? null
+        if (state === null) return null
+
+        return this.$t(`Panels.TemperaturePanel.HotendFanState.${state}`).toString()
+    }
+
+    get hotendFanIconClass() {
+        const disableFanAnimation = this.$store.state.gui?.uiSettings.disableFanAnimation ?? false
+        if (!disableFanAnimation && (this.hotendFan?.speed ?? 0) > 0) return ['icon-rotate']
+
+        return []
+    }
+
     get temperature(): number | null {
         return this.printerObject?.temperature ?? null
     }
@@ -418,6 +488,17 @@ export default class TemperaturePanelListItem extends Mixins(BaseMixin) {
 ::v-deep .v-icon._no-focus-style:focus::after {
     opacity: 0 !important;
 }
+.hotend-fan {
+    opacity: 0.7;
+    white-space: nowrap;
+    line-height: 1;
+}
+
+.hotend-fan .v-icon {
+    margin-right: 2px;
+    vertical-align: -1px;
+}
+
 
 ::v-deep .cursor-pointer {
     cursor: pointer;
