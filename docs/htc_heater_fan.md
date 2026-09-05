@@ -46,8 +46,8 @@ pin: EBBT1:PA0
 heater: extruder1
 heater_temp: 50.0
 fan_speed: 0.8            # aktives Tool
-parked_speed: 0.6         # geparktes Tool (Default: fan_speed)
-cooldown_speed: 0.8       # Heizung aus, noch warm (Default: fan_speed)
+parked_speed: 0.8         # geparktes Tool (Default: fan_speed)
+cooldown_speed: 1.0       # Heizung aus, noch warm (Default: fan_speed)
 min_speed: 0.5            # Untergrenze, solange der Luefter laeuft (Default 0)
 kick_start_time: 0.5      # beim Einschalten so lange volle Drehzahl
 #chamber_sensor: temperature_sensor chamber
@@ -107,8 +107,8 @@ er läuft trotzdem.
 die Drehzahlen eintragen, `RESTART` reicht nicht: das Modul ist eine neue
 Datei, Klipper lädt sie erst nach `sudo systemctl restart klipper`.
 
-Die Startwerte in `configs/250` und `configs/350` (aktiv 80 %, geparkt 60 %,
-Untergrenze 50 %) sind ein Ausgangspunkt, keine Messung. Ob 60 % am geparkten
+Die Startwerte in `configs/250` und `configs/350` (aktiv 80 %, geparkt 80 %, Abkühlen 100 %,
+Untergrenze 50 %) sind ein Ausgangspunkt, keine Messung. Ob 80 % am geparkten
 Tool gegen Heat-Creep reicht, hängt an Hotend und Lüfter — nach dem ersten
 längeren Druck die Extruder-Temperaturen im Leerlauf und das Anlaufen der
 Lüfter prüfen.
