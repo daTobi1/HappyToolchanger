@@ -460,6 +460,16 @@ def tip_extrapolate_quadratic(positions, gaps):
     return _solve(S, t)[0]
 
 
+def floor_ok(signal, target, fraction=0.85):
+    """Am Z-Boden angekommen, Zielamplitude nicht erreicht: reicht das
+    Signal trotzdem? Ja ab `fraction` des Ziels (Default 85 %, dieselbe
+    Schwelle wie die Feinstufe der Anfahrt). Darunter stimmt etwas mit
+    Sonde oder holder_top_z nicht."""
+    if target <= 0:
+        return True
+    return signal >= fraction * target
+
+
 def recenter_target(vertex, centre, tol):
     """Erst zentrieren, dann messen (Tobi, 2026-09-04): liegt der
     gefittete Scheitel weiter als `tol` von der Rastermitte entfernt,

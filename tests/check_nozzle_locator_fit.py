@@ -588,6 +588,13 @@ def main():
     ok(fit.recenter_target((124.25, 128.25), (124.0, 128.0), 0.3) is not None,
        "recenter_target: Diagonale 0,35 mm liegt ausserhalb 0,3")
 
+    # --- Z-Boden mit fast erreichter Zielamplitude (2026-09-05): ab 85 %
+    # wird am Boden gemessen, darunter bleibt es ein Fehler ---
+    ok(fit.floor_ok(11548.0, 12000.0), "floor_ok: 96 % des Ziels muss reichen")
+    ok(fit.floor_ok(10200.0, 12000.0), "floor_ok: exakt 85 % muss reichen")
+    ok(not fit.floor_ok(9000.0, 12000.0), "floor_ok: 75 % darf nicht reichen")
+    ok(fit.floor_ok(1.0, 0.0), "floor_ok: Ziel 0 ist immer erreicht")
+
     return 0
 
 

@@ -617,6 +617,18 @@ class NozzleLocator:
             if mean - baseline >= target_amplitude:
                 return z
             if z <= floor:
+                # Am Z-Boden mit fast erreichter Zielamplitude (Lauf 15,
+                # 2026-09-05: T1 bei 0,2 mm Spalt 11.548 von 12.000 Hz):
+                # nicht abbrechen, sondern am Boden messen -- kleinster
+                # erlaubter Spalt ist genau das, was der Amplitudenmodus
+                # fuer schwache Spitzen will. Deutlich darunter bleibt es
+                # ein Fehler (Sonde nicht unter der Duese, holder_top_z).
+                if fit.floor_ok(mean - baseline, target_amplitude):
+                    self.gcode.respond_info(
+                        "nozzle_locator: Zielamplitude %.0f Hz am Z-Boden "
+                        "Z=%.3f nicht ganz erreicht (%.0f Hz) -- misst am "
+                        "Boden" % (target_amplitude, floor, mean - baseline))
+                    return z
                 break
             # Naeher am Ziel feiner tasten. Die letzte Stufe 0,05 mm, weil
             # ein Tool bei 0,25-mm-Schritten bis zu 0,25 mm ueber dem
