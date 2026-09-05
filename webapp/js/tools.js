@@ -2909,6 +2909,11 @@ function xyOffsetSection() {
             '<option value="switch"' + (_xyZModeStored() === 'switch' ? ' selected' : '') + '>Spalt (Z-Switch)</option>' +
           '</select>' +
         '</div>' +
+        // Automatische Zielamplitude (TARGET_AMPLITUDE=0), nur im Amplitudenmodus wirksam.
+        '<div class="form-check form-check-inline small mb-0 ms-1" title="Amplitudenmodus: der Lauf faehrt vorab jedes Tool bis zu seinem Z-Boden und nimmt 95 % der schwaechsten Amplitude als Ziel. Braucht Z-Switch-Daten fuer die Boeden je Tool. Aus = target_amplitude aus der Config.">' +
+          '<input type="checkbox" class="form-check-input" id="xy-auto-target"' + (_xyAutoTargetStored() ? ' checked' : '') + '>' +
+          '<label class="form-check-label" for="xy-auto-target">Zielamplitude automatisch</label>' +
+        '</div>' +
         // Feinspalt fuer den Messlauf (FINE_GAP), leer = Klipper-Default
         // 0,4 mm. Kleinerer Spalt = Spitze dominiert (offene Arbeiten 10.12).
         '<div class="input-group input-group-sm flex-nowrap w-auto" title="Messspalt ueber der Spule fuer alle Tools (FINE_GAP); leer = Config-Default 0,4 mm. Kleiner = Spitze dominiert, mindestens 0,2 mm.">' +
@@ -4452,7 +4457,21 @@ function xyCalibrateCommand(selectedTools, refTool, opts) {
     }
     cmd += " Z_MODE=" + zm;
   }
+  // Automatische Zielamplitude (Tobi, 2026-09-05): TARGET_AMPLITUDE=0, der
+  // Lauf faehrt vorab jedes Tool bis zu seinem Boden und nimmt 95 % der
+  // schwaechsten Amplitude. Im Spaltmodus ignoriert Klipper den Wert.
+  if (opts.autoTarget) cmd += " TARGET_AMPLITUDE=0";
   return cmd;
+}
+
+function xyAutoTargetValue() {
+  var v = $('#xy-auto-target').is(':checked');
+  try { localStorage.setItem('offset_xy_auto_target', v ? '1' : '0'); } catch (e) { /* egal */ }
+  return v;
+}
+
+function _xyAutoTargetStored() {
+  try { return localStorage.getItem('offset_xy_auto_target') !== '0'; } catch (e) { return true; }
 }
 
 function xyZModeValue() {
@@ -4557,7 +4576,7 @@ function xyFineGapValue() {
 function xyBuildRunCommand() {
   return xyCalibrateCommand(xySelectedTools(), getSelectedReferenceTool(0),
                             { fineGap: xyFineGapValue(), fitRadius: xyFitRadiusValue(),
-                              zMode: xyZModeValue() });
+                              zMode: xyZModeValue(), autoTarget: xyAutoTargetValue() });
 }
 
 function xyWizard() {

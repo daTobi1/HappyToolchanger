@@ -593,18 +593,23 @@ class NozzleLocator:
         self.last_baseline = mean
         return mean
 
-    def approach_z(self, baseline, target_amplitude=None):
+    def approach_z(self, baseline, target_amplitude=None, floor=None,
+                   stop_at_floor=False):
         """Senkt Z stufenweise, bis das Signal die Zielamplitude erreicht.
 
-        Faehrt nie unter holder_top_z + min_gap. Von park_z herab ist der
-        Weg lang: bis 5 mm ueber die Halterung in 5-mm-Schritten, dann
-        tasten. Rueckgabe: erreichtes Z.
+        Faehrt nie unter `floor` (Default holder_top_z + min_gap; der
+        Kalibrierlauf gibt je Tool einen eigenen Boden mit, wenn er die
+        Duesenlaengen aus den Z-Switch-Daten kennt). Von park_z herab ist
+        der Weg lang: bis 5 mm ueber die Halterung in 5-mm-Schritten, dann
+        tasten. stop_at_floor: am Boden ohne Rueckfrage stehen bleiben
+        (Vorlauf der automatischen Zielamplitude). Rueckgabe: erreichtes Z.
         """
         if target_amplitude is None:
             target_amplitude = self.target_amplitude
         self.state = 'approaching'
         toolhead = self.printer.lookup_object('toolhead')
-        floor = self._z_floor()
+        if floor is None:
+            floor = self._z_floor()
         z = toolhead.get_position()[2]
         coarse_until = self.holder_top_z + 5.0
         step = 1.0
@@ -623,6 +628,8 @@ class NozzleLocator:
                 # erlaubter Spalt ist genau das, was der Amplitudenmodus
                 # fuer schwache Spitzen will. Deutlich darunter bleibt es
                 # ein Fehler (Sonde nicht unter der Duese, holder_top_z).
+                if stop_at_floor:
+                    return z
                 if fit.floor_ok(mean - baseline, target_amplitude):
                     self.gcode.respond_info(
                         "nozzle_locator: Zielamplitude %.0f Hz am Z-Boden "

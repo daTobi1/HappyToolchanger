@@ -1156,8 +1156,9 @@ function runParkTest() {
   global.xyFineGapValueRD = function () { return ''; };
   global.xyFitRadiusValueRD = function () { return ''; };
   global.xyZModeValueRD = function () { return ''; };
+  global.xyAutoTargetValueRD = function () { return false; };
   var rd = (grab('xyBuildRunCommand') + grab('xyRunDirect')).replace(
-    /\b(confirmDialog|alertDialog|xyRunProgressDialog|xySendMounted|waitForPrinterIdle|updateAllProbeResults|xySelectedTools|getSelectedReferenceTool|xyFineGapValue|xyFitRadiusValue|xyZModeValue|xyBuildRunCommand)\(/g,
+    /\b(confirmDialog|alertDialog|xyRunProgressDialog|xySendMounted|waitForPrinterIdle|updateAllProbeResults|xySelectedTools|getSelectedReferenceTool|xyFineGapValue|xyFitRadiusValue|xyZModeValue|xyAutoTargetValue|xyBuildRunCommand)\(/g,
     '$1RD(');
   eval(grab('escapeHtml') + grab('gcodeErrorMessage') + grab('xyCalibrateCommand') + rd);
   xyRunDirect().then(function () {
@@ -1236,4 +1237,19 @@ function runParkTest() {
   var secZ = grab('xyOffsetSection');
   check('XY-Block: Auswahl Z-Modus mit Amplitude als Default',
         /id="xy-z-mode"/.test(secZ) && /value="amplitude"/.test(secZ) && /value="switch"/.test(secZ));
+}
+
+// --------------------------------------------------------------------
+// Teil N+10: automatische Zielamplitude (Tobi, 2026-09-05) -- Haken im
+// XY-Block, geht als TARGET_AMPLITUDE=0 mit (nur sinnvoll im
+// Amplitudenmodus, das Kommando ignoriert es sonst).
+// --------------------------------------------------------------------
+{
+  eval(grab('xyCalibrateCommand'));
+  check('xyCalibrateCommand: automatische Zielamplitude -> TARGET_AMPLITUDE=0',
+        xyCalibrateCommand([1], 0, { zMode: 'amplitude', autoTarget: true }) === 'CALIBRATE_XY_OFFSETS REF_TOOL=0 TOOLS=0,1 Z_MODE=amplitude TARGET_AMPLITUDE=0');
+  check('xyCalibrateCommand: ohne Haken kein TARGET_AMPLITUDE',
+        xyCalibrateCommand([1], 0, { zMode: 'amplitude', autoTarget: false }) === 'CALIBRATE_XY_OFFSETS REF_TOOL=0 TOOLS=0,1 Z_MODE=amplitude');
+  check('XY-Block: Haken fuer die automatische Zielamplitude, Default an',
+        /id="xy-auto-target"[^>]*checked/.test(grab('xyOffsetSection')));
 }

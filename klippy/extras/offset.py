@@ -1759,7 +1759,9 @@ class Offset:
         "data), FINE_GAP and MIN_GAP (mm above "
         "holder_top_z for this run, MIN_GAP >= 0.15), WARMUP (seconds of "
         "sensor warm-up before the first measurement), TARGET_AMPLITUDE (Hz "
-        "above baseline for Z_MODE=amplitude, higher = smaller gap), "
+        "above baseline for Z_MODE=amplitude, higher = smaller gap; 0 = "
+        "automatic: every tool is first lowered to its Z floor and 95 % of "
+        "the weakest floor amplitude becomes the target), "
         "TIP_EXTRAPOLATE (1 = second fine measurement EXTRAPOLATE_DZ mm "
         "higher and extrapolation to gap 0 = the nozzle tip; default OFF "
         "since 2026-09-04, it costs repeatability), RECENTER (max. repeats "
@@ -1810,9 +1812,20 @@ class Offset:
         # von den Z-Switch-Daten, deren Vorzeichen-Deutung am Messtag
         # 2026-09-04 nicht zu den Amplituden passte (offene Arbeiten 10.5).
         # Hoch = klein: 8.000 Hz sind am 250er ~0,8 mm Spalt.
+        # TARGET_AMPLITUDE=0: automatisch (Tobi, 2026-09-05). Der Lauf
+        # faehrt vorab jedes Tool bis zu seinem Z-Boden, merkt sich die
+        # Amplitude dort und nimmt 95 % der schwaechsten als Ziel -- das
+        # schwaechste Tool misst damit knapp ueber dem Boden, die anderen
+        # so tief, wie ihr Signal es zulaesst.
         target_amplitude = gcmd.get_float('TARGET_AMPLITUDE',
-                                          locator.target_amplitude,
-                                          above=locator.min_amplitude)
+                                          locator.target_amplitude, minval=0.)
+        auto_target = target_amplitude <= 0.
+        if auto_target:
+            target_amplitude = locator.target_amplitude
+        elif target_amplitude <= locator.min_amplitude:
+            raise gcmd.error("TARGET_AMPLITUDE muss ueber min_amplitude "
+                             "(%.0f) liegen, oder 0 = automatisch"
+                             % locator.min_amplitude)
         # Spitzen-Extrapolation (10.6): zweite Feinmessung EXTRAPOLATE_DZ
         # hoeher, Gerade auf Spalt 0. Default an -- sie macht das Ergebnis
         # unabhaengig davon, wie die Duese im Block sitzt.
@@ -1929,7 +1942,8 @@ class Offset:
                 iterations, z_mode, tip_extrapolate=tip_extrapolate,
                 extrapolate_dz=extrapolate_dz, fit2d=fit2d,
                 quad_slope=quad_slope, recenter=recenter,
-                recenter_tol=recenter_tol, fit_radius=fit_radius)
+                recenter_tol=recenter_tol, fit_radius=fit_radius,
+                auto_target=auto_target)
         except Exception as e:
             # Bei Abbruch zurueck auf das Referenztool (Tobis Wunsch,
             # 2026-09-04). Das muss HIER passieren, solange der Fehler das
@@ -2063,7 +2077,8 @@ class Offset:
                             dry_run, temp, iterations, z_mode='switch',
                             tip_extrapolate=False, extrapolate_dz=0.5,
                             fit2d=False, quad_slope=0.1,
-                            recenter=2, recenter_tol=0.3, fit_radius=2.0):
+                            recenter=2, recenter_tol=0.3, fit_radius=2.0,
+                            auto_target=False):
         results = {}
         ref_pos = None
         ref_gap = None
@@ -2146,8 +2161,20 @@ class Offset:
         # Spule wie das Referenztool, und die Amplitude wird zur Auskunft
         # ueber die Duese statt zur Stoergroesse.
         zs = None
+        # Duesenlaengen aus den Z-Switch-Daten, wenn vorhanden: im
+        # Spaltmodus die Messhoehe, im Amplitudenmodus der Z-Boden je Tool
+        # (Lauf 15, 2026-09-05: der feste Boden holder_top_z + min_gap gilt
+        # fuer das Referenztool; ein 0,3 mm laengeres Tool stuende dort
+        # schon im Kontakt, wenn das Signal es nicht vorher stoppt).
+        zs_all = None if dry_run else self._xy_zswitch_triggers(ordered_tools)
+
+        def tool_floor(t):
+            if zs_all is None:
+                return locator._z_floor()
+            return locator._z_floor() + (zs_all[t] - zs_all[ref_tool])
+
         if z_mode == 'switch' and not dry_run:
-            zs = self._xy_zswitch_triggers(ordered_tools)
+            zs = zs_all
             if zs is None:
                 gcmd.respond_info(
                     "XY: keine vollstaendigen Z-Switch-Daten fuer %s -- "
@@ -2174,6 +2201,68 @@ class Offset:
         # in der Webapp sinnvoll macht.
         ref_off = self._xy_tool_offset(ref_tool)
         ref_peak = None
+
+        if auto_target and z_mode != 'switch' and not dry_run:
+            if zs_all is None:
+                raise gcmd.error(
+                    "XY: automatische Zielamplitude braucht die Duesenlaengen "
+                    "aus den Z-Switch-Daten (Boden je Tool) -- erst "
+                    "CALIBRATE_ALL_Z_OFFSETS fahren oder TARGET_AMPLITUDE "
+                    "fest vorgeben")
+            # Vorlauf der automatischen Zielamplitude (Tobi, 2026-09-05):
+            # jedes Tool ueber die Grobsuche zentrieren, bis zu seinem
+            # Z-Boden absenken, Amplitude merken. Ziel = 95 % der
+            # schwaechsten -- das schwaechste Tool misst knapp ueber dem
+            # Boden, die anderen so tief, wie ihr Signal reicht. Kostet je
+            # Tool einen Wechsel plus Grobsuche.
+            floor_amps = {}
+            for tool_nr in ordered_tools:
+                locator._move([None, None, park_z], locator.move_speed)
+                self._xy_progress(tool=tool_nr,
+                                  step='Vorlauf Zielamplitude: Werkzeugwechsel')
+                self._xy_select_tool(gcmd, tool_nr)
+                locator.park(park_x, park_y, park_z)
+                if baseline is None:
+                    self._xy_progress(step='Basislinie am Druckerrand')
+                    baseline = locator.measure_baseline()
+                    gcmd.respond_info("XY: Basislinie %.0f Hz" % baseline)
+                off = self._xy_tool_offset(tool_nr)
+                pred = (park_x + (off[0] - ref_off[0]),
+                        park_y + (off[1] - ref_off[1]))
+                locator._move([pred[0], pred[1], None], locator.move_speed)
+                self._xy_progress(step='Vorlauf Zielamplitude: Grobsuche')
+                locator.approach_z(baseline, 2.0 * locator.min_amplitude,
+                                   floor=tool_floor(tool_nr))
+                cx, _ = locator.coarse_locate('X', pred[0], baseline)
+                locator._move([cx, None, None], locator.move_speed)
+                cy, _ = locator.coarse_locate('Y', pred[1], baseline)
+                locator._move([None, cy, None], locator.move_speed)
+                self._xy_progress(step='Vorlauf Zielamplitude: bis zum Boden')
+                z_fl = locator.approach_z(baseline, float('inf'),
+                                          floor=tool_floor(tool_nr),
+                                          stop_at_floor=True)
+                amp_fl, _, _, _ = locator.read_frequency()
+                amp_fl -= baseline
+                floor_amps[tool_nr] = amp_fl
+                gcmd.respond_info(
+                    "T%d: Vorlauf, Amplitude am Boden Z%.3f: %+.0f Hz"
+                    % (tool_nr, z_fl, amp_fl))
+                locator._move([None, None, park_z], locator.move_speed)
+            weakest = min(floor_amps, key=floor_amps.get)
+            auto_amp = 0.95 * floor_amps[weakest]
+            if auto_amp < locator.min_amplitude:
+                raise gcmd.error(
+                    "XY: automatische Zielamplitude %.0f Hz (T%d am Boden) "
+                    "liegt unter min_amplitude %.0f -- Sonde unter der "
+                    "Duese, holder_top_z?"
+                    % (auto_amp, weakest, locator.min_amplitude))
+            locator.target_amplitude = auto_amp
+            gcmd.respond_info(
+                "XY: Zielamplitude automatisch %.0f Hz (95 %% von T%d am "
+                "Boden; %s)"
+                % (auto_amp, weakest,
+                   ", ".join("T%d %+.0f" % (t, floor_amps[t])
+                             for t in ordered_tools)))
 
         for tool_nr in ordered_tools:
             # Erst auf park_z, DANN wechseln -- der Wechselweg ist damit
@@ -2236,8 +2325,10 @@ class Offset:
             # Duese, also hoeher fahren), sonst ebenfalls auf die
             # Zielamplitude.
             if zs is None:
-                z_reached = locator.approach_z(baseline)
-                z_note = "Zielamplitude"
+                z_reached = locator.approach_z(baseline,
+                                               floor=tool_floor(tool_nr))
+                z_note = ("Zielamplitude, automatisch" if auto_target
+                          else "Zielamplitude")
             elif tool_nr == ref_tool:
                 # Kleiner Spalt (Tobi, 2026-09-04): die Duesenlaengen sind
                 # bekannt, also nicht auf Amplitude, sondern auf Geometrie:
