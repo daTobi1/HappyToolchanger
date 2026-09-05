@@ -2879,6 +2879,10 @@ function _cameraOffsetFor(toolNr) {
 // Assistent-Knopf koennen deshalb nicht dort hinein (verschachtelte
 // interaktive Elemente sind ungueltiges HTML) und stehen stattdessen oben
 // im Body.
+function _xyTempStored() {
+  try { return localStorage.getItem('offset_xy_temp') || ''; } catch (e) { return ''; }
+}
+
 function _xyFineGapStored() {
   try { return localStorage.getItem('offset_xy_fine_gap') || ''; } catch (e) { return ''; }
 }
@@ -2921,6 +2925,15 @@ function xyOffsetSection() {
           '<input type="number" class="form-control" id="xy-fine-gap" style="width:5.5em;flex:0 0 5.5em" min="0.2" max="3" step="0.05" placeholder="0.4" value="' +
           escapeHtml(_xyFineGapStored()) + '">' +
           '<span class="input-group-text">mm</span>' +
+        '</div>' +
+        // Duesentemperatur fuer den Messlauf (TEMP), leer/0 = kalt. Jedes
+        // Tool wird nach dem Wechsel geheizt, bleibt waehrend des Laufs
+        // warm und am Ende schaltet Klipper alle Heizungen aus.
+        '<div class="input-group input-group-sm flex-nowrap w-auto" title="Duesentemperatur waehrend des Messlaufs (TEMP); leer oder 0 = kalt. Jedes Tool wird nach dem Wechsel aufgeheizt, bleibt waehrend des Laufs warm (auch geparkt) und am Ende gehen alle Heizungen aus. Achtung: heisse Duese dicht ueber der Spule, Filament kann auf die Sonde tropfen -- besser ohne Filament oder unter der Schmelztemperatur.">' +
+          '<span class="input-group-text">D&uuml;sentemp.</span>' +
+          '<input type="number" class="form-control" id="xy-temp" style="width:5.5em;flex:0 0 5.5em" min="0" max="300" step="5" placeholder="0" value="' +
+          escapeHtml(_xyTempStored()) + '">' +
+          '<span class="input-group-text">&deg;C</span>' +
         '</div>' +
         // Fit-Radius (FIT_RADIUS), leer = 2,0 mm. Sweep ueber Lauf 12: <= 20 um Wirkung.
         '<div class="input-group input-group-sm flex-nowrap w-auto" title="Radius des Paraboloid-Fits um die Rastermitte (FIT_RADIUS); leer = 2,0 mm. Kleiner haelt den Fit auf der Spitze, hat an Lauf 12 aber nur <= 20 um geaendert. 0,75 bis 3 mm.">' +
@@ -4446,6 +4459,16 @@ function xyCalibrateCommand(selectedTools, refTool, opts) {
     }
     cmd += " FIT_RADIUS=" + String(+fr.toFixed(3));
   }
+  // Duesentemperatur (Tobi, 2026-09-06): TEMP=, leer oder 0 = kalt (Klipper-
+  // Default). Unsinn wirft, damit nie ein kaputtes Kommando rausgeht.
+  var tv = opts.temp;
+  if (tv !== undefined && tv !== null && String(tv).trim() !== '') {
+    var tt = parseFloat(String(tv).replace(',', '.'));
+    if (!isFinite(tt) || tt < 0 || tt > 300) {
+      throw new Error("Duesentemperatur muss zwischen 0 und 300 C liegen");
+    }
+    if (tt > 0) cmd += " TEMP=" + String(Math.round(tt));
+  }
   // Z-Modus (Tobi, 2026-09-05: Umstellung auf Amplitude): amplitude = jedes
   // Tool auf die Zielamplitude, switch = gleicher Spalt aus den Z-Switch-
   // Daten. Leer = Klipper-Default (amplitude).
@@ -4565,6 +4588,26 @@ function xySelectedTools() {
 }
 
 // Feld "Feinspalt" im XY-Block; leer = Default. Wert bleibt im Browser.
+function xyTempValue() {
+  var v = $('#xy-temp').val();
+  try { localStorage.setItem('offset_xy_temp', v || ''); } catch (e) { /* egal */ }
+  return v;
+}
+
+// Wahl aus dem Assistenten in das Feld im XY-Block und den Browser.
+function xySetTemp(v) {
+  v = (v === undefined || v === null) ? '' : String(v).trim();
+  $('#xy-temp').val(v);
+  try { localStorage.setItem('offset_xy_temp', v); } catch (e) { /* egal */ }
+  return v;
+}
+
+// Liest das Eingabefeld des Temperatur-Dialogs im Assistenten (eigene
+// Funktion, damit die Tests sie stubben koennen).
+function xyAssistTempRead() {
+  return $('#xy-assist-temp').val();
+}
+
 function xyFineGapValue() {
   var v = $('#xy-fine-gap').val();
   try { localStorage.setItem('offset_xy_fine_gap', v || ''); } catch (e) { /* egal */ }
@@ -4576,7 +4619,8 @@ function xyFineGapValue() {
 function xyBuildRunCommand() {
   return xyCalibrateCommand(xySelectedTools(), getSelectedReferenceTool(0),
                             { fineGap: xyFineGapValue(), fitRadius: xyFitRadiusValue(),
-                              zMode: xyZModeValue(), autoTarget: xyAutoTargetValue() });
+                              zMode: xyZModeValue(), autoTarget: xyAutoTargetValue(),
+                              temp: xyTempValue() });
 }
 
 function xyWizard() {
@@ -4666,6 +4710,33 @@ function xyWizard() {
         throw eM;
       }
       xySetZMode(choice === 'extra' ? 'switch' : 'amplitude');
+      // Duesentemperatur abfragen (Tobi, 2026-09-06): leer oder 0 = kalt.
+      // Der Wert landet im Feld im XY-Block und damit im Kommando.
+      var curTemp = (typeof _xyTempStored === 'function') ? _xyTempStored() : '';
+      return confirmDialog({
+        title: "XY-Messlauf: Düsentemperatur",
+        body: '<p class="small mb-2">Bei welcher D&uuml;sentemperatur soll gemessen werden? ' +
+              'Leer oder 0 = kalt. Jedes Tool wird nach dem Wechsel aufgeheizt, bleibt ' +
+              'w&auml;hrend des Laufs warm (auch geparkt), am Ende gehen alle Heizungen aus.</p>' +
+              '<div class="input-group input-group-sm w-auto mb-2">' +
+                '<span class="input-group-text">D&uuml;sentemp.</span>' +
+                '<input type="number" class="form-control" id="xy-assist-temp" style="width:6em;flex:0 0 6em" ' +
+                  'min="0" max="300" step="5" placeholder="0" value="' + escapeHtml(curTemp) + '">' +
+                '<span class="input-group-text">&deg;C</span>' +
+              '</div>' +
+              '<p class="small text-muted mb-0">Achtung: die hei&szlig;e D&uuml;se steht dicht &uuml;ber der Spule, ' +
+              'Filament kann auf die Sonde tropfen. Besser ohne Filament oder unter der Schmelztemperatur messen.</p>',
+        okLabel: "Weiter", okClass: "btn-primary",
+        cancelLabel: "Abbrechen"
+      });
+    }).then(function (ok) {
+      if (!ok) {
+        var eT = new Error("Messlauf abgebrochen. Die Sonde ist noch aktiv und die " +
+                           "Halterung steht auf dem Bett.");
+        eT.xyHolderMounted = true;
+        throw eT;
+      }
+      xySetTemp(xyAssistTempRead());
       return null;
     }).then(function () {
         // Der Fortschrittsdialog geht VOR dem Senden auf (Tobi, 2026-09-04:
@@ -4684,7 +4755,7 @@ function xyWizard() {
         try {
           cmd = xyBuildRunCommand();
         } catch (e) {
-          if (/Feinspalt|Fit-Radius/.test(e.message)) {
+          if (/Feinspalt|Fit-Radius|Duesentemperatur/.test(e.message)) {
             e.xyHolderMounted = true;
             throw e;
           }
@@ -4808,7 +4879,7 @@ function xyRunDirect() {
   try {
     cmd = xyBuildRunCommand();
   } catch (e) {
-    if (/Feinspalt|Fit-Radius/.test(e.message)) return alertDialog("Messlauf", escapeHtml(e.message));
+    if (/Feinspalt|Fit-Radius|Duesentemperatur/.test(e.message)) return alertDialog("Messlauf", escapeHtml(e.message));
     cmd = "CALIBRATE_XY_OFFSETS";
   }
   return confirmDialog({

@@ -1751,7 +1751,7 @@ class Offset:
     cmd_CALIBRATE_XY_OFFSETS_help = (
         "Measure X/Y tool offsets with the XY probe coil. Parameters: "
         "REF_TOOL, TOOLS (subset), DRY_RUN (1 = travel only, never descend), "
-        "TEMP (nozzle temperature, 0 = cold), XY_ITERATIONS (X-Y rounds "
+        "TEMP (nozzle temperature in C, 0 = cold; every tool is heated after pickup, stays hot while parked during the run and all run heaters are switched off at the end, also after an abort), XY_ITERATIONS (X-Y rounds "
         "against cross-coupling, default from config; run NOZZLE_LOCATE "
         "AXIS=DIAG once to find out whether 2 is needed), Z_MODE (amplitude = "
         "same signal amplitude per tool, default since 2026-09-05, needs no "
@@ -1967,6 +1967,8 @@ class Offset:
             self.gcode.run_script_from_command(
                 "SET_IDLE_TIMEOUT TIMEOUT=%d" % prev_timeout)
             locator.state = 'idle'
+            if temp > 0:
+                self._xy_heaters_off(gcmd, ordered_tools)
 
         if dry_run:
             gcmd.respond_info(
@@ -1983,6 +1985,24 @@ class Offset:
         """Fortschritt des XY-Laufs nachfuehren (Status xy_progress). Immer
         ein neues dict, damit Moonrakers Aenderungserkennung anspringt."""
         self.xy_progress = dict(self.xy_progress, updated=time.time(), **kw)
+
+    def _xy_heaters_off(self, gcmd, tools):
+        """Alle Tools des Laufs kalt stellen. Mit TEMP> 0 bleiben die Tools
+        waehrend des ganzen Laufs auf Temperatur (auch geparkt), damit
+        Vorlauf und Messung denselben Waermezustand sehen und nicht jedes
+        Tool zweimal aufgeheizt wird. Laeuft im finally, also auch nach
+        einem Abbruch."""
+        for tool_nr in tools:
+            try:
+                tool = self.toolchanger.lookup_tool(tool_nr)
+                heater = getattr(tool, "extruder_name", None) if tool else None
+                if not heater:
+                    continue
+                self.gcode.run_script_from_command(
+                    "SET_HEATER_TEMPERATURE HEATER=%s TARGET=0" % heater)
+            except Exception as e:
+                gcmd.respond_info("XY: Heizung von T%d nicht abgeschaltet: %s"
+                                  % (tool_nr, e))
 
     def _xy_abort_to_ref_tool(self, gcmd, locator, ref_tool, err):
         """Nach einem Abbruch: Kopf auf park_z, Referenztool aufnehmen.
@@ -2221,6 +2241,8 @@ class Offset:
                 self._xy_progress(tool=tool_nr,
                                   step='Vorlauf Zielamplitude: Werkzeugwechsel')
                 self._xy_select_tool(gcmd, tool_nr)
+                if temp > 0:
+                    self.gcode.run_script_from_command("M109 S%.0f" % temp)
                 locator.park(park_x, park_y, park_z)
                 if baseline is None:
                     self._xy_progress(step='Basislinie am Druckerrand')

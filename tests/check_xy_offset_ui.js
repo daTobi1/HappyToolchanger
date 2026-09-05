@@ -511,10 +511,14 @@ function runXyWizardGateTest() {
     // Z-Modus-Abfrage (2026-09-05): Wahl wird festgehalten
     var zModes = [];
     global.xySetZMode = function (m) { zModes.push(m); return m; };
+    // Temperatur-Abfrage (2026-09-06): Wert wird festgehalten, Feld gestubbt
+    var temps = [];
+    global.xySetTemp = function (v) { temps.push(v); return v; };
+    global.xyAssistTempRead = function () { return opts.temp !== undefined ? opts.temp : '150'; };
 
     eval(grab('gcodeErrorMessage') + grab('xyStepOk') + grab('xyWizard'));
     return xyWizard().then(function () {
-      return { confirms: confirms, sent: sent, deactivate: deactivateCalls, progress: progressCalls, zModes: zModes };
+      return { confirms: confirms, sent: sent, deactivate: deactivateCalls, progress: progressCalls, zModes: zModes, temps: temps };
     });
   }
 
@@ -523,7 +527,7 @@ function runXyWizardGateTest() {
   // --- Kein Trockenlauf mehr im Ablauf (Tobi, 2026-09-04): nach dem
   // Aufsetzen startet direkt der Messlauf, DRY_RUN wird nie gesendet ---
   seq = seq.then(function () {
-    return runWizard([true, true, true, null], { idle: false }).then(function (r) {
+    return runWizard([true, true, true, true, null], { idle: false }).then(function (r) {
       check('kein Trockenlauf-Dialog mehr',
         r.confirms.indexOf('Trockenlauf') === -1 &&
         r.confirms.indexOf('Trockenlauf beendet?') === -1,
@@ -540,7 +544,7 @@ function runXyWizardGateTest() {
   // --- "Abschliessen": Sonde aktiv lassen (Tobi, 2026-09-04: der Nutzer
   // soll sich aussuchen koennen, ob er abstecken und deaktivieren muss) ---
   seq = seq.then(function () {
-    return runWizard([true, true, true, 'extra', true], { idle: true }).then(function (r) {
+    return runWizard([true, true, true, true, 'extra', true], { idle: true }).then(function (r) {
       check('Sonde aktiv lassen: kein Deaktivieren, kein FIRMWARE_RESTART',
         r.deactivate === 0, 'deactivate=' + r.deactivate);
       check('Sonde aktiv lassen: Abschluss-Dialog sagt, dass sie aktiv bleibt',
@@ -553,13 +557,13 @@ function runXyWizardGateTest() {
   // --- Z-Modus-Abfrage (Tobi, 2026-09-05): "Spalt" ueber den Extra-Knopf,
   // Abbruch im Modus-Dialog -> kein Messlauf, Deaktivieren wird angeboten ---
   seq = seq.then(function () {
-    return runWizard([true, true, 'extra', true, true], { idle: true }).then(function (r) {
+    return runWizard([true, true, 'extra', true, true, true], { idle: true }).then(function (r) {
       check('Z-Modus-Dialog: Spalt gewaehlt -> xySetZMode(switch)',
         JSON.stringify(r.zModes) === JSON.stringify(['switch']) && r.sent.length === 1, JSON.stringify(r.zModes));
     });
   });
   seq = seq.then(function () {
-    return runWizard([true, true, true, true, true], { idle: true }).then(function (r) {
+    return runWizard([true, true, true, true, true, true], { idle: true }).then(function (r) {
       check('Z-Modus-Dialog: OK -> Amplitude', JSON.stringify(r.zModes) === JSON.stringify(['amplitude']));
     });
   });
@@ -570,9 +574,27 @@ function runXyWizardGateTest() {
     });
   });
 
+  // --- Temperatur-Abfrage (Tobi, 2026-09-06): Wert aus dem Feld landet per
+  // xySetTemp im XY-Block; Abbruch dort -> kein Messlauf, Deaktivieren angeboten ---
+  seq = seq.then(function () {
+    return runWizard([true, true, true, true, true, true], { idle: true, temp: '200' }).then(function (r) {
+      check('Temperatur-Dialog: Wert wird per xySetTemp uebernommen',
+        JSON.stringify(r.temps) === JSON.stringify(['200']) && r.sent.length === 1, JSON.stringify(r.temps));
+      check('Temperatur-Dialog kommt NACH dem Z-Modus und VOR dem Messlauf',
+        r.confirms.indexOf('XY-Messlauf: Düsentemperatur') === r.confirms.indexOf('XY-Messlauf: Z-Modus') + 1,
+        JSON.stringify(r.confirms));
+    });
+  });
+  seq = seq.then(function () {
+    return runWizard([true, true, true, false, null], { idle: true }).then(function (r) {
+      check('Temperatur-Dialog abgebrochen -> kein Messlauf, Abbruch-Dialog',
+        r.sent.length === 0 && r.temps.length === 0 && r.confirms.indexOf('XY-Assistent abgebrochen') !== -1, JSON.stringify(r.confirms));
+    });
+  });
+
   // --- Messlauf laeuft noch (nie idle) -> kein FIRMWARE_RESTART ---
   seq = seq.then(function () {
-    return runWizard([true, true, true, null], { idle: false })
+    return runWizard([true, true, true, true, null], { idle: false })
       .then(function (r) {
         check('Messlauf wird direkt nach dem Aufsetzen gestartet',
           r.sent.length === 1 && r.sent[0] === 'CALIBRATE_XY_OFFSETS',
@@ -587,13 +609,13 @@ function runXyWizardGateTest() {
 
   // --- Regelfall: transport, aber der Drucker meldet sich wieder idle ---
   seq = seq.then(function () {
-    return runWizard([true, true, true, true, true]).then(function (r) {
+    return runWizard([true, true, true, true, true, true]).then(function (r) {
       check('idle nach dem Messlauf -> "Abschliessen" und Deaktivieren',
         r.confirms.indexOf('Abschließen') !== -1 && r.deactivate === 1,
         JSON.stringify(r.confirms) + ' calls=' + r.deactivate);
       check('vollstaendige Dialogfolge des Regelfalls',
         JSON.stringify(r.confirms) === JSON.stringify([
-          'XY-Sonde: Anstecken', 'XY-Sonde: Aufsetzen', 'XY-Messlauf: Z-Modus', 'Abschließen', 'Fertig'
+          'XY-Sonde: Anstecken', 'XY-Sonde: Aufsetzen', 'XY-Messlauf: Z-Modus', 'XY-Messlauf: Düsentemperatur', 'Abschließen', 'Fertig'
         ]), JSON.stringify(r.confirms));
     });
   });
@@ -1157,8 +1179,9 @@ function runParkTest() {
   global.xyFitRadiusValueRD = function () { return ''; };
   global.xyZModeValueRD = function () { return ''; };
   global.xyAutoTargetValueRD = function () { return false; };
+  global.xyTempValueRD = function () { return ''; };
   var rd = (grab('xyBuildRunCommand') + grab('xyRunDirect')).replace(
-    /\b(confirmDialog|alertDialog|xyRunProgressDialog|xySendMounted|waitForPrinterIdle|updateAllProbeResults|xySelectedTools|getSelectedReferenceTool|xyFineGapValue|xyFitRadiusValue|xyZModeValue|xyAutoTargetValue|xyBuildRunCommand)\(/g,
+    /\b(confirmDialog|alertDialog|xyRunProgressDialog|xySendMounted|waitForPrinterIdle|updateAllProbeResults|xySelectedTools|getSelectedReferenceTool|xyFineGapValue|xyFitRadiusValue|xyZModeValue|xyAutoTargetValue|xyTempValue|xyBuildRunCommand)\(/g,
     '$1RD(');
   eval(grab('escapeHtml') + grab('gcodeErrorMessage') + grab('xyCalibrateCommand') + rd);
   xyRunDirect().then(function () {
@@ -1252,4 +1275,29 @@ function runParkTest() {
         xyCalibrateCommand([1], 0, { zMode: 'amplitude', autoTarget: false }) === 'CALIBRATE_XY_OFFSETS REF_TOOL=0 TOOLS=0,1 Z_MODE=amplitude');
   check('XY-Block: Haken fuer die automatische Zielamplitude, Default an',
         /id="xy-auto-target"[^>]*checked/.test(grab('xyOffsetSection')));
+}
+
+// --------------------------------------------------------------------
+// Teil N+11: Duesentemperatur (Tobi, 2026-09-06) -- Feld im XY-Block, geht
+// als TEMP= mit; leer/0 = kalt (Klipper-Default). Klipper heizt jedes Tool
+// nach dem Wechsel, haelt es warm und schaltet am Ende alle Heizungen aus.
+// --------------------------------------------------------------------
+{
+  eval(grab('xyCalibrateCommand'));
+  check('xyCalibrateCommand: Duesentemperatur -> TEMP=',
+        xyCalibrateCommand([1], 0, { zMode: 'amplitude', temp: 150 }) === 'CALIBRATE_XY_OFFSETS REF_TOOL=0 TOOLS=0,1 TEMP=150 Z_MODE=amplitude');
+  check('xyCalibrateCommand: Temperatur als Text mit Komma wird gerundet',
+        xyCalibrateCommand([1], 0, { temp: '149,6' }) === 'CALIBRATE_XY_OFFSETS REF_TOOL=0 TOOLS=0,1 TEMP=150');
+  check('xyCalibrateCommand: leere Temperatur weggelassen',
+        xyCalibrateCommand([1], 0, { temp: '' }) === 'CALIBRATE_XY_OFFSETS REF_TOOL=0 TOOLS=0,1');
+  check('xyCalibrateCommand: 0 = kalt, kein TEMP',
+        xyCalibrateCommand([1], 0, { temp: 0 }) === 'CALIBRATE_XY_OFFSETS REF_TOOL=0 TOOLS=0,1');
+  var threwT = false;
+  try { xyCalibrateCommand([1], 0, { temp: 400 }); } catch (e) { threwT = /Duesentemperatur/.test(e.message); }
+  check('xyCalibrateCommand: 400 C wirft (Duesentemperatur)', threwT);
+  threwT = false;
+  try { xyCalibrateCommand([1], 0, { temp: 'abc' }); } catch (e) { threwT = /Duesentemperatur/.test(e.message); }
+  check('xyCalibrateCommand: Unsinn statt Zahl wirft', threwT);
+  check('XY-Block: Feld Duesentemperatur (leer = kalt)',
+        /id="xy-temp"/.test(grab('xyOffsetSection')) && /placeholder="0"/.test(grab('xyOffsetSection')));
 }

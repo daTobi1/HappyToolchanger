@@ -157,6 +157,7 @@ Verfahren vergleichbar.
 | Platzhalter `HIER_EINTRAGEN` bzw. fehlende `serial:`-Zeile → Fehler | sonst wird ein `undefined`-Pfad in die scharfe Config geschrieben |
 | `xyStepOk({transport:true})` → **false** | `/printer/gcode/script` bleibt offen, bis das Skript fertig ist: Verbindungsabbruch heißt „läuft noch", nicht „fertig". PID- und Z-Lauf halten darauf an; nur der Assistent hatte daran maschinenbewegende Folgeschritte gekettet |
 | `xyIsHomed("xy")` / `""` / `undefined` → nicht gehomt | die Prüfung, die `ensureHomedAfterActivate()` nach dem `G28` **wiederholt** |
+| `xyCalibrateCommand({temp})` → `TEMP=` nur bei > 0, gerundet, 0–300 °C, sonst wirft es | leer/0 heißt kalt wie der Klipper-Default; ein Tippfehler darf keinen heißen Lauf starten |
 | fehlender Config-Schlüssel → `false` **und** kein Upload | vorher meldete derselbe Vorgang gleichzeitig Erfolg und „nicht geschrieben" |
 
 **Teil 3 — Assistenten-Kontrollfluss**
