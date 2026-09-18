@@ -1206,8 +1206,8 @@ function fetchOffsetStatus() {
       // Extract results from probe_results per tool
       _probeCalResults = {};
       _eddyTapDeviations = {};
-      _zSwitchResults = {};
       var pr = st?.probe_results || {};
+      _zSwitchResults = zSwitchResultsFrom(pr);
       for (var k in pr) {
         if (pr[k] && typeof pr[k].probe_z_offset === 'number') {
           _probeCalResults[k] = { probe_z_offset: pr[k].probe_z_offset };
@@ -1219,9 +1219,6 @@ function fetchOffsetStatus() {
             deviation: pr[k].eddy_tap_deviation,
             probe: pr[k].eddy_probe || 'eddy'
           };
-        }
-        if (pr[k] && typeof pr[k].z_offset === 'number') {
-          _zSwitchResults[k] = { z_offset: pr[k].z_offset, z_trigger: pr[k].z_trigger };
         }
       }
       return st || null;
@@ -1253,6 +1250,17 @@ function getOffsetSnapshot() {
   return $.get(printerUrl(printerIp, "/printer/objects/query?offset"))
     .then(data => data?.result?.status?.offset || {})
     .catch(() => ({}));
+}
+
+// Z-Switch-Ergebnisse aus probe_results: nur Tools mit gemessenem z_offset.
+function zSwitchResultsFrom(pr) {
+  var out = {};
+  for (var k in (pr || {})) {
+    if (pr[k] && typeof pr[k].z_offset === 'number') {
+      out[k] = { z_offset: pr[k].z_offset, z_trigger: pr[k].z_trigger };
+    }
+  }
+  return out;
 }
 
 function getProbeResults() {
@@ -1289,6 +1297,14 @@ function updateAllProbeResults() {
     $('button.toolchange-btn').each(function(){
       updateProbeResults($(this).data("tool"), probeResults);
     });
+    // APPLY Z OFFSETS liest _zSwitchResults. Ohne diese Zeile blieb es beim
+    // Stand vom Seitenaufbau: "New Z" zeigte den neuen Lauf, der Dialog bot
+    // aber nur die Tools und Werte des alten an. Ein fehlgeschlagener Poll
+    // liefert {} - dann nichts anfassen, sonst flackert der Button weg.
+    if (offsetStatus.probe_results) {
+      _zSwitchResults = zSwitchResultsFrom(probeResults);
+      $('#apply-z-wrap').toggleClass('d-none', !Object.keys(_zSwitchResults).length);
+    }
     var changed = false;
     for (var k in probeResults) {
       var r = probeResults[k];
@@ -5555,12 +5571,14 @@ function getTools() {
             ));
 
             var zCalFull = '<ul class="list-group list-group-flush">' + zCalContent + '</ul>';
-            if (Object.keys(_zSwitchResults).length > 0) {
-              zCalFull += '<div class="p-2">' +
-                '<button class="btn btn-success w-100" id="apply-z-btn">' +
-                  '<i class="bi bi-check-circle"></i> APPLY Z OFFSETS TO KLIPPER' +
-                '</button></div>';
-            }
+            // Immer rendern, der Poller blendet ein/aus - sonst fehlt der
+            // Button nach dem ersten Lauf bis zum Neuladen der Seite.
+            zCalFull += '<div class="p-2' +
+              (Object.keys(_zSwitchResults).length > 0 ? '' : ' d-none') +
+              '" id="apply-z-wrap">' +
+              '<button class="btn btn-success w-100" id="apply-z-btn">' +
+                '<i class="bi bi-check-circle"></i> APPLY Z OFFSETS TO KLIPPER' +
+              '</button></div>';
 
             $acc.append(accordionSection(
               'accordion-zcal',
