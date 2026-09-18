@@ -123,7 +123,7 @@ class FakeGcodeMove:
 # mit der originalen (4 Leerzeichen) - ein Praefix genuegt also.
 ns = {}
 body = []
-for name in ('_run_prep_gcode', '_unload_requested', '_unload_tools',
+for name in ('_template_context', '_run_prep_gcode', '_unload_requested', '_unload_tools',
              '_clean_requested', '_clean_nozzle'):
     body.append("    " + method_source(name))
 exec("class Offset:\n" + "\n\n".join(body), ns)
@@ -287,6 +287,39 @@ check('Probe-Offsets: jeweils reinigen VOR der Messtemperatur',
       cleans[0] < heats[0] < cleans[1] < heats[1], (cleans, heats))
 check('Probe-Offsets: jedes Tool nur einmal je Lauf',
       'tool_nr not in cleaned' in po and 'cleaned.add(ref_tool)' in po)
+
+# --- Template-Kontext: keine Aufrufstelle darf den Standardkontext verlieren ----
+# render(context) nimmt einen uebergebenen Kontext STATT des Standardkontexts,
+# und nur None zaehlt als "nicht uebergeben" - auch {} laesst `printer` weg.
+
+o, log = make()
+tpl = FakeTemplate(log)
+check('_template_context ohne extra: Standardkontext',
+      o._template_context(tpl).get('printer') == 'PRINTER')
+ctx = o._template_context(tpl, {'MESH_TOOL': 0, 'PREVIOUS_TOOL': 2})
+check('_template_context mit extra: beides drin',
+      ctx.get('printer') == 'PRINTER' and ctx.get('MESH_TOOL') == 0 and
+      ctx.get('PREVIOUS_TOOL') == 2, ctx)
+
+calls = []
+for node in ast.walk(TREE):
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == 'run_gcode_from_command'):
+        calls.append(node)
+check('alle Template-Aufrufe in offset.py gefunden (4 Hooks, mesh_tool, prep)',
+      len(calls) == 6, len(calls))
+bad = []
+for node in calls:
+    arg = node.args[0] if node.args else None
+    ok = (isinstance(arg, ast.Name) and arg.id == 'context') or (
+        isinstance(arg, ast.Call) and isinstance(arg.func, ast.Attribute)
+        and arg.func.attr == '_template_context')
+    if not ok:
+        bad.append(node.lineno)
+check('jeder Aufruf bekommt seinen Kontext aus _template_context (kein {} / nacktes dict)',
+      not bad, 'Zeilen: %s' % bad)
+check('_run_prep_gcode baut `context` ueber _template_context',
+      'context = self._template_context(template, extra)' in method_source('_run_prep_gcode'))
 
 st = method_source('get_status')
 check("get_status meldet 'clean_available' und 'unload_available'",

@@ -483,17 +483,25 @@ class Offset:
 
     # ─── Run preparation: unload (UNLOAD=1), nozzle cleaning (CLEAN=1) ───
 
+    def _template_context(self, template, extra=None):
+        """Klipper's default macro context (`printer`, action_* ...) plus
+        `extra`.
+
+        TemplateWrapper.render() takes a passed context INSTEAD of the
+        default one - and only `None` counts as "not passed". Handing over
+        {'TOOL': n}, or even {}, leaves the template without `printer`, and
+        a hook that reads printer.toolhead fails at the moment it runs."""
+        context = template.create_template_context()
+        if extra:
+            context.update(extra)
+        return context
+
     def _run_prep_gcode(self, template, extra):
         """Run a user template with the full macro context plus `extra`.
 
-        Klipper's render() takes a passed context INSTEAD of the default
-        one, so handing over just {'TOOL': n} would leave the template
-        without `printer`.
-
         The gcode state is saved around it - a macro that returns in G91
         would otherwise turn the following absolute G0 into a relative one."""
-        context = template.create_template_context()
-        context.update(extra)
+        context = self._template_context(template, extra)
         self.gcode.run_script_from_command(
             "SAVE_GCODE_STATE NAME=_offset_prep")
         try:
@@ -1240,19 +1248,23 @@ class Offset:
 
     def cmd_OFFSET_START_GCODE(self, gcmd):
         if self.start_gcode:
-            self.start_gcode.run_gcode_from_command({})
+            self.start_gcode.run_gcode_from_command(
+                self._template_context(self.start_gcode))
 
     def cmd_OFFSET_BEFORE_PICKUP_GCODE(self, gcmd):
         if self.before_pickup_gcode:
-            self.before_pickup_gcode.run_gcode_from_command({})
+            self.before_pickup_gcode.run_gcode_from_command(
+                self._template_context(self.before_pickup_gcode))
 
     def cmd_OFFSET_AFTER_PICKUP_GCODE(self, gcmd):
         if self.after_pickup_gcode:
-            self.after_pickup_gcode.run_gcode_from_command({})
+            self.after_pickup_gcode.run_gcode_from_command(
+                self._template_context(self.after_pickup_gcode))
 
     def cmd_OFFSET_FINISH_GCODE(self, gcmd):
         if self.finish_gcode:
-            self.finish_gcode.run_gcode_from_command({})
+            self.finish_gcode.run_gcode_from_command(
+                self._template_context(self.finish_gcode))
 
     def cmd_SET_PROBE_CAL_MAP(self, gcmd):
         tool = gcmd.get_int('TOOL', None)
@@ -3021,7 +3033,9 @@ class Offset:
                 "SELECT_TOOL T=%d RESTORE_AXIS=XYZ" % mesh_tool)
             if self.mesh_tool_gcode:
                 self.mesh_tool_gcode.run_gcode_from_command(
-                    {'MESH_TOOL': mesh_tool, 'PREVIOUS_TOOL': tool_nr})
+                    self._template_context(
+                        self.mesh_tool_gcode,
+                        {'MESH_TOOL': mesh_tool, 'PREVIOUS_TOOL': tool_nr}))
             self._move_to_tap_point(gcmd)
             self._nozzle_zero(mesh_tool, gcmd)
             self._apply_tool_z_offsets(mesh_tool, gcmd, save=False)
