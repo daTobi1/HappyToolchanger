@@ -1105,8 +1105,11 @@ function runParkTest() {
   // check_offset_prep_ui.js.
   global._prepAvailable = { unload: true, clean: true };
   global.currentPrepSelection = function () { return { unload: false, clean: true }; };
+  global.loadPrepTemps = function () { return { unload: {}, clean: { '1': '250' } }; };
+  global._prepDefaults = { unload_temp: 240, clean_temp: 260 };
   eval(grab('computeDefaultRef') + grab('toolSelectionPanel') + grab('prepOption') + grab('prepKinds') +
-       grab('prepOptionsHtml') +        grab('calibrateButton') + grab('xyCalibrateCommand'));
+       grab('prepTempsTableHtml') + grab('prepOptionsHtml') +
+       grab('calibrateButton') + grab('xyCalibrateCommand'));
   var panel = toolSelectionPanel([2, 0, 1]);
   check('toolSelectionPanel: Tools und Referenz drin',
         /Tools to calibrate/.test(panel) && /Reference \(Master\) tool/.test(panel), panel.slice(0, 200));
@@ -1121,6 +1124,9 @@ function runParkTest() {
         !/Tools to calibrate/.test(zbtn) && !/calibrate-ref-/.test(zbtn) && /CALIBRATE Z-OFFSETS/.test(zbtn));
   check('calibrateButton: Haken entladen/reinigen im Z-Switch-Abschnitt, gemerkte Auswahl gesetzt',
         /id="calibrate-prep-clean" checked/.test(zbtn) && /id="calibrate-prep-unload">/.test(zbtn));
+  check('calibrateButton: Temperaturfeld je Tool, gemerkter Wert und Default als Platzhalter',
+        /id="calibrate-prep-clean-temp-1" value="250" placeholder="260"/.test(zbtn) &&
+        /id="calibrate-prep-unload-temp-0" value="" placeholder="240"/.test(zbtn));
 
   check('xyCalibrateCommand: Referenz und Auswahl',
         xyCalibrateCommand([1, 2, 3], 0) === 'CALIBRATE_XY_OFFSETS REF_TOOL=0 TOOLS=0,1,2,3');

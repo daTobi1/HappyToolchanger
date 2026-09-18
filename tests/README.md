@@ -230,6 +230,10 @@ Reihenfolge an den Aufrufstellen wird am Quelltext geprüft.
 | danach nur **anheben** auf `max(min_z, clean_safe_z)`, nie absenken | `MOVE_TO_ZSWITCH` fährt XY auf der aktuellen Höhe; die Reinigung endet knapp über der Bürste |
 | Probe-Offsets: jedes Tool nur einmal je Lauf | das Referenztool kommt in Schritt 1 und Schritt 2 vor |
 | Auswahl je Drucker gemerkt, hält ohne `localStorage` im Speicher | privates Fenster |
+| Temperatur **je Tool und Art** aus der UI: `UNLOAD_TEMPS=0:240,2:225` / `CLEAN_TEMPS=…`, nur Tools des Laufs, nur gefüllte Felder | verschiedene Materialien in verschiedenen Tools; ein leeres Feld heißt Default aus `[offset]` (`unload_temp` / `clean_temp`), 0 dort heißt: das Makro entscheidet |
+| Unsinn im Temperaturfeld → Dialog, **kein** Kommando; Unsinn in `*_TEMPS` → Klipper-Fehler, bevor sich etwas bewegt | kein Tool soll still den Default bekommen, wenn ein Wert gemeint war |
+| Template bekommt `UNLOAD_TEMP` bzw. `CLEAN_TEMP`; `TEMP` bleibt die Messtemperatur des Laufs | die beiden nicht verwechseln: gereinigt wird heiß, gemessen bei `EXTRUDER_TEMP` |
+| Probe-Offsets: das Referenztool gehört zu den Tools der Vorbereitung | es tappt in Schritt 1 immer mit, angehakt oder nicht |
 
 **Deckt nicht ab:** das DOM (Haken in beiden Blöcken und ihr Gleichlauf), einen
 echten Lauf und das Entlade-Makro selbst (`UNLOAD_ONE_FILAMENT` heizt und

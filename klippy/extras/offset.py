@@ -113,6 +113,11 @@ class Offset:
         # (or mount it itself).
         self.unload_gcode = self.gcode_macro.load_template(config, 'unload_gcode', '')
         self.has_unload_gcode = bool(config.get('unload_gcode', '').strip())
+        # Default temperatures handed to the templates as UNLOAD_TEMP /
+        # CLEAN_TEMP; per tool overridable with UNLOAD_TEMPS= / CLEAN_TEMPS=
+        # (the Offset UI does that). 0 = none, the macro uses its own.
+        self.unload_temp = config.getint('unload_temp', 0, minval=0, maxval=350)
+        self.clean_temp = config.getint('clean_temp', 0, minval=0, maxval=350)
         # A clean macro may end low over the brush; never travel below this
         # afterwards.
         self.clean_safe_z = config.getfloat('clean_safe_z', 10.0, minval=0.)
@@ -330,6 +335,10 @@ class Offset:
             'z_trim_count': self.z_trim_count,
             'clean_available': self.has_clean_gcode,
             'unload_available': self.has_unload_gcode,
+            'prep_defaults': {
+                'unload_temp': self.unload_temp,
+                'clean_temp': self.clean_temp,
+            },
             'ref_tool': self.last_ref_tool,
             'available_probes': available_probes,
             'probe_cal_map': pcm,
@@ -521,15 +530,48 @@ class Offset:
                 "UNLOAD_ONE_FILAMENT TOOL={TOOL}) or run without UNLOAD.")
         return True
 
-    def _unload_tools(self, tools):
+    def _parse_tool_temps(self, gcmd, name):
+        """Parse NAME=0:240,2:225 into {tool: temp}. Tools that are not
+        listed get the [offset] default. Malformed input is an error and
+        not a silent fallback - the wrong temperature on the wrong tool is
+        exactly what this parameter exists to prevent."""
+        raw = (gcmd.get(name, '') or '').strip()
+        temps = {}
+        if not raw:
+            return temps
+        for token in raw.split(','):
+            token = token.strip()
+            if not token:
+                continue
+            parts = token.split(':')
+            try:
+                if len(parts) != 2:
+                    raise ValueError(token)
+                tool_nr = int(parts[0])
+                temp = int(round(float(parts[1])))
+            except ValueError:
+                raise gcmd.error(
+                    "%s: '%s' is not <tool>:<temp> (e.g. %s=0:240,1:225)"
+                    % (name, token, name))
+            if tool_nr < 0 or not 0 <= temp <= 350:
+                raise gcmd.error(
+                    "%s: T%d:%d out of range (temp 0..350)"
+                    % (name, tool_nr, temp))
+            temps[tool_nr] = temp
+        return temps
+
+    def _unload_tools(self, tools, temps=None):
         """Run unload_gcode once per tool, before the first pickup - and
         with that before every cleaning and every measurement. A loaded
         nozzle oozes while it is heated for the brush or the tap, and the
         blob lands between nozzle and switch/bed."""
         for tool_nr in tools:
+            temp = (temps or {}).get(tool_nr, self.unload_temp)
             self.gcode.respond_info(
-                "Offset: unloading filament of T%d" % tool_nr)
-            self._run_prep_gcode(self.unload_gcode, {'TOOL': tool_nr})
+                "Offset: unloading filament of T%d%s"
+                % (tool_nr, " @ %d C" % temp if temp else ""))
+            self._run_prep_gcode(self.unload_gcode,
+                                 {'TOOL': tool_nr, 'UNLOAD_TEMP': temp})
         self.printer.lookup_object('toolhead').wait_moves()
         self.gcode_move.reset_last_position()
 
@@ -550,16 +592,22 @@ class Offset:
                 "measurement, and the thermal expansion lands in the result.")
         return True
 
-    def _clean_nozzle(self, tool_nr, extruder_temp, min_z):
+    def _clean_nozzle(self, tool_nr, extruder_temp, min_z, temps=None):
         """Run clean_gcode for the mounted tool, then make sure Z >= min_z.
 
         Called BEFORE the run sets its own measuring temperature: cleaning
         macros heat on their own and typically switch the heater off (or
         back) when done, so the M109 that follows is what defines the
         temperature of the measurement."""
-        self.gcode.respond_info("Offset: cleaning nozzle of T%d" % tool_nr)
+        temp = (temps or {}).get(tool_nr, self.clean_temp)
+        self.gcode.respond_info(
+            "Offset: cleaning nozzle of T%d%s"
+            % (tool_nr, " @ %d C" % temp if temp else ""))
+        # TEMP is the run's measuring temperature, CLEAN_TEMP the one to
+        # clean at (0 = the macro's own).
         self._run_prep_gcode(self.clean_gcode,
-                             {'TOOL': tool_nr, 'TEMP': extruder_temp})
+                             {'TOOL': tool_nr, 'TEMP': extruder_temp,
+                              'CLEAN_TEMP': temp})
         toolhead = self.printer.lookup_object('toolhead')
         toolhead.wait_moves()
         # Only ever lift: the macro may end low over the brush, and the
@@ -578,6 +626,8 @@ class Offset:
         extruder_temp = gcmd.get_int('EXTRUDER_TEMP', 0, minval=0, maxval=350)
         clean = self._clean_requested(gcmd, extruder_temp)
         unload = self._unload_requested(gcmd)
+        unload_temps = self._parse_tool_temps(gcmd, 'UNLOAD_TEMPS')
+        clean_temps = self._parse_tool_temps(gcmd, 'CLEAN_TEMPS')
 
         self.cmd_OFFSET_START_GCODE(gcmd)
 
@@ -646,7 +696,7 @@ class Offset:
             eddy_xy = self._xy_offsets_from_eddy(gcmd, ordered_tools)
 
         if unload:
-            self._unload_tools(ordered_tools)
+            self._unload_tools(ordered_tools, unload_temps)
 
         # Clean run
         self.probe_results = {}
@@ -672,7 +722,8 @@ class Offset:
                 switch_z = self.safe_start_z
                 if self.has_switch_pos():
                     switch_z = max(self.z_pos + self.lift_z, switch_z)
-                self._clean_nozzle(tool, extruder_temp, switch_z)
+                self._clean_nozzle(tool, extruder_temp, switch_z,
+                                   clean_temps)
 
             self.gcode.run_script_from_command(
                 f"SET_TOOL_PARAMETER T={tool} PARAMETER=gcode_z_offset "
@@ -840,7 +891,8 @@ class Offset:
         "measured with their mechanical Tap are applied. "
         "UNLOAD=1 runs [offset] unload_gcode once per tool before the first "
         "pickup. CLEAN=1 runs [offset] clean_gcode once per tool before "
-        "its tap. "
+        "its tap. UNLOAD_TEMPS= / CLEAN_TEMPS=0:240,1:225 set the "
+        "temperature per tool (default: [offset] unload_temp / clean_temp). "
         "RETURN=0 leaves the last measured tool mounted instead of picking "
         "the reference tool back up.")
 
@@ -858,6 +910,8 @@ class Offset:
         extruder_temp = gcmd.get_int('EXTRUDER_TEMP', 0, minval=0, maxval=350)
         clean = self._clean_requested(gcmd, extruder_temp)
         unload = self._unload_requested(gcmd)
+        unload_temps = self._parse_tool_temps(gcmd, 'UNLOAD_TEMPS')
+        clean_temps = self._parse_tool_temps(gcmd, 'CLEAN_TEMPS')
         # Each tool once per run: the reference tool shows up in step 1
         # and, if selected, again in step 2.
         cleaned = set()
@@ -975,7 +1029,8 @@ class Offset:
         # The reference tool taps too (step 1), selected or not.
         if unload:
             self._unload_tools(
-                [ref_tool] + [t for t in calibrate_tools if t != ref_tool])
+                [ref_tool] + [t for t in calibrate_tools if t != ref_tool],
+                unload_temps)
 
         # Apply Z-switch offsets to tools so the formula works
         # regardless of whether the user clicked "APPLY" in the webapp
@@ -1017,7 +1072,7 @@ class Offset:
         # activate_gcode (_TAP_PROBE_ACTIVATE), which is what heats the Tap
         # tools as a side effect.
         if clean:
-            self._clean_nozzle(ref_tool, extruder_temp, z_hop)
+            self._clean_nozzle(ref_tool, extruder_temp, z_hop, clean_temps)
             cleaned.add(ref_tool)
         if extruder_temp > 0:
             self.gcode.run_script_from_command("M109 S%d" % extruder_temp)
@@ -1100,7 +1155,8 @@ class Offset:
                 "SET_ACTIVE_TOOL_PROBE T=%d" % tool_nr)
 
             if clean and tool_nr not in cleaned:
-                self._clean_nozzle(tool_nr, extruder_temp, z_hop)
+                self._clean_nozzle(tool_nr, extruder_temp, z_hop,
+                                   clean_temps)
                 cleaned.add(tool_nr)
 
             if extruder_temp > 0:

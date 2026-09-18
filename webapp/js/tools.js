@@ -18,6 +18,8 @@ let _offsetZCalcDefault = null; // "median" | "average" | "trimmed" | null
 let _uiZCalcSelection = "config"; // "config" | "median" | "average" | "trimmed"
 let _prepAvailable = { unload: false, clean: false }; // [offset] unload_gcode / clean_gcode konfiguriert
 let _uiPrepSelection = {};        // { storageKey: bool } -- Rueckfall ohne localStorage
+let _uiPrepTemps = {};            // { storageKey: {unload:{tool:raw}, clean:{...}} }
+let _prepDefaults = { unload_temp: 0, clean_temp: 0 }; // [offset] unload_temp / clean_temp
 
 // Probe calibration state
 let _availableProbes = [];    // ["probe", "probe_eddy_ng my_eddy"]
@@ -263,6 +265,7 @@ function prepOption(kind) {
       hint: 'Runs <code>unload_gcode</code> once per selected tool before the first pickup — before any cleaning or measuring.',
       missing: 'Not available: set <code>unload_gcode</code> in <code>[offset]</code> (e.g. <code>UNLOAD_ONE_FILAMENT TOOL={TOOL}</code>).',
       summaryLabel: 'Unload filament',
+      tempLabel: 'Unload',
       yes: 'yes — all selected tools, before anything else'
     };
   }
@@ -273,6 +276,7 @@ function prepOption(kind) {
       hint: 'Runs <code>clean_gcode</code> once per tool after pickup, before the measuring temperature is set.',
       missing: 'Not available: set <code>clean_gcode</code> in <code>[offset]</code> (e.g. <code>CLEAN_NOZZLE</code>).',
       summaryLabel: 'Nozzle cleaning',
+      tempLabel: 'Clean',
       yes: 'yes — each tool before measuring'
     };
   }
@@ -305,23 +309,113 @@ function savePrepSelection(kind, on) {
   } catch (_) { /* privates Fenster: Auswahl gilt dann nur bis zum Reload */ }
 }
 
+// Temperatur je Tool und Art (Tobi, 2026-09-18): Feld leer = Default aus
+// [offset] unload_temp / clean_temp (bzw. der des Makros, wenn dort 0 steht).
+// Gemerkt je Drucker als { unload: {"0": "240"}, clean: {"1": "250"} }.
+function prepTempsStorageKey() {
+  return 'offset_prep_temps_' + String(printerIp || '').replace(/[^a-zA-Z0-9]/g, '_');
+}
+
+function loadPrepTemps() {
+  var key = prepTempsStorageKey();
+  try {
+    var v = JSON.parse(localStorage.getItem(key));
+    if (v && typeof v === 'object') _uiPrepTemps[key] = v;
+  } catch (_) { /* privates Fenster oder kaputter Eintrag: Wert im Speicher gilt */ }
+  var t = _uiPrepTemps[key] || {};
+  return { unload: t.unload || {}, clean: t.clean || {} };
+}
+
+function savePrepTemp(kind, tool, value) {
+  var key = prepTempsStorageKey();
+  var t = loadPrepTemps();
+  var raw = (value === null || value === undefined) ? '' : String(value).trim();
+  if (raw === '') delete t[kind][String(tool)];
+  else t[kind][String(tool)] = raw;
+  _uiPrepTemps[key] = t;
+  try {
+    localStorage.setItem(key, JSON.stringify(t));
+  } catch (_) { /* privates Fenster: gilt dann nur bis zum Reload */ }
+}
+
+// Feldwert -> ganze Grad oder null (leer = Default). Unsinn wirft, damit nie
+// ein kaputtes Kommando rausgeht und kein Tool still den Default bekommt.
+function prepTempValue(raw, kind, tool) {
+  if (raw === null || raw === undefined || String(raw).trim() === '') return null;
+  var t = parseFloat(String(raw).replace(',', '.'));
+  if (!isFinite(t) || t < 1 || t > 350) {
+    throw new Error(prepOption(kind).summaryLabel + ' T' + tool +
+      ': temperature must be 1-350 °C (empty = default)');
+  }
+  return Math.round(t);
+}
+
 // available / selected: { unload: bool, clean: bool }
-function prepCommandPart(available, selected) {
+// temps: { unload: {tool: raw}, clean: {...} }, tools: die Tools des Laufs.
+function prepCommandPart(available, selected, temps, tools) {
   return prepKinds().map(function (kind) {
-    return (available[kind] && selected[kind]) ? ' ' + prepOption(kind).param + '=1' : '';
+    if (!(available[kind] && selected[kind])) return '';
+    var o = prepOption(kind);
+    var part = ' ' + o.param + '=1';
+    var list = [];
+    (tools || []).forEach(function (tool) {
+      var v = prepTempValue(((temps || {})[kind] || {})[String(tool)], kind, tool);
+      if (v !== null) list.push(tool + ':' + v);
+    });
+    if (list.length) part += ' ' + o.param + '_TEMPS=' + list.join(',');
+    return part;
   }).join('');
 }
 
-function prepSummaryRows(available, selected) {
+function prepDefaultText(kind, defaults) {
+  var d = parseInt((defaults || {})[kind + '_temp'], 10);
+  return d > 0 ? d + ' &deg;C' : 'macro default';
+}
+
+function prepSummaryRows(available, selected, temps, tools, defaults) {
   return prepKinds().map(function (kind) {
     var o = prepOption(kind);
-    var text = !available[kind] ? 'not configured' : (selected[kind] ? o.yes : 'no');
+    var text;
+    if (!available[kind]) text = 'not configured';
+    else if (!selected[kind]) text = 'no';
+    else {
+      text = o.yes + '<br><span class="text-secondary">' + (tools || []).map(function (tool) {
+        var v = prepTempValue(((temps || {})[kind] || {})[String(tool)], kind, tool);
+        return 'T' + tool + ' ' + (v !== null ? v + ' &deg;C' : prepDefaultText(kind, defaults));
+      }).join(', ') + '</span>';
+    }
     return '<tr><td class="px-1 py-0 text-secondary">' + o.summaryLabel + '</td>' +
            '<td class="px-1 py-0">' + text + '</td></tr>';
   }).join('');
 }
 
-function prepOptionsHtml(idPrefix, available, selected) {
+function prepTempsTableHtml(idPrefix, toolNumbers, available, temps, defaults) {
+  var tools = (toolNumbers || []).slice().sort(function (a, b) { return a - b; });
+  if (!tools.length) return '';
+  var head = '<tr><th class="px-1 py-0 fw-normal text-secondary">Tool</th>' +
+    prepKinds().map(function (kind) {
+      return '<th class="px-1 py-0 fw-normal text-secondary">' + prepOption(kind).tempLabel + ' &deg;C</th>';
+    }).join('') + '</tr>';
+  var rows = tools.map(function (tool) {
+    return '<tr><td class="px-1 py-1 fw-bold">T' + tool + '</td>' +
+      prepKinds().map(function (kind) {
+        var raw = ((temps || {})[kind] || {})[String(tool)];
+        var val = (raw === undefined || raw === null) ? '' : String(raw).replace(/[^0-9.,]/g, '');
+        var d = parseInt((defaults || {})[kind + '_temp'], 10);
+        return '<td class="px-1 py-1"><input type="number" class="form-control form-control-sm offset-prep-temp"' +
+          ' style="max-width:90px;" min="1" max="350" step="5"' +
+          ' data-prep="' + kind + '" data-tool="' + tool + '" id="' + idPrefix + '-' + kind + '-temp-' + tool + '"' +
+          ' value="' + val + '" placeholder="' + (d > 0 ? d : 'macro') + '"' +
+          (available[kind] ? '' : ' disabled') + '></td>';
+      }).join('') + '</tr>';
+  }).join('');
+  return '<table class="table table-sm table-borderless mb-0 mt-1 w-auto" style="font-size:0.85rem;">' +
+    '<thead>' + head + '</thead><tbody>' + rows + '</tbody></table>' +
+    '<div class="small text-secondary">Per tool. Empty = default from <code>[offset]</code> ' +
+    '(<code>unload_temp</code> / <code>clean_temp</code>).</div>';
+}
+
+function prepOptionsHtml(idPrefix, available, selected, toolNumbers, temps, defaults) {
   return '<div class="border border-secondary-subtle rounded p-2 bg-dark">' +
     '<div class="fs-6 mb-1">Before measuring</div>' +
     prepKinds().map(function (kind) {
@@ -335,6 +429,7 @@ function prepOptionsHtml(idPrefix, available, selected) {
         '</div>' +
         '<div class="small text-secondary mb-1">' + (available[kind] ? o.hint : o.missing) + '</div>';
     }).join('') +
+    prepTempsTableHtml(idPrefix, toolNumbers, available, temps, defaults) +
   '</div>';
 }
 
@@ -343,6 +438,12 @@ function currentPrepSelection() {
   prepKinds().forEach(function (kind) { sel[kind] = loadPrepSelection(kind); });
   return sel;
 }
+
+$(document).on("change", ".offset-prep-temp", function () {
+  var kind = $(this).data("prep"), tool = $(this).data("tool");
+  savePrepTemp(kind, tool, this.value);
+  $('.offset-prep-temp[data-prep="' + kind + '"][data-tool="' + tool + '"]').not(this).val(this.value);
+});
 
 $(document).on("change", ".offset-prep-cb", function () {
   var kind = $(this).data("prep");
@@ -1087,6 +1188,7 @@ function fetchOffsetStatus() {
       _offsetPresent = !!st;
       _offsetZCalcDefault = (st?.z_calc_method || null);
       _prepAvailable = { unload: !!(st?.unload_available), clean: !!(st?.clean_available) };
+      _prepDefaults = (st?.prep_defaults || { unload_temp: 0, clean_temp: 0 });
       // Der Tap heizt ueber _TAP_PROBE_ACTIVATE ohnehin auf min_temp. Wird
       // niedriger kalibriert, messen Z-Switch und Tap bei verschiedenen
       // Temperaturen und die Waermeausdehnung landet im probe_z_offset.
@@ -1391,7 +1493,7 @@ function calibrateButton(toolNumbers = [], enabled = false) {
     </div>
 
     <div class="row pb-2">
-      <div class="col-12">${prepOptionsHtml("calibrate-prep", _prepAvailable, currentPrepSelection())}</div>
+      <div class="col-12">${prepOptionsHtml("calibrate-prep", _prepAvailable, currentPrepSelection(), toolNumbers, loadPrepTemps(), _prepDefaults)}</div>
     </div>
 
     <div class="row">
@@ -1563,7 +1665,7 @@ function probeCalibrationSection(toolNumbers, enabled) {
       '</div>' +
     '</div>' +
     '<div class="mb-2">' +
-      prepOptionsHtml("probe-cal-prep", _prepAvailable, currentPrepSelection()) +
+      prepOptionsHtml("probe-cal-prep", _prepAvailable, currentPrepSelection(), sortedTools, loadPrepTemps(), _prepDefaults) +
     '</div>' +
     '<button class="btn ' + btnClass + ' w-100 mb-2" id="probe-cal-btn" ' + disabledAttr + '>' +
       'CALIBRATE PROBE OFFSETS' +
@@ -1595,7 +1697,16 @@ $(document).on("click", "#calibrate-all-btn", function() {
   const zCalcPart = (method !== "config") ? ` Z_CALC=${method}` : "";
   const tempPart = (extruderTemp > 0) ? ` EXTRUDER_TEMP=${extruderTemp}` : "";
   const prepSel = currentPrepSelection();
-  const script = `CALIBRATE_ALL_Z_OFFSETS TOOLS=${selectedTools.join(",")}${zCalcPart}${tempPart}${prepCommandPart(_prepAvailable, prepSel)} REF=${refTool}`;
+  const prepTemps = loadPrepTemps();
+  let prepPart;
+  try {
+    prepPart = prepCommandPart(_prepAvailable, prepSel, prepTemps, selectedTools);
+  } catch (e) {
+    // Unsinn in einem Temperaturfeld: nichts senden, sagen welches.
+    alertDialog("Z-switch calibration", e.message);
+    return;
+  }
+  const script = `CALIBRATE_ALL_Z_OFFSETS TOOLS=${selectedTools.join(",")}${zCalcPart}${tempPart}${prepPart} REF=${refTool}`;
 
   const body =
     '<div class="border border-secondary-subtle rounded p-2 mb-2 bg-dark">' +
@@ -1608,7 +1719,7 @@ $(document).on("click", "#calibrate-all-btn", function() {
             '<td class="px-1 py-0">' + escapeHtml(method) + '</td></tr>' +
         '<tr><td class="px-1 py-0 text-secondary">Extruder temp</td>' +
             '<td class="px-1 py-0">' + (extruderTemp > 0 ? escapeHtml(extruderTemp) + ' &deg;C' : 'no heating') + '</td></tr>' +
-        prepSummaryRows(_prepAvailable, prepSel) +
+        prepSummaryRows(_prepAvailable, prepSel, prepTemps, selectedTools, _prepDefaults) +
       '</tbody></table>' +
     '</div>' +
     '<div class="small text-secondary mb-2">Command: <code>' + escapeHtml(script) + '</code></div>' +
@@ -1987,9 +2098,19 @@ $(document).on("click", "#probe-cal-btn", function() {
   var refProbePart = config.ref_probe
     ? ' REF_PROBE="' + config.ref_probe + '"' : '';
   var prepSel = currentPrepSelection();
+  var prepTemps = loadPrepTemps();
+  // Das Referenztool tappt in Schritt 1 immer mit, angehakt oder nicht.
+  var prepTools = [parseInt(config.ref_tool, 10)].concat(selectedTools)
+    .filter(function (t, i, arr) { return !Number.isNaN(t) && arr.indexOf(t) === i; });
+  var prepPart;
+  try {
+    prepPart = prepCommandPart(_prepAvailable, prepSel, prepTemps, prepTools);
+  } catch (e) {
+    alertDialog("Probe calibration", e.message);
+    return;
+  }
   lines.push('CALIBRATE_PROBE_OFFSETS TOOLS=' + selectedTools.join(',') +
-             ' REF_TOOL=' + config.ref_tool + refProbePart + tempPart +
-             prepCommandPart(_prepAvailable, prepSel));
+             ' REF_TOOL=' + config.ref_tool + refProbePart + tempPart + prepPart);
 
   var script = lines.join('\n');
 
@@ -2022,7 +2143,7 @@ $(document).on("click", "#probe-cal-btn", function() {
             '<td class="px-1 py-0"><code>' + escapeHtml(config.ref_probe) + '</code></td></tr>' +
         '<tr><td class="px-1 py-0 text-secondary">Extruder temp</td>' +
             '<td class="px-1 py-0">' + (probeTemp > 0 ? escapeHtml(probeTemp) + ' &deg;C' : 'no heating') + '</td></tr>' +
-        prepSummaryRows(_prepAvailable, prepSel) +
+        prepSummaryRows(_prepAvailable, prepSel, prepTemps, prepTools, _prepDefaults) +
       '</tbody></table>' +
     '</div>' +
     '<div class="small text-secondary mb-2">Command:<br><code>' +

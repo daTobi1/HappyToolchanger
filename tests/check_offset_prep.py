@@ -57,6 +57,9 @@ class FakeGcmd:
     def __init__(self, params):
         self.params = params
 
+    def get(self, name, default=None):
+        return self.params.get(name, default)
+
     def get_int(self, name, default=None, minval=None, maxval=None):
         v = int(self.params.get(name, default))
         if minval is not None and v < minval:
@@ -123,18 +126,20 @@ class FakeGcodeMove:
 # mit der originalen (4 Leerzeichen) - ein Praefix genuegt also.
 ns = {}
 body = []
-for name in ('_template_context', '_run_prep_gcode', '_unload_requested', '_unload_tools',
+for name in ('_template_context', '_run_prep_gcode', '_parse_tool_temps', '_unload_requested', '_unload_tools',
              '_clean_requested', '_clean_nozzle'):
     body.append("    " + method_source(name))
 exec("class Offset:\n" + "\n\n".join(body), ns)
 Offset = ns['Offset']
 
 
-def make(has_clean=True, has_unload=True, z_after=2.0, fail=False, clean_safe_z=10.0):
+def make(has_clean=True, has_unload=True, unload_temp=0, clean_temp=0, z_after=2.0, fail=False, clean_safe_z=10.0):
     log = []
     o = Offset()
     o.has_clean_gcode = has_clean
     o.has_unload_gcode = has_unload
+    o.unload_temp = unload_temp
+    o.clean_temp = clean_temp
     o.unload_gcode = FakeTemplate(log, fail)
     o.clean_safe_z = clean_safe_z
     o.z_move_speed = 5.0
@@ -215,6 +220,48 @@ except GcmdError:
     check('nach einem Fehler keine Fahrt mehr',
           not any(e[0] == 'move_z' for e in log), log)
 
+# --- Temperatur je Tool: UNLOAD_TEMPS= / CLEAN_TEMPS= ------------------------------
+
+o, log = make()
+check('ohne Parameter -> leer (Default aus [offset] gilt)',
+      o._parse_tool_temps(FakeGcmd({}), 'CLEAN_TEMPS') == {})
+check('0:240,2:225 -> {0: 240, 2: 225}',
+      o._parse_tool_temps(FakeGcmd({'CLEAN_TEMPS': '0:240, 2:225'}), 'CLEAN_TEMPS')
+      == {0: 240, 2: 225})
+check('Nachkommastellen werden gerundet',
+      o._parse_tool_temps(FakeGcmd({'X': '1:229.6'}), 'X') == {1: 230})
+for bad in ('240', '0:abc', 'a:240', '0:240:1', '0:351', '0:-1', '-1:200'):
+    try:
+        o._parse_tool_temps(FakeGcmd({'UNLOAD_TEMPS': bad}), 'UNLOAD_TEMPS')
+        check("Unsinn '%s' -> Fehler" % bad, False, 'kein Fehler')
+    except GcmdError as e:
+        check("Unsinn '%s' -> Fehler, nennt den Parameter" % bad,
+              'UNLOAD_TEMPS' in str(e), e)
+
+o, log = make(unload_temp=240)
+o._unload_tools([0, 1, 2], {1: 225})
+ctxs = [e[1] for e in log if e[0] == 'clean']
+check('entladen: UNLOAD_TEMP je Tool, sonst der Default aus [offset]',
+      [c.get('UNLOAD_TEMP') for c in ctxs] == [240, 225, 240], ctxs)
+check('entladen: die Temperatur steht in der Konsole',
+      any(e[0] == 'info' and 'T1 @ 225 C' in e[1] for e in log), log)
+o, log = make()
+o._unload_tools([0])
+ctx = [e[1] for e in log if e[0] == 'clean'][0]
+check('entladen: ohne Angabe und ohne Default -> UNLOAD_TEMP 0 (Makro entscheidet)',
+      ctx.get('UNLOAD_TEMP') == 0, ctx)
+
+o, log = make(clean_temp=260)
+o._clean_nozzle(1, 150, 7.0, {1: 245})
+ctx = [e[1] for e in log if e[0] == 'clean'][0]
+check('reinigen: CLEAN_TEMP aus dem Lauf, TEMP bleibt die Messtemperatur',
+      ctx.get('CLEAN_TEMP') == 245 and ctx.get('TEMP') == 150, ctx)
+o, log = make(clean_temp=260)
+o._clean_nozzle(2, 150, 7.0, {1: 245})
+ctx = [e[1] for e in log if e[0] == 'clean'][0]
+check('reinigen: Tool ohne Angabe -> Default aus [offset]',
+      ctx.get('CLEAN_TEMP') == 260, ctx)
+
 # --- _unload_requested / _unload_tools ------------------------------------------
 
 o, log = make()
@@ -259,7 +306,7 @@ check('Z-Switch: CLEAN wird geprueft, BEVOR start_gcode (G28/QGL) laeuft',
       0 < zs.find('_clean_requested(') < zs.find('cmd_OFFSET_START_GCODE('))
 check('Z-Switch: UNLOAD wird geprueft, BEVOR start_gcode laeuft',
       0 < zs.find('_unload_requested(') < zs.find('cmd_OFFSET_START_GCODE('))
-i_unload = zs.find('_unload_tools(ordered_tools)')
+i_unload = zs.find('_unload_tools(ordered_tools')
 i_pick = zs.find('run_script_from_command(f"T{tool}")')
 i_clean = zs.find('_clean_nozzle(')
 i_heat = zs.find('M109 S{extruder_temp}')
@@ -321,9 +368,19 @@ check('jeder Aufruf bekommt seinen Kontext aus _template_context (kein {} / nack
 check('_run_prep_gcode baut `context` ueber _template_context',
       'context = self._template_context(template, extra)' in method_source('_run_prep_gcode'))
 
+for cmd_name, src_text in (('Z-Switch', zs), ('Probe-Offsets', po)):
+    check('%s: *_TEMPS werden geprueft, bevor irgendetwas laeuft' % cmd_name,
+          0 < src_text.find("_parse_tool_temps(gcmd, 'UNLOAD_TEMPS')")
+          < src_text.find("_parse_tool_temps(gcmd, 'CLEAN_TEMPS')")
+          < src_text.find('run_script_from_command('))
+    check('%s: die Temperaturen erreichen die Helfer' % cmd_name,
+          'unload_temps)' in src_text and 'clean_temps)' in src_text)
+
 st = method_source('get_status')
 check("get_status meldet 'clean_available' und 'unload_available'",
       "'clean_available'" in st and "'unload_available'" in st)
+check("get_status meldet die Defaults ('prep_defaults')",
+      "'prep_defaults'" in st and "'unload_temp'" in st and "'clean_temp'" in st)
 
 print('\n%d FAILED' % failed if failed else '\nall ok')
 sys.exit(1 if failed else 0)
