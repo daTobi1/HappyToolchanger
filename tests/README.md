@@ -198,27 +198,32 @@ Verfahren vergleichbar.
   `xy_results` existieren noch nicht; alle Assistenten-Tests laufen gegen
   gestubbte Sender. Wie sich der echte Messlauf verhält, sagt kein Test hier.
 
-## `check_offset_clean_ui.js` und `check_offset_clean.py`
+## `check_offset_prep_ui.js` und `check_offset_prep.py`
 
-Düsenreinigung vor dem Messen: Haken in der Offset-UI (Z-Switch und
-Probe-Offsets), `CLEAN=1` an `CALIBRATE_ALL_Z_OFFSETS` /
-`CALIBRATE_PROBE_OFFSETS`, `clean_gcode:` in `[offset]`.
+Vorbereitung vor dem Messen: Filament entladen und Düsen reinigen. Zwei Haken
+in der Offset-UI (Z-Switch und Probe-Offsets), `UNLOAD=1` / `CLEAN=1` an
+`CALIBRATE_ALL_Z_OFFSETS` / `CALIBRATE_PROBE_OFFSETS`, `unload_gcode:` /
+`clean_gcode:` in `[offset]`. Reihenfolge im Lauf: `start_gcode` → alle
+gewählten Tools entladen → je Tool aufnehmen, reinigen, messen.
 
 ```bash
-node tests/check_offset_clean_ui.js
-scp tests/check_offset_clean.py klippy/extras/offset.py biqu@<IP>:/tmp/
-ssh biqu@<IP> 'cd /tmp && python3 check_offset_clean.py'
+node tests/check_offset_prep_ui.js
+scp tests/check_offset_prep.py klippy/extras/offset.py biqu@<IP>:/tmp/
+ssh biqu@<IP> 'cd /tmp && python3 check_offset_prep.py'
 ```
 
-Der Python-Test braucht weder Klipper noch Drucker: die beiden Helfer werden
+Der Python-Test braucht weder Klipper noch Drucker: die Helfer werden
 per `ast` aus `offset.py` geschnitten und gegen Attrappen gefahren, die
 Reihenfolge an den Aufrufstellen wird am Quelltext geprüft.
 
 | Zusicherung | warum sie zählt |
 |---|---|
-| ohne `CLEAN` bleibt alles wie bisher | bestehende Aufrufe und Makros ändern sich nicht |
-| `CLEAN=1` ohne `clean_gcode` → Fehler, **bevor** `start_gcode` läuft | ein Lauf, der reinigen sollte und es still nicht tut, ist schlimmer als keiner |
-| UI sendet `CLEAN=1` nie, wenn `clean_available` fehlt — auch bei gemerktem Haken | der Haken kann von einer Config stammen, die `clean_gcode` noch hatte |
+| ohne `CLEAN`/`UNLOAD` bleibt alles wie bisher | bestehende Aufrufe und Makros ändern sich nicht |
+| `CLEAN=1` ohne `clean_gcode` bzw. `UNLOAD=1` ohne `unload_gcode` → Fehler, **bevor** `start_gcode` läuft | ein Lauf, der reinigen/entladen sollte und es still nicht tut, ist schlimmer als keiner |
+| entladen einmal je Tool **vor dem ersten Aufnehmen**, Referenztool der Probe-Offsets inklusive | eine geladene Düse sifft, während sie für Bürste oder Tap heiß ist; der Tropfen landet zwischen Düse und Schalter/Bett |
+| Fehler beim Entladen bricht ab, kein zweites Tool | ein Heizfehler soll nicht sechsmal hintereinander auftreten |
+| Templates behalten den Standardkontext (`printer`) | Klippers `render()` nimmt einen übergebenen Kontext **statt** des Standardkontexts |
+| UI sendet den Parameter nie, wenn `<art>_available` fehlt — auch bei gemerktem Haken, je Art getrennt | der Haken kann von einer Config stammen, die das Template noch hatte |
 | reinigen **vor** der Messtemperatur (`M109`) | Reinigungsmakros heizen selbst und schalten danach ab oder zurück; das `M109` danach bestimmt die Messtemperatur |
 | Z-Switch: reinigen vor dem Nullen von `gcode_z_offset` | die Bürstentiefe ist auf die normalen Offsets eingestellt |
 | `SAVE_/RESTORE_GCODE_STATE` um das Makro, auch im Fehlerfall | ein Makro, das in `G91` zurückkommt, machte aus dem absoluten `G0` danach ein relatives |
@@ -226,8 +231,9 @@ Reihenfolge an den Aufrufstellen wird am Quelltext geprüft.
 | Probe-Offsets: jedes Tool nur einmal je Lauf | das Referenztool kommt in Schritt 1 und Schritt 2 vor |
 | Auswahl je Drucker gemerkt, hält ohne `localStorage` im Speicher | privates Fenster |
 
-**Deckt nicht ab:** das DOM (Haken in beiden Blöcken, Gleichlauf der beiden
-Haken) und einen echten Lauf. Bewusst **nicht** im XY-Eddy-Lauf: dort steht
+**Deckt nicht ab:** das DOM (Haken in beiden Blöcken und ihr Gleichlauf), einen
+echten Lauf und das Entlade-Makro selbst (`UNLOAD_ONE_FILAMENT` heizt und
+entlädt ein Tool im Dock und endet mit `TURN_OFF_HEATERS`). Bewusst **nicht** im XY-Eddy-Lauf: dort steht
 die 53-mm-Halterung auf dem Bett, und ein Reinigungsmakro fährt tief.
 
 ## `check_nozzle_locator_fit.py`

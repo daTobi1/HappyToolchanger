@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Duesenreinigung (CLEAN=1) in CALIBRATE_ALL_Z_OFFSETS / CALIBRATE_PROBE_OFFSETS.
+"""Filament entladen (UNLOAD=1) und Duesenreinigung (CLEAN=1) in
+CALIBRATE_ALL_Z_OFFSETS / CALIBRATE_PROBE_OFFSETS.
 
-Braucht weder Klipper noch Drucker: die beiden Helfer werden per ast aus
+Braucht weder Klipper noch Drucker: die Helfer werden per ast aus
 klippy/extras/offset.py geschnitten und gegen Attrappen gefahren, die
 Reihenfolge an den Aufrufstellen wird am Quelltext geprueft.
 
-    scp tests/check_offset_clean.py klippy/extras/offset.py biqu@<IP>:/tmp/
-    ssh biqu@<IP> 'cd /tmp && python3 check_offset_clean.py'
+    scp tests/check_offset_prep.py klippy/extras/offset.py biqu@<IP>:/tmp/
+    ssh biqu@<IP> 'cd /tmp && python3 check_offset_prep.py'
 """
 import ast
 import os
@@ -81,6 +82,10 @@ class FakeTemplate:
         self.log = log
         self.fail = fail
 
+    def create_template_context(self):
+        # Klippers Standardkontext; ein uebergebener Kontext ERSETZT ihn.
+        return {'printer': 'PRINTER', 'params': {}}
+
     def run_gcode_from_command(self, ctx):
         self.log.append(('clean', dict(ctx)))
         if self.fail:
@@ -118,16 +123,19 @@ class FakeGcodeMove:
 # mit der originalen (4 Leerzeichen) - ein Praefix genuegt also.
 ns = {}
 body = []
-for name in ('_clean_requested', '_clean_nozzle'):
+for name in ('_run_prep_gcode', '_unload_requested', '_unload_tools',
+             '_clean_requested', '_clean_nozzle'):
     body.append("    " + method_source(name))
 exec("class Offset:\n" + "\n\n".join(body), ns)
 Offset = ns['Offset']
 
 
-def make(has_clean=True, z_after=2.0, fail=False, clean_safe_z=10.0):
+def make(has_clean=True, has_unload=True, z_after=2.0, fail=False, clean_safe_z=10.0):
     log = []
     o = Offset()
     o.has_clean_gcode = has_clean
+    o.has_unload_gcode = has_unload
+    o.unload_gcode = FakeTemplate(log, fail)
     o.clean_safe_z = clean_safe_z
     o.z_move_speed = 5.0
     o.gcode = FakeGcode(log)
@@ -174,12 +182,14 @@ except GcmdError:
 o, log = make(z_after=2.0)
 o._clean_nozzle(3, 200, 7.0)
 kinds = [e[0] for e in log]
-check('Template bekommt TOOL und TEMP',
-      ('clean', {'TOOL': 3, 'TEMP': 200}) in log, log)
+ctx = [e[1] for e in log if e[0] == 'clean'][0]
+check('Template bekommt TOOL und TEMP', ctx.get('TOOL') == 3 and ctx.get('TEMP') == 200, ctx)
+check('... und behaelt den Standardkontext (printer) - render() ersetzt ihn sonst',
+      ctx.get('printer') == 'PRINTER', ctx)
 scripts = [e[1] for e in log if e[0] == 'script']
 check('Gcode-Zustand wird um die Reinigung gesichert (G91-Falle)',
-      scripts == ['SAVE_GCODE_STATE NAME=_offset_clean',
-                  'RESTORE_GCODE_STATE NAME=_offset_clean'], scripts)
+      scripts == ['SAVE_GCODE_STATE NAME=_offset_prep',
+                  'RESTORE_GCODE_STATE NAME=_offset_prep'], scripts)
 check('Reihenfolge: SAVE, Reinigung, RESTORE, dann anheben',
       [k for k in kinds if k != 'info'] == ['script', 'clean', 'script', 'move_z'], kinds)
 check('endet die Reinigung tief -> anheben auf max(min_z, clean_safe_z)',
@@ -201,25 +211,73 @@ try:
 except GcmdError:
     scripts = [e[1] for e in log if e[0] == 'script']
     check('Fehler im Makro fliegt weiter, Zustand trotzdem zurueckgeholt',
-          scripts[-1] == 'RESTORE_GCODE_STATE NAME=_offset_clean', scripts)
+          scripts[-1] == 'RESTORE_GCODE_STATE NAME=_offset_prep', scripts)
     check('nach einem Fehler keine Fahrt mehr',
           not any(e[0] == 'move_z' for e in log), log)
+
+# --- _unload_requested / _unload_tools ------------------------------------------
+
+o, log = make()
+check('ohne UNLOAD -> aus', o._unload_requested(FakeGcmd({})) is False)
+check('UNLOAD=1 mit unload_gcode -> an',
+      o._unload_requested(FakeGcmd({'UNLOAD': '1'})) is True)
+o, log = make(has_unload=False)
+try:
+    o._unload_requested(FakeGcmd({'UNLOAD': '1'}))
+    check('UNLOAD=1 ohne unload_gcode -> Fehler', False, 'kein Fehler')
+except GcmdError as e:
+    check('UNLOAD=1 ohne unload_gcode -> Fehler, nennt unload_gcode',
+          'unload_gcode' in str(e), e)
+
+o, log = make()
+o._unload_tools([0, 2, 3])
+ctxs = [e[1] for e in log if e[0] == 'clean']
+check('entladen: Template einmal je Tool, in der Reihenfolge der Liste',
+      [c.get('TOOL') for c in ctxs] == [0, 2, 3], ctxs)
+check('entladen: Standardkontext bleibt erhalten',
+      all(c.get('printer') == 'PRINTER' for c in ctxs), ctxs)
+scripts = [e[1] for e in log if e[0] == 'script']
+check('entladen: Gcode-Zustand je Tool gesichert (M83/G91-Falle)',
+      scripts == ['SAVE_GCODE_STATE NAME=_offset_prep',
+                  'RESTORE_GCODE_STATE NAME=_offset_prep'] * 3, scripts)
+check('entladen: keine Z-Fahrt, am Ende resync',
+      not any(e[0] == 'move_z' for e in log) and log[-1] == ('resync',), log)
+
+o, log = make(fail=True)
+try:
+    o._unload_tools([0, 1])
+    check('entladen: Fehler im Makro bricht den Lauf ab', False)
+except GcmdError:
+    ctxs = [e for e in log if e[0] == 'clean']
+    check('entladen: Fehler im Makro bricht den Lauf ab - kein zweites Tool',
+          len(ctxs) == 1, log)
 
 # --- Aufrufstellen (Quelltext-Reihenfolge) -----------------------------------
 
 zs = method_source('cmd_CALIBRATE_ALL_Z_OFFSETS')
 check('Z-Switch: CLEAN wird geprueft, BEVOR start_gcode (G28/QGL) laeuft',
       0 < zs.find('_clean_requested(') < zs.find('cmd_OFFSET_START_GCODE('))
+check('Z-Switch: UNLOAD wird geprueft, BEVOR start_gcode laeuft',
+      0 < zs.find('_unload_requested(') < zs.find('cmd_OFFSET_START_GCODE('))
+i_unload = zs.find('_unload_tools(ordered_tools)')
 i_pick = zs.find('run_script_from_command(f"T{tool}")')
 i_clean = zs.find('_clean_nozzle(')
 i_heat = zs.find('M109 S{extruder_temp}')
 i_move = zs.find('MOVE_TO_ZSWITCH')
-check('Z-Switch: aufnehmen -> reinigen -> Messtemperatur -> Schalter',
-      0 < i_pick < i_clean < i_heat < i_move, (i_pick, i_clean, i_heat, i_move))
+check('Z-Switch: entladen -> aufnehmen -> reinigen -> Messtemperatur -> Schalter',
+      0 < i_unload < i_pick < i_clean < i_heat < i_move,
+      (i_unload, i_pick, i_clean, i_heat, i_move))
+check('Z-Switch: reinigen VOR dem Nullen von gcode_z_offset',
+      i_clean < zs.find('PARAMETER=gcode_z_offset'))
 
 po = method_source('cmd_CALIBRATE_PROBE_OFFSETS')
 check('Probe-Offsets: CLEAN wird geprueft, bevor irgendetwas laeuft',
       0 < po.find('_clean_requested(') < po.find('run_script_from_command('))
+i_unload = po.find('_unload_tools(')
+check('Probe-Offsets: UNLOAD wird geprueft, bevor irgendetwas laeuft',
+      0 < po.find('_unload_requested(') < po.find('run_script_from_command('))
+check('Probe-Offsets: entladen vor dem ersten SELECT_TOOL, Referenztool dabei',
+      0 < i_unload < po.find('SELECT_TOOL') and '[ref_tool] +' in po[i_unload:i_unload + 120])
 cleans = [i for i in range(len(po)) if po.startswith('_clean_nozzle(', i)]
 heats = [i for i in range(len(po)) if po.startswith('"M109 S%d"', i)]
 check('Probe-Offsets: Referenz (Schritt 1) und jedes Tool (Schritt 2) reinigen',
@@ -231,7 +289,8 @@ check('Probe-Offsets: jedes Tool nur einmal je Lauf',
       'tool_nr not in cleaned' in po and 'cleaned.add(ref_tool)' in po)
 
 st = method_source('get_status')
-check("get_status meldet 'clean_available'", "'clean_available'" in st)
+check("get_status meldet 'clean_available' und 'unload_available'",
+      "'clean_available'" in st and "'unload_available'" in st)
 
 print('\n%d FAILED' % failed if failed else '\nall ok')
 sys.exit(1 if failed else 0)

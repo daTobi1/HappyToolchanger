@@ -16,8 +16,8 @@ let _offsetZCalcDefault = null; // "median" | "average" | "trimmed" | null
 
 // Remember UI dropdown selection across rerenders
 let _uiZCalcSelection = "config"; // "config" | "median" | "average" | "trimmed"
-let _cleanAvailable = false;      // [offset] clean_gcode konfiguriert (status.clean_available)
-let _uiCleanSelection = {};       // { storageKey: bool } -- Rueckfall ohne localStorage
+let _prepAvailable = { unload: false, clean: false }; // [offset] unload_gcode / clean_gcode konfiguriert
+let _uiPrepSelection = {};        // { storageKey: bool } -- Rueckfall ohne localStorage
 
 // Probe calibration state
 let _availableProbes = [];    // ["probe", "probe_eddy_ng my_eddy"]
@@ -247,60 +247,107 @@ function syncTapMinTemp(value) {
     });
 }
 
-// Duesenreinigung vor dem Messen (Z-Switch und Probe-Offsets). Ein Haken
-// je Block, aber EINE Auswahl: wer beim Z-Switch reinigt, will das beim Tap
-// danach auch. Gemerkt je Drucker im localStorage; ohne [offset] clean_gcode
-// (clean_available) ist der Haken ausgegraut und es geht nie CLEAN=1 raus --
-// Klipper wuerde den Lauf sonst ablehnen.
-function cleanStorageKey() {
-  return 'offset_clean_' + String(printerIp || '').replace(/[^a-zA-Z0-9]/g, '_');
+// Vorbereitung vor dem Messen (Z-Switch und Probe-Offsets): Filament
+// entladen (UNLOAD=1) und Duesen reinigen (CLEAN=1). Haken in beiden
+// Bloecken, aber EINE Auswahl je Art: wer beim Z-Switch reinigt, will das
+// beim Tap danach auch. Gemerkt je Drucker im localStorage; ohne das
+// passende Template in [offset] (status.<art>_available) ist der Haken
+// ausgegraut und der Parameter geht nie raus -- Klipper wuerde den Lauf
+// sonst ablehnen. Reihenfolge in Klipper: entladen (alle gewaehlten Tools,
+// vor dem ersten Aufnehmen), dann je Tool reinigen, dann messen.
+function prepOption(kind) {
+  if (kind === 'unload') {
+    return {
+      param: 'UNLOAD',
+      label: 'Unload filament first',
+      hint: 'Runs <code>unload_gcode</code> once per selected tool before the first pickup — before any cleaning or measuring.',
+      missing: 'Not available: set <code>unload_gcode</code> in <code>[offset]</code> (e.g. <code>UNLOAD_ONE_FILAMENT TOOL={TOOL}</code>).',
+      summaryLabel: 'Unload filament',
+      yes: 'yes — all selected tools, before anything else'
+    };
+  }
+  if (kind === 'clean') {
+    return {
+      param: 'CLEAN',
+      label: 'Clean nozzles before measuring',
+      hint: 'Runs <code>clean_gcode</code> once per tool after pickup, before the measuring temperature is set.',
+      missing: 'Not available: set <code>clean_gcode</code> in <code>[offset]</code> (e.g. <code>CLEAN_NOZZLE</code>).',
+      summaryLabel: 'Nozzle cleaning',
+      yes: 'yes — each tool before measuring'
+    };
+  }
+  throw new Error('unknown prep option ' + kind);
 }
 
-function loadCleanSelection() {
-  var key = cleanStorageKey();
+// In der Reihenfolge, in der Klipper sie ausfuehrt.
+function prepKinds() {
+  return ['unload', 'clean'];
+}
+
+function prepStorageKey(kind) {
+  return 'offset_' + kind + '_' + String(printerIp || '').replace(/[^a-zA-Z0-9]/g, '_');
+}
+
+function loadPrepSelection(kind) {
+  var key = prepStorageKey(kind);
   try {
     var v = localStorage.getItem(key);
-    if (v !== null) _uiCleanSelection[key] = (v === '1');
+    if (v !== null) _uiPrepSelection[key] = (v === '1');
   } catch (_) { /* privates Fenster: es gilt der Wert im Speicher */ }
-  return !!_uiCleanSelection[key];
+  return !!_uiPrepSelection[key];
 }
 
-function saveCleanSelection(on) {
-  var key = cleanStorageKey();
-  _uiCleanSelection[key] = !!on;
+function savePrepSelection(kind, on) {
+  var key = prepStorageKey(kind);
+  _uiPrepSelection[key] = !!on;
   try {
     localStorage.setItem(key, on ? '1' : '0');
   } catch (_) { /* privates Fenster: Auswahl gilt dann nur bis zum Reload */ }
 }
 
-function cleanCommandPart(available, selected) {
-  return (available && selected) ? ' CLEAN=1' : '';
+// available / selected: { unload: bool, clean: bool }
+function prepCommandPart(available, selected) {
+  return prepKinds().map(function (kind) {
+    return (available[kind] && selected[kind]) ? ' ' + prepOption(kind).param + '=1' : '';
+  }).join('');
 }
 
-function cleanSummaryText(available, selected) {
-  if (!available) return 'not configured';
-  return selected ? 'yes — each tool before measuring' : 'no';
+function prepSummaryRows(available, selected) {
+  return prepKinds().map(function (kind) {
+    var o = prepOption(kind);
+    var text = !available[kind] ? 'not configured' : (selected[kind] ? o.yes : 'no');
+    return '<tr><td class="px-1 py-0 text-secondary">' + o.summaryLabel + '</td>' +
+           '<td class="px-1 py-0">' + text + '</td></tr>';
+  }).join('');
 }
 
-function cleanOptionHtml(id, available, selected) {
-  var on = !!(available && selected);
+function prepOptionsHtml(idPrefix, available, selected) {
   return '<div class="border border-secondary-subtle rounded p-2 bg-dark">' +
-    '<div class="form-check mb-0">' +
-      '<input class="form-check-input offset-clean-cb" type="checkbox" id="' + id + '"' +
-        (on ? ' checked' : '') + (available ? '' : ' disabled') + '>' +
-      '<label class="form-check-label fs-6" for="' + id + '">Clean nozzles before measuring</label>' +
-    '</div>' +
-    '<small class="text-secondary">' +
-      (available
-        ? 'Runs <code>clean_gcode</code> once per tool after pickup, before the measuring temperature is set.'
-        : 'Not available: set <code>clean_gcode</code> in <code>[offset]</code> (e.g. <code>CLEAN_NOZZLE</code>).') +
-    '</small>' +
+    '<div class="fs-6 mb-1">Before measuring</div>' +
+    prepKinds().map(function (kind) {
+      var o = prepOption(kind);
+      var id = idPrefix + '-' + kind;
+      var on = !!(available[kind] && selected[kind]);
+      return '<div class="form-check mb-0">' +
+          '<input class="form-check-input offset-prep-cb" type="checkbox" data-prep="' + kind + '" id="' + id + '"' +
+            (on ? ' checked' : '') + (available[kind] ? '' : ' disabled') + '>' +
+          '<label class="form-check-label" for="' + id + '">' + o.label + '</label>' +
+        '</div>' +
+        '<div class="small text-secondary mb-1">' + (available[kind] ? o.hint : o.missing) + '</div>';
+    }).join('') +
   '</div>';
 }
 
-$(document).on("change", ".offset-clean-cb", function () {
-  saveCleanSelection(this.checked);
-  $(".offset-clean-cb").not(this).prop("checked", this.checked);
+function currentPrepSelection() {
+  var sel = {};
+  prepKinds().forEach(function (kind) { sel[kind] = loadPrepSelection(kind); });
+  return sel;
+}
+
+$(document).on("change", ".offset-prep-cb", function () {
+  var kind = $(this).data("prep");
+  savePrepSelection(kind, this.checked);
+  $('.offset-prep-cb[data-prep="' + kind + '"]').not(this).prop("checked", this.checked);
 });
 
 // /printer/gcode/script ist synchron: der Request bleibt offen, bis das
@@ -1039,7 +1086,7 @@ function fetchOffsetStatus() {
       const st = ax?.result?.status?.offset;
       _offsetPresent = !!st;
       _offsetZCalcDefault = (st?.z_calc_method || null);
-      _cleanAvailable = !!(st?.clean_available);
+      _prepAvailable = { unload: !!(st?.unload_available), clean: !!(st?.clean_available) };
       // Der Tap heizt ueber _TAP_PROBE_ACTIVATE ohnehin auf min_temp. Wird
       // niedriger kalibriert, messen Z-Switch und Tap bei verschiedenen
       // Temperaturen und die Waermeausdehnung landet im probe_z_offset.
@@ -1080,7 +1127,7 @@ function fetchOffsetStatus() {
     .catch(function(){
       _offsetPresent = false;
       _offsetZCalcDefault = null;
-      _cleanAvailable = false;
+      _prepAvailable = { unload: false, clean: false };
       _toolProbeOffsets = {};
       _toolGcodeOffsets = {};
       _probeCalResults = {};
@@ -1344,7 +1391,7 @@ function calibrateButton(toolNumbers = [], enabled = false) {
     </div>
 
     <div class="row pb-2">
-      <div class="col-12">${cleanOptionHtml("calibrate-clean", _cleanAvailable, loadCleanSelection())}</div>
+      <div class="col-12">${prepOptionsHtml("calibrate-prep", _prepAvailable, currentPrepSelection())}</div>
     </div>
 
     <div class="row">
@@ -1516,7 +1563,7 @@ function probeCalibrationSection(toolNumbers, enabled) {
       '</div>' +
     '</div>' +
     '<div class="mb-2">' +
-      cleanOptionHtml("probe-cal-clean", _cleanAvailable, loadCleanSelection()) +
+      prepOptionsHtml("probe-cal-prep", _prepAvailable, currentPrepSelection()) +
     '</div>' +
     '<button class="btn ' + btnClass + ' w-100 mb-2" id="probe-cal-btn" ' + disabledAttr + '>' +
       'CALIBRATE PROBE OFFSETS' +
@@ -1547,8 +1594,8 @@ $(document).on("click", "#calibrate-all-btn", function() {
   // Only send override if not config
   const zCalcPart = (method !== "config") ? ` Z_CALC=${method}` : "";
   const tempPart = (extruderTemp > 0) ? ` EXTRUDER_TEMP=${extruderTemp}` : "";
-  const cleanSel = loadCleanSelection();
-  const script = `CALIBRATE_ALL_Z_OFFSETS TOOLS=${selectedTools.join(",")}${zCalcPart}${tempPart}${cleanCommandPart(_cleanAvailable, cleanSel)} REF=${refTool}`;
+  const prepSel = currentPrepSelection();
+  const script = `CALIBRATE_ALL_Z_OFFSETS TOOLS=${selectedTools.join(",")}${zCalcPart}${tempPart}${prepCommandPart(_prepAvailable, prepSel)} REF=${refTool}`;
 
   const body =
     '<div class="border border-secondary-subtle rounded p-2 mb-2 bg-dark">' +
@@ -1561,8 +1608,7 @@ $(document).on("click", "#calibrate-all-btn", function() {
             '<td class="px-1 py-0">' + escapeHtml(method) + '</td></tr>' +
         '<tr><td class="px-1 py-0 text-secondary">Extruder temp</td>' +
             '<td class="px-1 py-0">' + (extruderTemp > 0 ? escapeHtml(extruderTemp) + ' &deg;C' : 'no heating') + '</td></tr>' +
-        '<tr><td class="px-1 py-0 text-secondary">Nozzle cleaning</td>' +
-            '<td class="px-1 py-0">' + escapeHtml(cleanSummaryText(_cleanAvailable, cleanSel)) + '</td></tr>' +
+        prepSummaryRows(_prepAvailable, prepSel) +
       '</tbody></table>' +
     '</div>' +
     '<div class="small text-secondary mb-2">Command: <code>' + escapeHtml(script) + '</code></div>' +
@@ -1940,10 +1986,10 @@ $(document).on("click", "#probe-cal-btn", function() {
   // and without it Klipper falls back to "first Eddy found".
   var refProbePart = config.ref_probe
     ? ' REF_PROBE="' + config.ref_probe + '"' : '';
-  var cleanSel = loadCleanSelection();
+  var prepSel = currentPrepSelection();
   lines.push('CALIBRATE_PROBE_OFFSETS TOOLS=' + selectedTools.join(',') +
              ' REF_TOOL=' + config.ref_tool + refProbePart + tempPart +
-             cleanCommandPart(_cleanAvailable, cleanSel));
+             prepCommandPart(_prepAvailable, prepSel));
 
   var script = lines.join('\n');
 
@@ -1976,8 +2022,7 @@ $(document).on("click", "#probe-cal-btn", function() {
             '<td class="px-1 py-0"><code>' + escapeHtml(config.ref_probe) + '</code></td></tr>' +
         '<tr><td class="px-1 py-0 text-secondary">Extruder temp</td>' +
             '<td class="px-1 py-0">' + (probeTemp > 0 ? escapeHtml(probeTemp) + ' &deg;C' : 'no heating') + '</td></tr>' +
-        '<tr><td class="px-1 py-0 text-secondary">Nozzle cleaning</td>' +
-            '<td class="px-1 py-0">' + escapeHtml(cleanSummaryText(_cleanAvailable, cleanSel)) + '</td></tr>' +
+        prepSummaryRows(_prepAvailable, prepSel) +
       '</tbody></table>' +
     '</div>' +
     '<div class="small text-secondary mb-2">Command:<br><code>' +

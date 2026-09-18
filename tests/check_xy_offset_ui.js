@@ -1101,12 +1101,12 @@ function runParkTest() {
   global._uiZCalcSelection = 'config';
   global.tapMinTempHint = function () { return ''; };
   global.tapMinTempDefault = function () { return 0; };
-  // Reinigungs-Haken im Z-Switch-Abschnitt; Einzelheiten prueft
-  // check_offset_clean_ui.js.
-  global._cleanAvailable = true;
-  global.loadCleanSelection = function () { return true; };
-  eval(grab('computeDefaultRef') + grab('toolSelectionPanel') + grab('cleanOptionHtml') +
-       grab('calibrateButton') + grab('xyCalibrateCommand'));
+  // Haken "entladen"/"reinigen" im Z-Switch-Abschnitt; Einzelheiten prueft
+  // check_offset_prep_ui.js.
+  global._prepAvailable = { unload: true, clean: true };
+  global.currentPrepSelection = function () { return { unload: false, clean: true }; };
+  eval(grab('computeDefaultRef') + grab('toolSelectionPanel') + grab('prepOption') + grab('prepKinds') +
+       grab('prepOptionsHtml') +        grab('calibrateButton') + grab('xyCalibrateCommand'));
   var panel = toolSelectionPanel([2, 0, 1]);
   check('toolSelectionPanel: Tools und Referenz drin',
         /Tools to calibrate/.test(panel) && /Reference \(Master\) tool/.test(panel), panel.slice(0, 200));
@@ -1119,8 +1119,8 @@ function runParkTest() {
   var zbtn = calibrateButton([0, 1], true);
   check('calibrateButton: Tool-Auswahl nicht mehr im Z-Switch-Abschnitt',
         !/Tools to calibrate/.test(zbtn) && !/calibrate-ref-/.test(zbtn) && /CALIBRATE Z-OFFSETS/.test(zbtn));
-  check('calibrateButton: Reinigungs-Haken im Z-Switch-Abschnitt, gemerkte Auswahl gesetzt',
-        /id="calibrate-clean" checked/.test(zbtn));
+  check('calibrateButton: Haken entladen/reinigen im Z-Switch-Abschnitt, gemerkte Auswahl gesetzt',
+        /id="calibrate-prep-clean" checked/.test(zbtn) && /id="calibrate-prep-unload">/.test(zbtn));
 
   check('xyCalibrateCommand: Referenz und Auswahl',
         xyCalibrateCommand([1, 2, 3], 0) === 'CALIBRATE_XY_OFFSETS REF_TOOL=0 TOOLS=0,1,2,3');
