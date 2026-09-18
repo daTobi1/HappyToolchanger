@@ -100,6 +100,16 @@ class Offset:
         # Runs after the mesh tool is picked up, before its nozzle tap
         # (e.g. CLEAN_NOZZLE — a dirty nozzle ruins the tap).
         self.mesh_tool_gcode     = self.gcode_macro.load_template(config, 'mesh_tool_gcode', '')
+        # Nozzle cleaning on request (CLEAN=1) in CALIBRATE_ALL_Z_OFFSETS and
+        # CALIBRATE_PROBE_OFFSETS. Deliberately a template and not a
+        # hard-wired CLEAN_NOZZLE: that macro is printer-specific and does
+        # not exist on a foreign config. Context: TOOL, TEMP (the run's
+        # EXTRUDER_TEMP, 0 = none).
+        self.clean_gcode = self.gcode_macro.load_template(config, 'clean_gcode', '')
+        self.has_clean_gcode = bool(config.get('clean_gcode', '').strip())
+        # A clean macro may end low over the brush; never travel below this
+        # afterwards.
+        self.clean_safe_z = config.getfloat('clean_safe_z', 10.0, minval=0.)
 
         self.has_cfg_data = False
         self.probe_results = {}
@@ -312,6 +322,7 @@ class Offset:
             'has_switch_pos': self.has_switch_pos(),
             'z_calc_method': self.z_calc_method,
             'z_trim_count': self.z_trim_count,
+            'clean_available': self.has_clean_gcode,
             'ref_tool': self.last_ref_tool,
             'available_probes': available_probes,
             'probe_cal_map': pcm,
@@ -463,14 +474,63 @@ class Offset:
         # set_position bypasses gcode_move's cached position
         self.gcode_move.reset_last_position()
 
+    # ─── Nozzle cleaning (CLEAN=1) ───────────────────────────────────────
+
+    def _clean_requested(self, gcmd, extruder_temp):
+        """Parse CLEAN=0|1. Must run before anything moves: a run that was
+        asked to clean but cannot must not start and silently skip it."""
+        if not gcmd.get_int('CLEAN', 0, minval=0, maxval=1):
+            return False
+        if not self.has_clean_gcode:
+            raise gcmd.error(
+                "CLEAN=1 but [offset] clean_gcode is not configured. Set it "
+                "to your cleaning macro (e.g. clean_gcode: CLEAN_NOZZLE) or "
+                "run without CLEAN.")
+        if extruder_temp <= 0:
+            self.gcode.respond_info(
+                "Warning: CLEAN=1 without EXTRUDER_TEMP - a cleaning macro "
+                "that heats leaves the nozzle cooling down during the "
+                "measurement, and the thermal expansion lands in the result.")
+        return True
+
+    def _clean_nozzle(self, tool_nr, extruder_temp, min_z):
+        """Run clean_gcode for the mounted tool, then make sure Z >= min_z.
+
+        Called BEFORE the run sets its own measuring temperature: cleaning
+        macros heat on their own and typically switch the heater off (or
+        back) when done, so the M109 that follows is what defines the
+        temperature of the measurement.
+
+        The gcode state is saved around it - a macro that returns in G91
+        would otherwise turn the following absolute G0 into a relative one."""
+        self.gcode.respond_info("Offset: cleaning nozzle of T%d" % tool_nr)
+        self.gcode.run_script_from_command(
+            "SAVE_GCODE_STATE NAME=_offset_clean")
+        try:
+            self.clean_gcode.run_gcode_from_command(
+                {'TOOL': tool_nr, 'TEMP': extruder_temp})
+        finally:
+            self.gcode.run_script_from_command(
+                "RESTORE_GCODE_STATE NAME=_offset_clean")
+        toolhead = self.printer.lookup_object('toolhead')
+        toolhead.wait_moves()
+        # Only ever lift: the macro may end low over the brush, and the
+        # travel that follows keeps the current Z.
+        min_z = max(min_z, self.clean_safe_z)
+        if toolhead.get_position()[2] < min_z:
+            self._move_z(min_z, self.z_move_speed)
+        else:
+            self.gcode_move.reset_last_position()
+
     def cmd_CALIBRATE_ALL_Z_OFFSETS(self, gcmd):
         if not self.is_homed():
             raise gcmd.error("Must home first")
         self._require_leveled(gcmd)
 
-        self.cmd_OFFSET_START_GCODE(gcmd)
-
         extruder_temp = gcmd.get_int('EXTRUDER_TEMP', 0, minval=0, maxval=350)
+        clean = self._clean_requested(gcmd, extruder_temp)
+
+        self.cmd_OFFSET_START_GCODE(gcmd)
 
         z_calc = (gcmd.get('Z_CALC', None) or '').strip().lower()
         if z_calc and z_calc not in ('median', 'average', 'avg', 'mean', 'trimmed', 'trim', 'trimmed_mean'):
@@ -553,6 +613,14 @@ class Offset:
             self.cmd_OFFSET_BEFORE_PICKUP_GCODE(gcmd)
             self.gcode.run_script_from_command(f"T{tool}")
             self.cmd_OFFSET_AFTER_PICKUP_GCODE(gcmd)
+
+            # Before gcode_z_offset is zeroed below: the brush depth is set
+            # up for the tool's normal offsets.
+            if clean:
+                switch_z = self.safe_start_z
+                if self.has_switch_pos():
+                    switch_z = max(self.z_pos + self.lift_z, switch_z)
+                self._clean_nozzle(tool, extruder_temp, switch_z)
 
             self.gcode.run_script_from_command(
                 f"SET_TOOL_PARAMETER T={tool} PARAMETER=gcode_z_offset "
@@ -718,6 +786,7 @@ class Offset:
         "APPLY=1 (default) sets z_offset at runtime only - persist it with "
         "APPLY PROBE OFFSETS in the webapp, not SAVE_CONFIG. Only tools "
         "measured with their mechanical Tap are applied. "
+        "CLEAN=1 runs [offset] clean_gcode once per tool before its tap. "
         "RETURN=0 leaves the last measured tool mounted instead of picking "
         "the reference tool back up.")
 
@@ -733,6 +802,10 @@ class Offset:
 
         apply_offsets = gcmd.get_int('APPLY', 1)
         extruder_temp = gcmd.get_int('EXTRUDER_TEMP', 0, minval=0, maxval=350)
+        clean = self._clean_requested(gcmd, extruder_temp)
+        # Each tool once per run: the reference tool shows up in step 1
+        # and, if selected, again in step 2.
+        cleaned = set()
         samples = gcmd.get_int('SAMPLES', self.probe_offset_samples, minval=1)
         probe_x = gcmd.get_float('PROBE_X', self.probe_offset_x)
         probe_y = gcmd.get_float('PROBE_Y', self.probe_offset_y)
@@ -883,6 +956,9 @@ class Offset:
         # and an Eddy-routed reference never executes the tool_probe's
         # activate_gcode (_TAP_PROBE_ACTIVATE), which is what heats the Tap
         # tools as a side effect.
+        if clean:
+            self._clean_nozzle(ref_tool, extruder_temp, z_hop)
+            cleaned.add(ref_tool)
         if extruder_temp > 0:
             self.gcode.run_script_from_command("M109 S%d" % extruder_temp)
 
@@ -962,6 +1038,10 @@ class Offset:
             self.gcode.run_script_from_command("STOP_TOOL_PROBE_CRASH_DETECTION")
             self.gcode.run_script_from_command(
                 "SET_ACTIVE_TOOL_PROBE T=%d" % tool_nr)
+
+            if clean and tool_nr not in cleaned:
+                self._clean_nozzle(tool_nr, extruder_temp, z_hop)
+                cleaned.add(tool_nr)
 
             if extruder_temp > 0:
                 self.gcode.run_script_from_command(

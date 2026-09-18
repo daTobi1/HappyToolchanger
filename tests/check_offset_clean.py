@@ -1,0 +1,237 @@
+#!/usr/bin/env python3
+"""Duesenreinigung (CLEAN=1) in CALIBRATE_ALL_Z_OFFSETS / CALIBRATE_PROBE_OFFSETS.
+
+Braucht weder Klipper noch Drucker: die beiden Helfer werden per ast aus
+klippy/extras/offset.py geschnitten und gegen Attrappen gefahren, die
+Reihenfolge an den Aufrufstellen wird am Quelltext geprueft.
+
+    scp tests/check_offset_clean.py klippy/extras/offset.py biqu@<IP>:/tmp/
+    ssh biqu@<IP> 'cd /tmp && python3 check_offset_clean.py'
+"""
+import ast
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+for cand in (os.path.join(HERE, 'offset.py'),
+             os.path.join(HERE, '..', 'klippy', 'extras', 'offset.py')):
+    if os.path.exists(cand):
+        SRC_PATH = cand
+        break
+else:
+    sys.exit("offset.py nicht gefunden")
+
+with open(SRC_PATH) as f:
+    SRC = f.read()
+TREE = ast.parse(SRC)
+
+failed = 0
+
+
+def check(name, cond, extra=''):
+    global failed
+    if cond:
+        print('  ok  ' + name)
+    else:
+        failed += 1
+        print('FAIL: ' + name + ('  ' + str(extra) if extra else ''))
+
+
+def method_source(name):
+    for node in ast.walk(TREE):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return ast.get_source_segment(SRC, node)
+    raise SystemExit("Methode %s fehlt in offset.py" % name)
+
+
+# --- Attrappen -------------------------------------------------------------
+
+class GcmdError(Exception):
+    pass
+
+
+class FakeGcmd:
+    error = GcmdError
+
+    def __init__(self, params):
+        self.params = params
+
+    def get_int(self, name, default=None, minval=None, maxval=None):
+        v = int(self.params.get(name, default))
+        if minval is not None and v < minval:
+            raise GcmdError("%s below minimum" % name)
+        if maxval is not None and v > maxval:
+            raise GcmdError("%s above maximum" % name)
+        return v
+
+
+class FakeGcode:
+    def __init__(self, log):
+        self.log = log
+
+    def respond_info(self, msg):
+        self.log.append(('info', msg))
+
+    def run_script_from_command(self, script):
+        self.log.append(('script', script))
+
+
+class FakeTemplate:
+    def __init__(self, log, fail=False):
+        self.log = log
+        self.fail = fail
+
+    def run_gcode_from_command(self, ctx):
+        self.log.append(('clean', dict(ctx)))
+        if self.fail:
+            raise GcmdError("macro failed")
+
+
+class FakeToolhead:
+    def __init__(self, z):
+        self.z = z
+
+    def wait_moves(self):
+        pass
+
+    def get_position(self):
+        return [0., 0., self.z, 0.]
+
+
+class FakePrinter:
+    def __init__(self, toolhead):
+        self.toolhead = toolhead
+
+    def lookup_object(self, name, default=None):
+        return self.toolhead
+
+
+class FakeGcodeMove:
+    def __init__(self, log):
+        self.log = log
+
+    def reset_last_position(self):
+        self.log.append(('resync',))
+
+
+# ast.get_source_segment liefert die erste Zeile ohne Einrueckung, den Rest
+# mit der originalen (4 Leerzeichen) - ein Praefix genuegt also.
+ns = {}
+body = []
+for name in ('_clean_requested', '_clean_nozzle'):
+    body.append("    " + method_source(name))
+exec("class Offset:\n" + "\n\n".join(body), ns)
+Offset = ns['Offset']
+
+
+def make(has_clean=True, z_after=2.0, fail=False, clean_safe_z=10.0):
+    log = []
+    o = Offset()
+    o.has_clean_gcode = has_clean
+    o.clean_safe_z = clean_safe_z
+    o.z_move_speed = 5.0
+    o.gcode = FakeGcode(log)
+    o.clean_gcode = FakeTemplate(log, fail)
+    o.printer = FakePrinter(FakeToolhead(z_after))
+    o.gcode_move = FakeGcodeMove(log)
+    o._move_z = lambda z, speed=10.: log.append(('move_z', z, speed))
+    return o, log
+
+
+# --- _clean_requested ---------------------------------------------------------
+
+o, log = make()
+check('ohne CLEAN -> aus (bestehende Aufrufe aendern sich nicht)',
+      o._clean_requested(FakeGcmd({}), 200) is False)
+check('CLEAN=0 -> aus', o._clean_requested(FakeGcmd({'CLEAN': '0'}), 200) is False)
+check('CLEAN=1 mit clean_gcode -> an',
+      o._clean_requested(FakeGcmd({'CLEAN': '1'}), 200) is True)
+check('CLEAN=1 mit Temperatur -> keine Warnung', not log, log)
+
+o, log = make()
+o._clean_requested(FakeGcmd({'CLEAN': '1'}), 0)
+check('CLEAN=1 ohne EXTRUDER_TEMP -> Warnung (Duese kuehlt waehrend der Messung)',
+      any(e[0] == 'info' and 'EXTRUDER_TEMP' in e[1] for e in log), log)
+
+o, log = make(has_clean=False)
+try:
+    o._clean_requested(FakeGcmd({'CLEAN': '1'}), 200)
+    check('CLEAN=1 ohne clean_gcode -> Fehler', False, 'kein Fehler')
+except GcmdError as e:
+    check('CLEAN=1 ohne clean_gcode -> Fehler, nennt clean_gcode',
+          'clean_gcode' in str(e), e)
+check('CLEAN=0 ohne clean_gcode -> kein Fehler',
+      o._clean_requested(FakeGcmd({'CLEAN': '0'}), 200) is False)
+
+try:
+    o._clean_requested(FakeGcmd({'CLEAN': '2'}), 200)
+    check('CLEAN=2 -> Fehler', False)
+except GcmdError:
+    check('CLEAN=2 -> Fehler', True)
+
+# --- _clean_nozzle ------------------------------------------------------------
+
+o, log = make(z_after=2.0)
+o._clean_nozzle(3, 200, 7.0)
+kinds = [e[0] for e in log]
+check('Template bekommt TOOL und TEMP',
+      ('clean', {'TOOL': 3, 'TEMP': 200}) in log, log)
+scripts = [e[1] for e in log if e[0] == 'script']
+check('Gcode-Zustand wird um die Reinigung gesichert (G91-Falle)',
+      scripts == ['SAVE_GCODE_STATE NAME=_offset_clean',
+                  'RESTORE_GCODE_STATE NAME=_offset_clean'], scripts)
+check('Reihenfolge: SAVE, Reinigung, RESTORE, dann anheben',
+      [k for k in kinds if k != 'info'] == ['script', 'clean', 'script', 'move_z'], kinds)
+check('endet die Reinigung tief -> anheben auf max(min_z, clean_safe_z)',
+      ('move_z', 10.0, 5.0) in log, log)
+
+o, log = make(z_after=2.0, clean_safe_z=4.0)
+o._clean_nozzle(0, 0, 7.0)
+check('min_z des Aufrufers gewinnt, wenn hoeher', ('move_z', 7.0, 5.0) in log, log)
+
+o, log = make(z_after=25.0)
+o._clean_nozzle(0, 0, 7.0)
+check('steht die Duese schon hoch -> NICHT absenken, nur resync',
+      not any(e[0] == 'move_z' for e in log) and ('resync',) in log, log)
+
+o, log = make(fail=True)
+try:
+    o._clean_nozzle(1, 200, 7.0)
+    check('Fehler im Makro fliegt weiter', False)
+except GcmdError:
+    scripts = [e[1] for e in log if e[0] == 'script']
+    check('Fehler im Makro fliegt weiter, Zustand trotzdem zurueckgeholt',
+          scripts[-1] == 'RESTORE_GCODE_STATE NAME=_offset_clean', scripts)
+    check('nach einem Fehler keine Fahrt mehr',
+          not any(e[0] == 'move_z' for e in log), log)
+
+# --- Aufrufstellen (Quelltext-Reihenfolge) -----------------------------------
+
+zs = method_source('cmd_CALIBRATE_ALL_Z_OFFSETS')
+check('Z-Switch: CLEAN wird geprueft, BEVOR start_gcode (G28/QGL) laeuft',
+      0 < zs.find('_clean_requested(') < zs.find('cmd_OFFSET_START_GCODE('))
+i_pick = zs.find('run_script_from_command(f"T{tool}")')
+i_clean = zs.find('_clean_nozzle(')
+i_heat = zs.find('M109 S{extruder_temp}')
+i_move = zs.find('MOVE_TO_ZSWITCH')
+check('Z-Switch: aufnehmen -> reinigen -> Messtemperatur -> Schalter',
+      0 < i_pick < i_clean < i_heat < i_move, (i_pick, i_clean, i_heat, i_move))
+
+po = method_source('cmd_CALIBRATE_PROBE_OFFSETS')
+check('Probe-Offsets: CLEAN wird geprueft, bevor irgendetwas laeuft',
+      0 < po.find('_clean_requested(') < po.find('run_script_from_command('))
+cleans = [i for i in range(len(po)) if po.startswith('_clean_nozzle(', i)]
+heats = [i for i in range(len(po)) if po.startswith('"M109 S%d"', i)]
+check('Probe-Offsets: Referenz (Schritt 1) und jedes Tool (Schritt 2) reinigen',
+      len(cleans) == 2 and len(heats) == 2, (cleans, heats))
+check('Probe-Offsets: jeweils reinigen VOR der Messtemperatur',
+      len(cleans) == 2 and len(heats) == 2 and
+      cleans[0] < heats[0] < cleans[1] < heats[1], (cleans, heats))
+check('Probe-Offsets: jedes Tool nur einmal je Lauf',
+      'tool_nr not in cleaned' in po and 'cleaned.add(ref_tool)' in po)
+
+st = method_source('get_status')
+check("get_status meldet 'clean_available'", "'clean_available'" in st)
+
+print('\n%d FAILED' % failed if failed else '\nall ok')
+sys.exit(1 if failed else 0)
