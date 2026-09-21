@@ -11,9 +11,9 @@ class HtcFilamentSwitch:
         self.filament_present = False
 
         buttons = printer.load_object(printer.lookup_object('configfile'), 'buttons')
-        ppins = printer.lookup_object('pins')
-        pin_params = ppins.parse_pin(pin_name, can_invert=True, can_pullup=True)
-        buttons.register_buttons([pin_params], self._button_handler)
+        # register_buttons will die Pin-Strings und parst sie selbst
+        # (mit can_invert/can_pullup) -- keine vorgeparsten pin_params.
+        buttons.register_buttons([pin_name], self._button_handler)
 
         printer.register_event_handler('klippy:ready', self._handle_ready)
 
