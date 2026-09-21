@@ -2,15 +2,17 @@ import logging
 
 
 class HtcFilamentSwitch:
-    def __init__(self, printer, gate, pin_name):
-        self.printer = printer
+    def __init__(self, config, gate, pin_name):
+        self.printer = printer = config.get_printer()
         self.gate = gate
         # False wie in Klippers filament_switch_sensor: buttons melden beim
         # Start nur Pins, die logisch 1 sind -- "vorhanden" kommt als Event,
         # "leer" kommt nie.
         self.filament_present = False
 
-        buttons = printer.load_object(printer.lookup_object('configfile'), 'buttons')
+        # load_object braucht die Config-Sektion, nicht das configfile-Objekt:
+        # ist buttons noch nicht geladen, ruft Klipper config.getsection() auf.
+        buttons = printer.load_object(config, 'buttons')
         # register_buttons will die Pin-Strings und parst sie selbst
         # (mit can_invert/can_pullup) -- keine vorgeparsten pin_params.
         buttons.register_buttons([pin_name], self._button_handler)
@@ -39,7 +41,7 @@ class HtcSensors:
         for i in range(16):
             pin = config.get('sensor_pin_%d' % i, None)
             if pin:
-                switch = HtcFilamentSwitch(self.printer, i, pin)
+                switch = HtcFilamentSwitch(config, i, pin)
                 self.switches.append(switch)
                 logging.info("HTC: Sensor registered for gate %d" % i)
 
