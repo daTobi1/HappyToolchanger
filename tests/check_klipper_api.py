@@ -364,6 +364,53 @@ def main():
     ok(hasattr(getattr(tc_mod, "Toolchanger", None), "get_selected_tool"),
        "toolchanger.Toolchanger.get_selected_tool fehlt")
 
+    # --- Filamentsensoren + Endless Spool (htc_sensors.py, core.py) ---
+    from extras import buttons as buttons_mod, pause_resume as pr_mod
+    from kinematics import extruder as extruder_mod
+    # register_buttons bekommt Pin-STRINGS und parst selbst
+    src = source_of(buttons_mod.PrinterButtons.register_buttons)
+    ok("lookup_pin(pin" in src,
+       "buttons.register_buttons parst die Pins nicht mehr selbst",
+       "htc_sensors uebergibt Strings")
+    # Startzustand "leer": die MCU startet mit pressed=invert und klippy mit
+    # last_button=0 -- gemeldet wird beim Booten nur logisch 1
+    src = source_of(buttons_mod.MCU_buttons.__init__)
+    ok("self.invert = self.last_button = 0" in src,
+       "buttons.MCU_buttons startet nicht mehr mit last_button=0",
+       "htc_sensors nimmt 'kein Filament' als Startwert an")
+    # Runout: Druck sofort anhalten, GCode unter dem Mutex
+    has_attrs(pr_mod.PauseResume, ["send_pause_command"], "pause_resume.PauseResume")
+    ok("self.is_paused" in source_of(pr_mod.PauseResume.__init__),
+       "pause_resume.PauseResume.is_paused fehlt")
+    has_attrs(gcode_mod.GCodeDispatch,
+              ["get_mutex", "respond_raw", "create_gcode_command",
+               "run_script_from_command"], "gcode.GCodeDispatch")
+    # register_command(name, None) liefert den Vorgaenger -- so haengen sich
+    # M104/M109 vor Klippers Handler bzw. das M109-Makro
+    src = source_of(gcode_mod.GCodeDispatch.register_command)
+    ok("if func is None" in src and "return old_cmd" in src,
+       "gcode.register_command(name, None) gibt den alten Handler nicht mehr zurueck")
+    ok(arg_names(gcode_mod.GCodeDispatch.create_gcode_command)[1:]
+       == ["command", "commandline", "params"],
+       "gcode.create_gcode_command hat andere Parameter",
+       str(arg_names(gcode_mod.GCodeDispatch.create_gcode_command)))
+    # endless_spool_gcode: Standardkontext holen, erweitern, ausfuehren
+    has_attrs(gcode_macro.TemplateWrapper, ["run_gcode_from_command"],
+              "gcode_macro.TemplateWrapper")
+    # create_template_context ist ein Instanz-Attribut, gesetzt in __init__
+    ok("self.create_template_context = " in
+       source_of(gcode_macro.TemplateWrapper.__init__),
+       "gcode_macro.TemplateWrapper haelt create_template_context nicht mehr")
+    # Sollwert des alten Hotends
+    has_attrs(extruder_mod.PrinterExtruder, ["get_heater"],
+              "extruder.PrinterExtruder")
+    ok("'target'" in source_of(heaters.Heater.get_status)
+       or '"target"' in source_of(heaters.Heater.get_status),
+       "heaters.Heater.get_status liefert kein 'target' mehr")
+    # Klippers M104 loest T ueber den Index auf
+    ok("'T'" in source_of(extruder_mod.PrinterExtruder.cmd_M104),
+       "extruder.cmd_M104 liest T nicht mehr")
+
     print("geprueft: %d Zusicherungen gegen Klipper in %s"
           % (CHECKS[0], args.klipper))
     if FINDINGS:

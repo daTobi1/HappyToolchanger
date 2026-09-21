@@ -51,6 +51,15 @@ class HappyToolchanger:
         else:
             es_groups = list(range(self.num_tools))
 
+        # Endless-Spool-Wechsel: wie weit das Ersatz-Hotend unter dem Sollwert
+        # liegen darf, bevor weitergedruckt wird, und optionales GCode
+        # (Vorfoerdern/Reinigen) zwischen Werkzeugwechsel und RESUME.
+        self.failover_temp_tolerance = config.getfloat(
+            'endless_spool_temp_tolerance', 4.0, minval=0.5)
+        gcode_macro = self.printer.load_object(config, 'gcode_macro')
+        self.failover_template = gcode_macro.load_template(
+            config, 'endless_spool_gcode', '')
+
         # Gate metadata defaults from config
         self.default_gate_colors = self._parse_list(config.get('gate_colors', ''), self.num_tools, '')
         self.default_gate_materials = self._parse_list(config.get('gate_materials', ''), self.num_tools, '')
@@ -155,6 +164,7 @@ class HappyToolchanger:
         self._load_persisted_state()
         self._state_loaded = True
         self.sync_gates_from_sensors()
+        self._wrap_temperature_commands()
         self.log("Ready. Active tool: T%d" % self.active_tool
                  if self.active_tool >= 0 else "Ready. No tool active.")
         self._update_t_macros()
@@ -378,15 +388,121 @@ class HappyToolchanger:
                 % (tool, gate, self.endless_spool.groups[gate]))
             return
 
-        self.log("Endless Spool: T%d remapping gate %d -> %d" % (tool, gate, next_gate), level=0)
+        self._failover(tool, gate, next_gate)
+
+    def _extruder_name_for_gate(self, gate):
+        # KTC kennt den Extruder je Tool; ohne KTC gilt Klippers Namensschema.
+        tc = self.printer.lookup_object('toolchanger', None)
+        ktc_tool = tc.lookup_tool(gate) if tc is not None else None
+        name = getattr(ktc_tool, 'extruder_name', None)
+        if name:
+            return name
+        return 'extruder' if gate == 0 else 'extruder%d' % gate
+
+    def _heater_target(self, extruder_name):
+        extruder = self.printer.lookup_object(extruder_name, None)
+        if extruder is None:
+            return 0.
+        return extruder.get_heater().get_status(
+            self.reactor.monotonic())['target']
+
+    def _failover_tool_mounted(self, gate):
+        # KTC faengt Wechselfehler selbst ab (error_gcode) und kehrt ohne
+        # Exception zurueck -- ob das Ersatz-Tool haengt, sagt nur der Status.
+        if self.printer.is_shutdown():
+            return False
+        tc = self.printer.lookup_object('toolchanger', None)
+        if tc is None:
+            return True
+        status = tc.get_status(self.reactor.monotonic())
+        return (status.get('status') == 'ready'
+                and status.get('tool_number') == gate)
+
+    def _failover(self, tool, gate, next_gate):
+        """T<tool> druckt mit dem Ersatz-Gate weiter. Laeuft unter dem Mutex.
+
+        Reihenfolge: anhalten, Ersatz-Hotend schon vor dem Wechsel auf den
+        Sollwert des alten heizen, wechseln, pruefen, erst dann die Zuordnung
+        uebernehmen. Schlaegt etwas fehl, bleibt der Druck pausiert und
+        T<tool> zeigt weiter auf das alte Gate.
+        """
+        run = self.gcode.run_script_from_command
+        old_extruder = self._extruder_name_for_gate(gate)
+        new_extruder = self._extruder_name_for_gate(next_gate)
+        target = self._heater_target(old_extruder)
+        hand_over = target > 0. and new_extruder != old_extruder
+
+        self.log("Endless Spool: T%d gate %d -> %d" % (tool, gate, next_gate),
+                 level=0)
+        run("PAUSE")
+        if hand_over:
+            run("SET_HEATER_TEMPERATURE HEATER=%s TARGET=%.1f"
+                % (new_extruder, target))
+        run(self.tool_change_command.replace('{tool}', str(next_gate)))
+
+        if not self._failover_tool_mounted(next_gate):
+            self.statistics.record_error()
+            self._save_state()
+            self.gcode.respond_raw(
+                "!! HTC: Endless Spool: tool change to gate %d failed - "
+                "print stays paused, T%d still mapped to gate %d"
+                % (next_gate, tool, gate))
+            return
+
         self.ttg_map[tool] = next_gate
         self.statistics.record_endless_spool_event()
-
-        self.gcode.run_script_from_command("PAUSE")
-        cmd = self.tool_change_command.replace('{tool}', str(next_gate))
-        self.gcode.run_script_from_command(cmd)
+        spool_id = (self.gate_spool_ids[next_gate]
+                    if next_gate < len(self.gate_spool_ids) else -1)
+        self._set_moonraker_spool(spool_id)
         self._save_state()
-        self.gcode.run_script_from_command("RESUME")
+
+        if hand_over:
+            run("TEMPERATURE_WAIT SENSOR=%s MINIMUM=%.1f"
+                % (new_extruder, target - self.failover_temp_tolerance))
+            run("SET_HEATER_TEMPERATURE HEATER=%s TARGET=0" % old_extruder)
+
+        # Eigener Kontext auf Basis des Standardkontexts: render(context)
+        # ersetzt ihn sonst, und `printer` fehlt im Template.
+        context = self.failover_template.create_template_context()
+        context.update({'tool': tool, 'old_gate': gate, 'new_gate': next_gate,
+                        'old_extruder': old_extruder,
+                        'new_extruder': new_extruder, 'temp': target})
+        self.failover_template.run_gcode_from_command(context)
+
+        run("RESUME")
+        if self._is_paused():
+            self.gcode.respond_raw(
+                "!! HTC: Endless Spool: RESUME refused after switching T%d "
+                "to gate %d - print stays paused" % (tool, next_gate))
+
+    # --- M104/M109 folgen der Tool-Gate-Zuordnung ---
+
+    def _wrap_temperature_commands(self):
+        # Erst bei klippy:ready: gcode_macro benennt M109 (rename_existing)
+        # in klippy:connect um, danach steht fest, wer der Vorgaenger ist.
+        for name in ('M104', 'M109'):
+            prev = self.gcode.register_command(name, None)
+            if prev is None:
+                continue
+            self.gcode.register_command(
+                name,
+                lambda gcmd, n=name, p=prev: self._cmd_temp_redirect(gcmd, n, p))
+
+    def _cmd_temp_redirect(self, gcmd, name, prev):
+        # Der Slicer adressiert das logische Tool ("M104 T0 S210"). Zeigt T0
+        # nach einem Endless-Spool-Wechsel auf ein anderes Gate, muss das
+        # Hotend dieses Gates heizen -- sonst heizt das leere weiter.
+        tool = gcmd.get_int('T', None)
+        if (tool is None or tool < 0 or tool >= self.num_tools
+                or self.ttg_map[tool] == tool):
+            return prev(gcmd)
+        gate = self.ttg_map[tool]
+        params = dict(gcmd.get_command_parameters())
+        params['T'] = str(gate)
+        line = "%s %s" % (name, " ".join(
+            "%s%s" % (k, v) for k, v in params.items()))
+        self.log("%s T%d -> gate %d" % (name, tool, gate), level=2)
+        return prev(self.gcode.create_gcode_command(name, line, params))
 
     # --- GCode Commands ---
 
