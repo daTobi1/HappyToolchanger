@@ -5,7 +5,10 @@ class HtcFilamentSwitch:
     def __init__(self, printer, gate, pin_name):
         self.printer = printer
         self.gate = gate
-        self.filament_present = True
+        # False wie in Klippers filament_switch_sensor: buttons melden beim
+        # Start nur Pins, die logisch 1 sind -- "vorhanden" kommt als Event,
+        # "leer" kommt nie.
+        self.filament_present = False
 
         buttons = printer.load_object(printer.lookup_object('configfile'), 'buttons')
         ppins = printer.lookup_object('pins')
@@ -18,6 +21,7 @@ class HtcFilamentSwitch:
         htc = self.printer.lookup_object('happy_toolchanger', None)
         if htc and hasattr(htc, 'sensor_manager'):
             htc.sensor_manager.register_sensor(self.gate, self)
+            htc.sync_gates_from_sensors()
 
     def _button_handler(self, eventtime, state):
         self.filament_present = bool(state)

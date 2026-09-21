@@ -82,7 +82,11 @@ class HappyToolchanger:
         sensor_debounce = config.getfloat('sensor_debounce_time', 1.0, minval=0.1)
         from .sensor_manager import SensorManager
         self.sensor_manager = SensorManager(
-            self.printer, self.num_tools, sensor_debounce, self.handle_runout)
+            self.printer, self.num_tools, sensor_debounce,
+            self.handle_runout, self.handle_insert)
+        # Mainsail liest die Sensorzustaende aus diesem Objekt (HtcMixin.ts)
+        self.printer.add_object('htc_sensor_manager', self.sensor_manager)
+        self._state_loaded = False
 
         # NOTE: T-macros are defined in happy_toolchanger.cfg as [gcode_macro T0] etc.
         # They call HTC_CHANGE_TOOL TOOL=N. This allows Mainsail to see color/spool_id vars.
@@ -149,6 +153,8 @@ class HappyToolchanger:
                 "HappyToolchanger requires [save_variables] in your config. "
                 "Add [save_variables] with a filename to your printer.cfg.")
         self._load_persisted_state()
+        self._state_loaded = True
+        self.sync_gates_from_sensors()
         self.log("Ready. Active tool: T%d" % self.active_tool
                  if self.active_tool >= 0 else "Ready. No tool active.")
         self._update_t_macros()
@@ -280,19 +286,81 @@ class HappyToolchanger:
 
     # --- Endless Spool Integration ---
 
+    def sync_gates_from_sensors(self):
+        """Gates mit Sensor folgen dem Sensor, nicht dem gespeicherten Stand.
+
+        Laeuft beim Start -- aus unserem ready-Handler und aus dem von
+        htc_sensors, weil deren Reihenfolge von der Config abhaengt. Vor dem
+        Laden des gespeicherten Stands passiert nichts, sonst wuerde der
+        gleich wieder ueberschrieben.
+        """
+        if not self._state_loaded:
+            return
+        for gate in self.sensor_manager.sensors:
+            self.gate_status[gate] = (
+                GATE_AVAILABLE if self.sensor_manager.is_present(gate)
+                else GATE_EMPTY)
+
+    def _is_print_running(self):
+        # is_printing folgt idle_timeout und ist auch bei Handbetrieb wahr
+        # (jedes GCode zaehlt). Ein Runout darf nur einen echten Druck anhalten.
+        print_stats = self.printer.lookup_object('print_stats', None)
+        if print_stats is None:
+            return self.is_printing
+        return print_stats.get_status(
+            self.reactor.monotonic())['state'] == 'printing'
+
+    def _tool_for_gate(self, gate):
+        for t in range(self.num_tools):
+            if self.ttg_map[t] == gate:
+                return t
+        return -1
+
+    def _run_sensor_event(self, handler, gate, *args):
+        # Sensor-Events kommen aus Reactor-Timern und Button-Callbacks. Dort
+        # darf kein GCode laufen, und eine Exception wuerde Klipper
+        # abschalten. Wie Klippers filament_switch_sensor: eigener Callback,
+        # GCode unter dem Mutex, Fehler melden statt werfen.
+        def run(eventtime):
+            try:
+                with self.gcode.get_mutex():
+                    handler(gate, *args)
+            except Exception as e:
+                logging.exception("HTC: sensor event for gate %d failed", gate)
+                self.gcode.respond_raw("!! HTC: %s" % (e,))
+        self.reactor.register_callback(run)
+
+    def handle_insert(self, gate):
+        self._run_sensor_event(self._process_insert, gate)
+
+    def _process_insert(self, gate):
+        if not self._state_loaded:
+            return
+        if self.gate_status[gate] != GATE_AVAILABLE:
+            self.gate_status[gate] = GATE_AVAILABLE
+            self.log("Gate %d: filament detected" % gate)
+            self._save_state()
+
     def handle_runout(self, gate):
+        # Hier entscheiden, nicht erst unter dem Mutex: nach
+        # send_pause_command steht print_stats schon auf "paused".
+        printing = self._is_print_running()
+        tool = self._tool_for_gate(gate)
+        if printing and tool >= 0 and tool == self.active_tool:
+            # Den Druck sofort anhalten -- auf den Mutex warten wir unter
+            # Umstaenden noch eine ganze GCode-Zeile lang.
+            pause_resume = self.printer.lookup_object('pause_resume', None)
+            if pause_resume is not None:
+                pause_resume.send_pause_command()
+        self._run_sensor_event(self._process_runout, gate, printing, tool)
+
+    def _process_runout(self, gate, printing, tool):
         self.gate_status[gate] = GATE_EMPTY
 
-        if not self.is_printing:
+        if not printing:
             self.log("Gate %d empty (not printing, no action)" % gate)
             self._save_state()
             return
-
-        tool = -1
-        for t in range(self.num_tools):
-            if self.ttg_map[t] == gate:
-                tool = t
-                break
 
         if tool < 0 or tool != self.active_tool:
             self.log("Gate %d empty but not active tool, updating status only" % gate)
@@ -305,9 +373,10 @@ class HappyToolchanger:
             self.gcode.run_script_from_command("PAUSE")
             self.statistics.record_error()
             self._save_state()
-            raise self.gcode.error(
-                "HTC: Filament runout on T%d (gate %d) - no replacement in group %d!"
+            self.gcode.respond_raw(
+                "!! HTC: Filament runout on T%d (gate %d) - no replacement in group %d!"
                 % (tool, gate, self.endless_spool.groups[gate]))
+            return
 
         self.log("Endless Spool: T%d remapping gate %d -> %d" % (tool, gate, next_gate), level=0)
         self.ttg_map[tool] = next_gate
