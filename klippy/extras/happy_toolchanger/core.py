@@ -24,6 +24,14 @@ VARS_ACTIVE_TOOL = "htc_active_tool"
 VARS_STATS = "htc_stats"
 VARS_REVISION = "htc__revision"
 
+# Wie oft das nach dem Ausloesen verdruckte Filament nachgezaehlt wird (s)
+COUNTDOWN_INTERVAL = 0.5
+
+# Ausgang des Wartens auf das Ersatz-Hotend
+HEAT_READY = "ready"
+HEAT_RESUMED = "resumed"
+HEAT_ABORTED = "aborted"
+
 
 class HappyToolchanger:
     def __init__(self, config):
@@ -56,6 +64,11 @@ class HappyToolchanger:
         # (Vorfoerdern/Reinigen) zwischen Werkzeugwechsel und RESUME.
         self.failover_temp_tolerance = config.getfloat(
             'endless_spool_temp_tolerance', 4.0, minval=0.5)
+        # Filament zwischen Sensor und Extruder, das nach dem Ausloesen noch
+        # verdruckt wird, bevor pausiert bzw. gewechselt wird (mm, 0 = sofort).
+        self.runout_distance = config.getfloat(
+            'sensor_runout_distance', 0., minval=0.)
+        self._countdowns = {}
         gcode_macro = self.printer.load_object(config, 'gcode_macro')
         self.failover_template = gcode_macro.load_template(
             config, 'endless_spool_gcode', '')
@@ -341,6 +354,8 @@ class HappyToolchanger:
         self.reactor.register_callback(run)
 
     def handle_insert(self, gate):
+        # Filament ist wieder da: der Rest muss nicht mehr abgezaehlt werden
+        self._cancel_countdown(gate)
         self._run_sensor_event(self._process_insert, gate)
 
     def _process_insert(self, gate):
@@ -351,18 +366,115 @@ class HappyToolchanger:
             self.log("Gate %d: filament detected" % gate)
             self._save_state()
 
+    def _note_gate_empty(self, gate):
+        if self.gate_status[gate] != GATE_EMPTY:
+            self.gate_status[gate] = GATE_EMPTY
+            self._save_state()
+
     def handle_runout(self, gate):
-        # Hier entscheiden, nicht erst unter dem Mutex: nach
-        # send_pause_command steht print_stats schon auf "paused".
         printing = self._is_print_running()
         tool = self._tool_for_gate(gate)
+        active = printing and tool >= 0 and tool == self.active_tool
+        if (active and self.runout_distance > 0.
+                and self._filament_used() is not None):
+            # Der Sensor sitzt vor dem Extruder: zwischen beiden steckt noch
+            # Filament. Erst das verdrucken, dann handeln.
+            self._run_sensor_event(self._note_gate_empty, gate)
+            self._start_countdown(gate, tool)
+            return
+        self._trigger_runout(gate, printing, tool)
+
+    # --- Restfilament nach dem Ausloesen verdrucken ---
+
+    def _filament_used(self):
+        print_stats = self.printer.lookup_object('print_stats', None)
+        if print_stats is None:
+            return None
+        return print_stats.get_status(
+            self.reactor.monotonic()).get('filament_used')
+
+    def _print_state(self):
+        print_stats = self.printer.lookup_object('print_stats', None)
+        if print_stats is None:
+            return 'printing' if self.is_printing else 'standby'
+        return print_stats.get_status(self.reactor.monotonic())['state']
+
+    def _start_countdown(self, gate, tool):
+        self._cancel_countdown(gate)
+        countdown = {'tool': tool, 'remaining': self.runout_distance,
+                     'last_used': self._filament_used()}
+        countdown['timer'] = self.reactor.register_timer(
+            lambda et, g=gate: self._countdown_tick(g, et),
+            self.reactor.monotonic() + COUNTDOWN_INTERVAL)
+        self._countdowns[gate] = countdown
+        self.log("Gate %d empty - printing %.0f mm more before acting"
+                 % (gate, self.runout_distance), level=0)
+
+    def _cancel_countdown(self, gate):
+        countdown = self._countdowns.pop(gate, None)
+        if countdown is not None:
+            self.reactor.unregister_timer(countdown['timer'])
+
+    def _countdown_tick(self, gate, eventtime):
+        # Reactor-Timer: kein GCode, keine Exception nach draussen.
+        try:
+            return self._countdown_step(gate, eventtime)
+        except Exception:
+            logging.exception("HTC: runout countdown for gate %d failed", gate)
+            self._countdowns.pop(gate, None)
+            return self.reactor.NEVER
+
+    def _countdown_step(self, gate, eventtime):
+        countdown = self._countdowns.get(gate)
+        if countdown is None:
+            return self.reactor.NEVER
+        state = self._print_state()
+        if state not in ('printing', 'paused'):
+            # Druck beendet oder abgebrochen: nichts mehr zu tun
+            self._countdowns.pop(gate, None)
+            return self.reactor.NEVER
+        used = self._filament_used()
+        delta = used - countdown['last_used']
+        countdown['last_used'] = used
+        # Mit Vorzeichen: Retract und Un-Retract heben sich auf. Nur zaehlen,
+        # solange dieses Tool druckt -- der Slicer kann zwischendurch wechseln.
+        if state == 'printing' and self.active_tool == countdown['tool']:
+            countdown['remaining'] -= delta
+            if countdown['remaining'] <= 0.:
+                self._countdowns.pop(gate, None)
+                self._trigger_runout(gate, True, countdown['tool'])
+                return self.reactor.NEVER
+        return eventtime + COUNTDOWN_INTERVAL
+
+    # --- Runout ausfuehren ---
+
+    def _trigger_runout(self, gate, printing, tool):
+        # Hier entscheiden, nicht erst unter dem Mutex: nach
+        # send_pause_command steht print_stats schon auf "paused".
         if printing and tool >= 0 and tool == self.active_tool:
             # Den Druck sofort anhalten -- auf den Mutex warten wir unter
             # Umstaenden noch eine ganze GCode-Zeile lang.
             pause_resume = self.printer.lookup_object('pause_resume', None)
             if pause_resume is not None:
                 pause_resume.send_pause_command()
-        self._run_sensor_event(self._process_runout, gate, printing, tool)
+
+        # Sensor-Events kommen aus Reactor-Timern (siehe _run_sensor_event).
+        # Der Wechsel laeuft in drei Abschnitten: GCode nur unter dem Mutex,
+        # das Warten aufs Heizen ohne -- sonst nimmt Klipper minutenlang
+        # keinen Befehl an, auch kein CANCEL_PRINT.
+        def run(eventtime):
+            try:
+                with self.gcode.get_mutex():
+                    plan = self._process_runout(gate, printing, tool)
+                if plan is None:
+                    return
+                outcome = self._wait_for_heater(plan)
+                with self.gcode.get_mutex():
+                    self._finish_failover(plan, outcome)
+            except Exception as e:
+                logging.exception("HTC: runout on gate %d failed", gate)
+                self.gcode.respond_raw("!! HTC: %s" % (e,))
+        self.reactor.register_callback(run)
 
     def _process_runout(self, gate, printing, tool):
         self.gate_status[gate] = GATE_EMPTY
@@ -370,12 +482,12 @@ class HappyToolchanger:
         if not printing:
             self.log("Gate %d empty (not printing, no action)" % gate)
             self._save_state()
-            return
+            return None
 
         if tool < 0 or tool != self.active_tool:
             self.log("Gate %d empty but not active tool, updating status only" % gate)
             self._save_state()
-            return
+            return None
 
         next_gate = self.endless_spool.find_next_gate(gate, self.gate_status)
 
@@ -386,9 +498,9 @@ class HappyToolchanger:
             self.gcode.respond_raw(
                 "!! HTC: Filament runout on T%d (gate %d) - no replacement in group %d!"
                 % (tool, gate, self.endless_spool.groups[gate]))
-            return
+            return None
 
-        self._failover(tool, gate, next_gate)
+        return self._begin_failover(tool, gate, next_gate)
 
     def _extruder_name_for_gate(self, gate):
         # KTC kennt den Extruder je Tool; ohne KTC gilt Klippers Namensschema.
@@ -418,24 +530,27 @@ class HappyToolchanger:
         return (status.get('status') == 'ready'
                 and status.get('tool_number') == gate)
 
-    def _failover(self, tool, gate, next_gate):
-        """T<tool> druckt mit dem Ersatz-Gate weiter. Laeuft unter dem Mutex.
+    def _begin_failover(self, tool, gate, next_gate):
+        """Abschnitt 1 (unter dem Mutex): anhalten, Ersatz heizen, wechseln.
 
-        Reihenfolge: anhalten, Ersatz-Hotend schon vor dem Wechsel auf den
-        Sollwert des alten heizen, wechseln, pruefen, erst dann die Zuordnung
-        uebernehmen. Schlaegt etwas fehl, bleibt der Druck pausiert und
-        T<tool> zeigt weiter auf das alte Gate.
+        Das Ersatz-Hotend heizt schon vor dem Wechsel auf den Sollwert des
+        alten. Die Zuordnung wird erst uebernommen, wenn das Tool haengt;
+        sonst bleibt der Druck pausiert und T<tool> zeigt auf das alte Gate.
+        Liefert den Plan fuer die naechsten Abschnitte oder None.
         """
         run = self.gcode.run_script_from_command
         old_extruder = self._extruder_name_for_gate(gate)
         new_extruder = self._extruder_name_for_gate(next_gate)
         target = self._heater_target(old_extruder)
-        hand_over = target > 0. and new_extruder != old_extruder
+        plan = {'tool': tool, 'old_gate': gate, 'new_gate': next_gate,
+                'old_extruder': old_extruder, 'new_extruder': new_extruder,
+                'temp': target,
+                'hand_over': target > 0. and new_extruder != old_extruder}
 
         self.log("Endless Spool: T%d gate %d -> %d" % (tool, gate, next_gate),
                  level=0)
         run("PAUSE")
-        if hand_over:
+        if plan['hand_over']:
             run("SET_HEATER_TEMPERATURE HEATER=%s TARGET=%.1f"
                 % (new_extruder, target))
         run(self.tool_change_command.replace('{tool}', str(next_gate)))
@@ -447,7 +562,7 @@ class HappyToolchanger:
                 "!! HTC: Endless Spool: tool change to gate %d failed - "
                 "print stays paused, T%d still mapped to gate %d"
                 % (next_gate, tool, gate))
-            return
+            return None
 
         self.ttg_map[tool] = next_gate
         self.statistics.record_endless_spool_event()
@@ -455,18 +570,59 @@ class HappyToolchanger:
                     if next_gate < len(self.gate_spool_ids) else -1)
         self._set_moonraker_spool(spool_id)
         self._save_state()
+        return plan
 
-        if hand_over:
-            run("TEMPERATURE_WAIT SENSOR=%s MINIMUM=%.1f"
-                % (new_extruder, target - self.failover_temp_tolerance))
-            run("SET_HEATER_TEMPERATURE HEATER=%s TARGET=0" % old_extruder)
+    def _wait_for_heater(self, plan):
+        """Abschnitt 2 (OHNE Mutex): warten, bis das Ersatz-Hotend heiss ist.
+
+        Klipper bleibt bedienbar. Deshalb kann sich waehrenddessen alles
+        aendern -- jede Runde neu pruefen. Ergebnis: HEAT_READY, HEAT_RESUMED
+        (jemand hat selbst fortgesetzt) oder HEAT_ABORTED.
+        """
+        if not plan['hand_over']:
+            return HEAT_READY
+        extruder = self.printer.lookup_object(plan['new_extruder'], None)
+        if extruder is None:
+            return HEAT_READY
+        heater = extruder.get_heater()
+        while True:
+            if self.printer.is_shutdown():
+                return HEAT_ABORTED
+            if not self._is_paused():
+                if self._print_state() == 'printing':
+                    return HEAT_RESUMED
+                return HEAT_ABORTED
+            now = self.reactor.monotonic()
+            temp, target = heater.get_temp(now)
+            if target <= 0.:
+                return HEAT_ABORTED
+            if temp >= target - self.failover_temp_tolerance:
+                return HEAT_READY
+            self.reactor.pause(now + 1.)
+
+    def _finish_failover(self, plan, outcome):
+        """Abschnitt 3 (unter dem Mutex): altes Hotend aus, Hook, RESUME."""
+        run = self.gcode.run_script_from_command
+        tool, next_gate = plan['tool'], plan['new_gate']
+        if outcome == HEAT_ABORTED:
+            self.gcode.respond_raw(
+                "!! HTC: Endless Spool: heating %s was aborted - T%d is on "
+                "gate %d, print is not resumed"
+                % (plan['new_extruder'], tool, next_gate))
+            return
+        if plan['hand_over']:
+            run("SET_HEATER_TEMPERATURE HEATER=%s TARGET=0"
+                % plan['old_extruder'])
+        if outcome == HEAT_RESUMED:
+            self.log("Endless Spool: print was resumed manually", level=0)
+            return
 
         # Eigener Kontext auf Basis des Standardkontexts: render(context)
         # ersetzt ihn sonst, und `printer` fehlt im Template.
         context = self.failover_template.create_template_context()
-        context.update({'tool': tool, 'old_gate': gate, 'new_gate': next_gate,
-                        'old_extruder': old_extruder,
-                        'new_extruder': new_extruder, 'temp': target})
+        context.update({k: plan[k] for k in (
+            'tool', 'old_gate', 'new_gate', 'old_extruder', 'new_extruder',
+            'temp')})
         self.failover_template.run_gcode_from_command(context)
 
         run("RESUME")
@@ -749,5 +905,9 @@ class HappyToolchanger:
             'gate_filament_names': list(self.gate_filament_names),
             'endless_spool': self.endless_spool.get_status(),
             'is_printing': self.is_printing,
+            'runout_remaining': [
+                round(self._countdowns[g]['remaining'], 1)
+                if g in self._countdowns else -1
+                for g in range(self.num_tools)],
             'statistics': self.statistics.get_data(),
         }

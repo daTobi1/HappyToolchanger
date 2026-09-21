@@ -407,6 +407,21 @@ def main():
     ok("'target'" in source_of(heaters.Heater.get_status)
        or '"target"' in source_of(heaters.Heater.get_status),
        "heaters.Heater.get_status liefert kein 'target' mehr")
+    # Heizwarten ohne Mutex: reactor.pause + Ist/Soll der Heizung
+    has_attrs(reactor_mod.SelectReactor, ["pause", "register_callback"],
+              "reactor.SelectReactor")
+    ok("return self.smoothed_temp, self.target_temp"
+       in source_of(heaters.Heater.get_temp),
+       "heaters.Heater.get_temp liefert nicht mehr (temp, target)")
+    # Restfilament abzaehlen: print_stats fuehrt filament_used mit Vorzeichen
+    from extras import print_stats as ps_mod
+    src = source_of(ps_mod.PrintStats.get_status)
+    ok("'filament_used'" in src and "'state'" in src,
+       "print_stats.get_status liefert filament_used/state nicht mehr")
+    ok("cur_epos - self.last_epos" in
+       source_of(ps_mod.PrintStats._update_filament_usage),
+       "print_stats zaehlt filament_used nicht mehr als Netto-E-Weg",
+       "sensor_runout_distance verlaesst sich darauf, dass Retracts abgezogen werden")
     # Klippers M104 loest T ueber den Index auf
     ok("'T'" in source_of(extruder_mod.PrinterExtruder.cmd_M104),
        "extruder.cmd_M104 liest T nicht mehr")

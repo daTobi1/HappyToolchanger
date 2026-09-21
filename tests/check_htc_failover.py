@@ -56,6 +56,7 @@ class FakeGcode:
         self.commands = {}
         self.scripts = []
         self.raw = []
+        self.mutex_held = False
 
     def register_command(self, name, func, desc=None):
         prev = self.commands.pop(name, None)
@@ -73,8 +74,13 @@ class FakeGcode:
     def respond_raw(self, msg):
         self.raw.append(msg)
 
+    @contextlib.contextmanager
     def get_mutex(self):
-        return contextlib.nullcontext()
+        self.mutex_held = True
+        try:
+            yield
+        finally:
+            self.mutex_held = False
 
     def create_gcode_command(self, name, line, params):
         return FakeGcmd(name, line, params)
@@ -83,17 +89,45 @@ class FakeGcode:
 class FakeReactor:
     NEVER = 9e99
 
+    def __init__(self, world):
+        self.world = world
+        self.now = 100.
+        self.timers = []
+        self.pauses = 0
+        self.paused_with_mutex = False
+
     def monotonic(self):
-        return 100.
+        return self.now
 
     def register_callback(self, callback):
-        callback(100.)
+        callback(self.now)
 
     def register_timer(self, callback, waketime):
-        return object()
+        timer = [callback, waketime]
+        self.timers.append(timer)
+        return timer
 
     def unregister_timer(self, timer):
-        pass
+        if timer in self.timers:
+            self.timers.remove(timer)
+
+    def pause(self, waketime):
+        self.pauses += 1
+        if self.world.gcode.mutex_held:
+            self.paused_with_mutex = True
+        if self.pauses > 50:
+            raise RuntimeError("Heizwarten endet nicht")
+        self.now = waketime
+        self.world.on_wait(self.pauses)
+
+    def tick(self):
+        """Eine Runde: alle faelligen Timer einmal feuern."""
+        self.now += 0.5
+        for timer in list(self.timers):
+            if timer in self.timers and timer[1] <= self.now:
+                timer[1] = timer[0](self.now)
+                if timer[1] >= self.NEVER and timer in self.timers:
+                    self.timers.remove(timer)
 
 
 class FakeTemplate:
@@ -118,9 +152,13 @@ class FakeGcodeMacro:
 class FakeHeater:
     def __init__(self, target):
         self.target = target
+        self.temp = target if target > 0. else 25.
 
     def get_status(self, eventtime):
         return {'target': self.target}
+
+    def get_temp(self, eventtime):
+        return self.temp, self.target
 
 
 class FakeExtruder:
@@ -161,9 +199,10 @@ class FakePauseResume:
 class FakePrintStats:
     def __init__(self):
         self.state = 'printing'
+        self.filament_used = 1000.
 
     def get_status(self, eventtime):
-        return {'state': self.state}
+        return {'state': self.state, 'filament_used': self.filament_used}
 
 
 class FakeSaveVariables:
@@ -190,7 +229,8 @@ class World:
         self.options.update(options or {})
         self.tool_change_fails = tool_change_fails
         self.resume_refused = resume_refused
-        self.reactor = FakeReactor()
+        self.reactor = FakeReactor(self)
+        self.wait_hook = None
         self.gcode = FakeGcode(self)
         self.template = FakeTemplate()
         self.objects = {
@@ -202,7 +242,8 @@ class World:
             'webhooks': FakeWebhooks(),
             'extruder': FakeExtruder(215.),
             'extruder1': FakeExtruder(0.),
-            'hotend_c': FakeExtruder(0.),
+            'hotend_c': FakeExtruder(0.),      # Gate 2 laut KTC
+            'extruder2': FakeExtruder(0.),     # Gate 2 ohne KTC (Namensschema)
             'extruder3': FakeExtruder(0.),
         }
         if with_ktc:
@@ -253,9 +294,20 @@ class World:
         return False
 
     # --- Maschine ---
+    def on_wait(self, count):
+        # je Sekunde Warten 80 C waermer, wie ein Hotend grob aufheizt
+        for obj in self.objects.values():
+            if isinstance(obj, FakeExtruder) and obj.heater.target > 0.:
+                obj.heater.temp = min(obj.heater.target, obj.heater.temp + 80.)
+        if self.wait_hook:
+            self.wait_hook(count)
+
     def on_script(self, script):
         pr = self.objects['pause_resume']
-        if script == 'PAUSE':
+        if script.startswith('SET_HEATER_TEMPERATURE'):
+            parts = dict(p.split('=') for p in script.split()[1:])
+            self.objects[parts['HEATER']].heater.target = float(parts['TARGET'])
+        elif script == 'PAUSE':
             pr.is_paused = True
         elif script == 'RESUME' and not self.resume_refused:
             pr.is_paused = False
@@ -294,11 +346,18 @@ def main():
         'PAUSE',
         'SET_HEATER_TEMPERATURE HEATER=hotend_c TARGET=215.0',
         'SELECT_TOOL T=2',
-        'TEMPERATURE_WAIT SENSOR=hotend_c MINIMUM=211.0',
         'SET_HEATER_TEMPERATURE HEATER=extruder TARGET=0',
         'RESUME'],
-       "Ablauf: PAUSE, Ersatz heizen, wechseln, warten, altes aus, RESUME",
+       "Ablauf: PAUSE, Ersatz heizen, wechseln, altes aus, RESUME",
        str(tool_scripts(world)))
+    ok(world.reactor.pauses >= 2,
+       "auf das Ersatz-Hotend muss gewartet werden", str(world.reactor.pauses))
+    ok(not world.reactor.paused_with_mutex,
+       "beim Heizwarten darf der GCode-Mutex nicht gehalten werden",
+       "sonst nimmt Klipper waehrenddessen keinen Befehl an")
+    ok(world.objects['hotend_c'].heater.temp >= 215. - 4.,
+       "RESUME erst, wenn das Ersatz-Hotend im Toleranzband ist",
+       str(world.objects['hotend_c'].heater.temp))
     ok(htc.ttg_map == [2, 1, 2, 3], "T0 zeigt danach auf Gate 2", str(htc.ttg_map))
     ok(htc.gate_status[0] == 0, "das leere Gate ist als leer markiert")
     ok(('spoolman_set_active_spool', {'spool_id': 13})
@@ -321,7 +380,7 @@ def main():
        "nach gescheitertem Wechsel darf kein RESUME kommen")
     ok(htc.ttg_map == [0, 1, 2, 3],
        "gescheiterter Wechsel darf die Zuordnung nicht aendern", str(htc.ttg_map))
-    ok(not any(s.startswith('TEMPERATURE_WAIT') for s in world.gcode.scripts),
+    ok(world.reactor.pauses == 0,
        "nach gescheitertem Wechsel wird nicht aufs Heizen gewartet")
     ok(len(world.gcode.raw) == 1 and world.gcode.raw[0].startswith('!!'),
        "gescheiterter Wechsel wird als Fehler gemeldet", str(world.gcode.raw))
@@ -367,6 +426,105 @@ def main():
     ok('SET_HEATER_TEMPERATURE HEATER=extruder2 TARGET=215.0' in world.gcode.scripts
        and world.gcode.scripts[-1] == 'RESUME',
        "ohne [toolchanger] gilt extruder/extruderN", str(tool_scripts(world)))
+
+    # --- waehrend des Heizens abgebrochen (CANCEL_PRINT) ---
+    world, htc = make()
+
+    def cancel(count):
+        if count == 1:
+            world.objects['pause_resume'].is_paused = False
+            world.objects['print_stats'].state = 'cancelled'
+    world.wait_hook = cancel
+    htc.handle_runout(0)
+    ok('RESUME' not in world.gcode.scripts,
+       "nach Abbruch waehrend des Heizens kein RESUME", str(tool_scripts(world)))
+    ok(len(world.gcode.raw) == 1 and 'aborted' in world.gcode.raw[0],
+       "Abbruch waehrend des Heizens wird gemeldet", str(world.gcode.raw))
+
+    # --- waehrend des Heizens Sollwert auf 0 gestellt ---
+    world, htc = make()
+
+    def heater_off(count):
+        if count == 1:
+            world.objects['hotend_c'].heater.target = 0.
+    world.wait_hook = heater_off
+    htc.handle_runout(0)
+    ok('RESUME' not in world.gcode.scripts and len(world.gcode.raw) == 1,
+       "abgeschaltetes Ersatz-Hotend: kein RESUME, Meldung",
+       str(tool_scripts(world)))
+
+    # --- waehrend des Heizens von Hand fortgesetzt ---
+    world, htc = make()
+
+    def manual_resume(count):
+        if count == 1:
+            world.objects['pause_resume'].is_paused = False
+    world.wait_hook = manual_resume
+    htc.handle_runout(0)
+    ok('RESUME' not in world.gcode.scripts
+       and 'SET_HEATER_TEMPERATURE HEATER=extruder TARGET=0' in world.gcode.scripts
+       and world.template.runs == [] and world.gcode.raw == [],
+       "von Hand fortgesetzt: altes Hotend aus, kein Hook, kein zweites RESUME",
+       str(tool_scripts(world)))
+
+    # --- Restfilament: erst verdrucken, dann handeln ---
+    world, htc = make(options={'sensor_runout_distance': '100'})
+    stats = world.objects['print_stats']
+    htc.handle_runout(0)
+    ok(tool_scripts(world) == []
+       and world.objects['pause_resume'].pause_commands == 0,
+       "mit sensor_runout_distance darf der Runout nicht sofort anhalten",
+       str(tool_scripts(world)))
+    ok(htc.gate_status[0] == 0, "das Gate ist trotzdem sofort als leer markiert")
+    ok(htc.get_status(0.)['runout_remaining'] == [100.0, -1, -1, -1],
+       "der Rest steht im Status", str(htc.get_status(0.)['runout_remaining']))
+    stats.filament_used += 60.
+    world.reactor.tick()
+    stats.filament_used -= 2.      # Retract ...
+    world.reactor.tick()
+    stats.filament_used += 2.      # ... und Un-Retract heben sich auf
+    world.reactor.tick()
+    ok(tool_scripts(world) == []
+       and htc.get_status(0.)['runout_remaining'][0] == 40.0,
+       "nach 60 mm (Retract zaehlt nicht doppelt) bleiben 40 mm",
+       str(htc.get_status(0.)['runout_remaining']))
+    htc.active_tool = 1            # der Slicer druckt gerade mit T1
+    stats.filament_used += 500.
+    world.reactor.tick()
+    ok(htc.get_status(0.)['runout_remaining'][0] == 40.0,
+       "Filament anderer Tools zaehlt nicht", str(htc.get_status(0.)))
+    htc.active_tool = 0
+    stats.state = 'paused'
+    stats.filament_used += 5.
+    world.reactor.tick()
+    stats.state = 'printing'
+    stats.filament_used += 45.
+    world.reactor.tick()
+    ok(world.objects['pause_resume'].pause_commands == 1
+       and tool_scripts(world)[:1] == ['PAUSE']
+       and tool_scripts(world)[-1:] == ['RESUME'] and htc.ttg_map[0] == 2,
+       "ist der Rest verdruckt, laeuft der Wechsel", str(tool_scripts(world)))
+    ok(world.reactor.timers == [], "der Zaehl-Timer ist wieder abgemeldet")
+
+    # Nachlegen bricht das Abzaehlen ab
+    world, htc = make(options={'sensor_runout_distance': '100'})
+    htc.handle_runout(0)
+    htc.handle_insert(0)
+    world.objects['print_stats'].filament_used += 500.
+    world.reactor.tick()
+    ok(tool_scripts(world) == [] and htc.gate_status[0] == 1
+       and world.reactor.timers == [],
+       "Filament nachgelegt: kein Wechsel, Gate wieder verfuegbar",
+       str(tool_scripts(world)))
+
+    # Druckende bricht das Abzaehlen ab
+    world, htc = make(options={'sensor_runout_distance': '100'})
+    htc.handle_runout(0)
+    world.objects['print_stats'].state = 'complete'
+    world.objects['print_stats'].filament_used += 500.
+    world.reactor.tick()
+    ok(tool_scripts(world) == [] and world.reactor.timers == [],
+       "Druck zu Ende: Abzaehlen endet ohne Aktion", str(tool_scripts(world)))
 
     # --- M104/M109 folgen der Zuordnung ---
     world = World()

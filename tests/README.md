@@ -25,7 +25,9 @@ python3 tests/check_htc_failover.py    # Endless-Spool-Wechsel + M104/M109-Umlei
 ```
 
 `check_htc_failover.py` baut `HappyToolchanger` gegen Klipper-Attrappen auf und
-prueft die Reihenfolge des Wechsels (PAUSE, Ersatz heizen, wechseln, warten,
+prueft das Abzaehlen des Restfilaments (sensor_runout_distance), dass beim
+Heizwarten der GCode-Mutex frei ist (Abbruch/Fortsetzen von Hand moeglich),
+die Reihenfolge des Wechsels (PAUSE, Ersatz heizen, wechseln, warten,
 altes Hotend aus, RESUME), dass ein gescheiterter Wechsel pausiert bleibt und
 die Tool-Gate-Zuordnung nicht anfasst, und dass `M104`/`M109 T<n>` danach das
 Ersatz-Hotend treffen. Was er **nicht** zeigt: dass KTC, die PAUSE/RESUME-Makros
