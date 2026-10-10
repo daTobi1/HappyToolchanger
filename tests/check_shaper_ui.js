@@ -90,5 +90,43 @@ check('ohne Werte nichts zu schreiben',
       shaperConfigChanges({ chip: 'x' }).length === 0 &&
       Object.keys(shaperApplyValues({}, {})).length === 0);
 
+// --- shaperState: neu / in Datei geschrieben / aktiv ----------------------
+// Nach APPLY stehen die Werte in der T<n>.cfg, der laufende Klipper kennt sie
+// aber erst nach RESTART. Die Tabelle muss das unterscheiden, sonst sieht
+// ein gelungener APPLY aus wie ein gescheiterter (350er, T5, 2026-10-10).
+eval(grab('shaperState'));
+const neu = { type_x: '3hump_ei', freq_x: 103.0, type_y: 'mzv', freq_y: 39.6 };
+const curOld = { type_x: 'ei', freq_x: 50.2, type_y: 'zv', freq_y: 38.8 };
+const fileNew = { params_input_shaper_type_x: "'3hump_ei'", params_input_shaper_freq_x: '103.0',
+                  params_input_shaper_type_y: "'mzv'", params_input_shaper_freq_y: '39.6' };
+const fileOld = { params_input_shaper_type_x: "'ei'", params_input_shaper_freq_x: '50.2',
+                  params_input_shaper_type_y: "'zv'", params_input_shaper_freq_y: '38.8' };
+check('Klipper laeuft schon mit den Werten -> aktiv',
+      shaperState(neu, { type_x: '3hump_ei', freq_x: 103, type_y: 'mzv', freq_y: 39.6 }, fileNew) === 'active');
+check('Datei hat die Werte, Klipper noch nicht -> written',
+      shaperState(neu, curOld, fileNew) === 'written');
+check('weder Datei noch Klipper -> new', shaperState(neu, curOld, fileOld) === 'new');
+check('Dateistand unbekannt -> new', shaperState(neu, curOld, null) === 'new');
+check('Dateischluessel fehlen -> new', shaperState(neu, curOld, {}) === 'new');
+check('nur X gemessen: Y wird nicht verglichen',
+      shaperState({ type_x: 'zv', freq_x: 55.0 }, curOld,
+                  { params_input_shaper_type_x: "'zv'", params_input_shaper_freq_x: '55.0' }) === 'written');
+check('ohne Messung -> none', shaperState(null, curOld, fileNew) === 'none');
+
+// --- Tabelle zeigt den Zustand ------------------------------------------
+global.escapeHtml = (x) => String(x);
+var _toolShaper = { '5': curOld }, _shaperResults = { '5': neu }, _shaperCopied = {};
+var _toolAccelChips = { '5': 'lis2dw lis2dw_T5' }, _shaperFileValues = { '5': fileNew };
+eval(grab('shaperToolHasChip') + grab('shaperChipShort') + grab('shaperAxisText') + grab('shaperResultsTable'));
+let html = shaperResultsTable([5]);
+check('geschrieben: Hinweis auf Neustart statt APPLY-Button',
+      /Neustart|RESTART/.test(html) && html.indexOf('apply-shaper-btn') < 0, html.slice(0, 300));
+_shaperFileValues = { '5': fileOld };
+html = shaperResultsTable([5]);
+check('noch nicht geschrieben: APPLY-Button da', html.indexOf('apply-shaper-btn') >= 0);
+_shaperFileValues = {};
+html = shaperResultsTable([5]);
+check('Dateistand unbekannt: APPLY-Button da', html.indexOf('apply-shaper-btn') >= 0);
+
 console.log(failed ? failed + ' Befund(e)' : 'sauber');
 process.exit(failed ? 1 : 0);

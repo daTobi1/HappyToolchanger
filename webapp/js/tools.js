@@ -34,6 +34,7 @@ let _shaperResults = {};     // { "1": {type_x, freq_x, vibr_x, ..., chip, point
 let _shaperCopied = {};      // { "0": {from: "1", type_x, ...} } -- Kopien fuer Tools ohne Accelerometer, nur im Browser
 let _toolShaper = {};        // aktuell konfigurierte params_input_shaper_* je Tool
 let _toolAccelChips = {};    // { "0": null, "1": "adxl345 adxl1345_T1" } -- Chip je Tool, null = keiner
+let _shaperFileValues = {};  // { "5": {params_input_shaper_type_x: "'mzv'", ...} } -- Stand der T<n>.cfg, fuer "geschrieben, Neustart ausstehend"
 let _shaperDefaults = null;  // [offset] shaper_x / shaper_y / shaper_height / shaper_max_smoothing
 let _resonanceTesterPresent = false; // ohne [resonance_tester] gibt es keinen Resonanztest
 let _dockResults = {};       // { "0": {params_park_x, params_park_y, params_park_z} }
@@ -2624,9 +2625,45 @@ function setInConfigSection(content, sectionName, key, value) {
   return lines.join('\n');
 }
 
+// Zustand eines Ergebnisses gegenueber Klipper und Datei:
+//   'active'  - der laufende Klipper hat die Werte schon (nach RESTART)
+//   'written' - sie stehen in der T<n>.cfg, Klipper kennt sie erst nach RESTART
+//   'new'     - noch nirgends
+//   'none'    - kein Ergebnis
+// Ohne diese Unterscheidung sah ein gelungener APPLY aus wie ein
+// gescheiterter: Klipper liefert als "aktuell" seine geladene Config, die
+// bleibt bis zum Neustart alt, und die Tabelle zeigte weiter den Pfeil
+// samt APPLY-Button (350er, T5, 2026-10-10).
+function shaperState(neu, cur, fileVals) {
+  if (!neu) return 'none';
+  var axes = ['x', 'y'].filter(function (a) { return typeof neu['freq_' + a] === 'number'; });
+  if (!axes.length) return 'none';
+  var sameType = function (a, b) {
+    return String(a || '').replace(/['"]/g, '').toLowerCase() ===
+           String(b || '').replace(/['"]/g, '').toLowerCase();
+  };
+  var sameFreq = function (a, b) {
+    var fa = parseFloat(a), fb = parseFloat(b);
+    return !Number.isNaN(fa) && !Number.isNaN(fb) && Math.abs(fa - fb) < 0.05;
+  };
+  var runtimeMatches = !!cur && axes.every(function (a) {
+    return sameFreq(neu['freq_' + a], cur['freq_' + a]) &&
+           (!neu['type_' + a] || sameType(neu['type_' + a], cur['type_' + a]));
+  });
+  if (runtimeMatches) return 'active';
+  var fileMatches = !!fileVals && axes.every(function (a) {
+    return sameFreq(neu['freq_' + a], fileVals['params_input_shaper_freq_' + a]) &&
+           (!neu['type_' + a] || sameType(neu['type_' + a], fileVals['params_input_shaper_type_' + a]));
+  });
+  return fileMatches ? 'written' : 'new';
+}
+
 // Was APPLY schreibt: gemessene Werte je Tool, Kopien nur fuer Tools, die
 // keine eigene Messung haben. Eine Kopie darf eine Messung nie ersetzen.
-function shaperApplyValues(results, copied) {
+// Mit fileValues/current werden Tools weggelassen, deren Werte schon in
+// der Datei stehen oder in Klipper aktiv sind - nichts anbieten, was
+// "103.0 -> 103.0" schreiben wuerde.
+function shaperApplyValues(results, copied, fileValues, current) {
   var out = {};
   var usable = function (v) {
     return v && (typeof v.freq_x === 'number' || typeof v.freq_y === 'number');
@@ -2637,6 +2674,12 @@ function shaperApplyValues(results, copied) {
   Object.keys(copied || {}).forEach(function (k) {
     if (!out[k] && usable(copied[k])) out[k] = copied[k];
   });
+  if (fileValues || current) {
+    Object.keys(out).forEach(function (k) {
+      var st = shaperState(out[k], (current || {})[k], (fileValues || {})[k]);
+      if (st !== 'new') delete out[k];
+    });
+  }
   return out;
 }
 
@@ -2684,18 +2727,34 @@ function shaperResultsTable(sortedTools) {
     var copy = _shaperCopied[k];
     var hasChip = shaperToolHasChip(t);
     if (!cur && !neu && !copy && hasChip) return '';
+    var state = shaperState(neu || copy, cur, _shaperFileValues[k]);
 
     var cell = function (a) {
       var c = shaperAxisText(cur, a) || '-';
       var n = shaperAxisText(neu, a);
       var cp = !neu ? shaperAxisText(copy, a) : null;
       var html = '<span class="text-secondary">' + c + '</span>';
-      if (n) html += ' &rarr; <span class="text-success">' + n + '</span>';
-      else if (cp) html += ' &rarr; <span class="text-info">' + cp + '</span>';
+      if (state === 'active') {
+        // Klipper laeuft damit - kein Pfeil, nichts mehr zu tun
+        html = '<span class="text-success">' + c + '</span>';
+      } else if (state === 'written') {
+        html += ' &rarr; <span class="text-success">' + (n || cp) +
+                ' <i class="bi bi-check-circle" title="in der Config"></i></span>';
+      } else if (n) {
+        html += ' &rarr; <span class="text-success">' + n + '</span>';
+      } else if (cp) {
+        html += ' &rarr; <span class="text-info">' + cp + '</span>';
+      }
       return '<td class="px-2 py-1 text-end text-nowrap">' + html + '</td>';
     };
 
     var info = '';
+    if (state === 'written') {
+      info = '<div class="small text-success">in T' + t + '.cfg geschrieben &ndash; ' +
+        'RESTART KLIPPER macht die Werte aktiv</div>';
+    } else if (state === 'active') {
+      info = '<div class="small text-success">aktiv</div>';
+    }
     if (neu) {
       var bits = [];
       ['x', 'y'].forEach(function (a) {
@@ -2704,13 +2763,13 @@ function shaperResultsTable(sortedTools) {
                     '% Rest, max_accel ' + (neu['max_accel_' + a] || 0));
         }
       });
-      info = '<div class="small text-secondary">' +
+      info += '<div class="small text-secondary">' +
         escapeHtml(shaperChipShort(neu.chip) || '') +
         (neu.point ? ', X' + neu.point[0] + ' Y' + neu.point[1] + ' Z' + neu.point[2] : '') +
         (bits.length ? '<br>' + bits.join('<br>') : '') +
       '</div>';
     } else if (copy) {
-      info = '<div class="small text-info">Kopie von T' + escapeHtml(copy.from) +
+      info += '<div class="small text-info">Kopie von T' + escapeHtml(copy.from) +
         ' <a href="#" class="shaper-copy-clear link-secondary" data-tool="' + t + '">verwerfen</a></div>';
     }
 
@@ -2737,14 +2796,25 @@ function shaperResultsTable(sortedTools) {
     '</tr>';
   }).join('');
 
-  var hasNew = Object.keys(shaperApplyValues(_shaperResults, _shaperCopied)).length > 0;
+  var hasNew = Object.keys(shaperApplyValues(_shaperResults, _shaperCopied,
+                                             _shaperFileValues, _toolShaper)).length > 0;
+  var written = sortedTools.filter(function (t) {
+    var k = String(t);
+    return shaperState(_shaperResults[k] || _shaperCopied[k], _toolShaper[k],
+                       _shaperFileValues[k]) === 'written';
+  });
   var applyBtn = hasNew
     ? '<div class="pt-2">' +
         '<button class="btn btn-success w-100" id="apply-shaper-btn">' +
           '<i class="bi bi-check-circle"></i> APPLY INPUT SHAPER TO CONFIG' +
         '</button>' +
       '</div>'
-    : '';
+    : (written.length
+        ? '<div class="small text-success pt-2"><i class="bi bi-check-circle"></i> ' +
+          written.map(function (t) { return 'T' + t; }).join(', ') +
+          ': Werte stehen in der Config. <b>RESTART KLIPPER</b> (unten) macht sie ' +
+          'aktiv &ndash; der Toolchanger setzt sie dann bei jedem Wechsel.</div>'
+        : '');
 
   return '<div class="border border-secondary-subtle rounded p-2 bg-dark">' +
     '<span class="fs-6 fw-bold d-block mb-1">Input Shaper je Tool</span>' +
@@ -2873,6 +2943,39 @@ function refreshShaperTable() {
   if ($c.length) $c.html(shaperResultsTable(shaperAllTools()));
 }
 
+// Liest fuer jedes Tool mit Ergebnis den Stand der T<n>.cfg, damit die
+// Tabelle "geschrieben, Neustart ausstehend" von "neu" unterscheiden kann.
+// Nur bei Aenderungen aufgerufen, nicht im 2s-Poll.
+function refreshShaperFileValues() {
+  var candidates = shaperApplyValues(_shaperResults, _shaperCopied);
+  var requests = [];
+  Object.keys(candidates).forEach(function (k) {
+    ['x', 'y'].forEach(function (a) {
+      requests.push({ tool: k, key: 'params_input_shaper_type_' + a, section: 'tool T' + k });
+      requests.push({ tool: k, key: 'params_input_shaper_freq_' + a, section: 'tool T' + k });
+    });
+  });
+  if (!requests.length) {
+    _shaperFileValues = {};
+    refreshShaperTable();
+    return Promise.resolve();
+  }
+  return fetchToolConfigValues(requests).then(function (cur) {
+    var vals = {};
+    requests.forEach(function (r) {
+      var v = cur[r.tool + '|' + r.key];
+      if (v === null || v === undefined) return;
+      if (!vals[r.tool]) vals[r.tool] = {};
+      vals[r.tool][r.key] = v;
+    });
+    _shaperFileValues = vals;
+    refreshShaperTable();
+  }).catch(function (err) {
+    OffsetDebug.error("refreshShaperFileValues failed", err);
+    refreshShaperTable();
+  });
+}
+
 // Ein Lauf ueber mehrere Tools dauert laenger als die HTTP-Anfrage lebt -
 // wie bei PID aus dem Polling nachziehen.
 function updateShaperResults(offsetStatus) {
@@ -2892,7 +2995,7 @@ function updateShaperResults(offsetStatus) {
     _toolAccelChips = chips;
     changed = true;
   }
-  if (changed) refreshShaperTable();
+  if (changed) refreshShaperFileValues();
 }
 
 function syncShaperSelectAllState() {
@@ -2923,7 +3026,7 @@ $(document).on("click", ".shaper-copy-btn", function () {
     if (v[k] !== undefined) copy[k] = v[k];
   });
   _shaperCopied[t] = copy;
-  refreshShaperTable();
+  refreshShaperFileValues();
 });
 
 $(document).on("click", ".shaper-copy-clear", function (e) {
@@ -3035,7 +3138,7 @@ $(document).on("click", "#shaper-cal-btn", function () {
       })
       .then(function () {
         $btn.prop("disabled", false).text("CALIBRATE INPUT SHAPER");
-        fetchOffsetStatus().then(refreshShaperTable);
+        fetchOffsetStatus().then(refreshShaperFileValues);
       });
   });
 });
@@ -3078,7 +3181,8 @@ function updateToolShaperValues(toolValues) {
 $(document).on("click", "#apply-shaper-btn", function () {
   var $btn = $(this);
   var btnHtml = '<i class="bi bi-check-circle"></i> APPLY INPUT SHAPER TO CONFIG';
-  var toolValues = shaperApplyValues(_shaperResults, _shaperCopied);
+  var toolValues = shaperApplyValues(_shaperResults, _shaperCopied,
+                                     _shaperFileValues, _toolShaper);
   var requests = [];
   var pending = [];
 
@@ -3129,7 +3233,10 @@ $(document).on("click", "#apply-shaper-btn", function () {
     $btn.prop("disabled", true).text("Applying...");
     updateToolShaperValues(toolValues)
       .then(function () {
-        if (typeof showToast === 'function') showToast("Input shaper values saved to config", "success");
+        if (typeof showToast === 'function') showToast("Input shaper values saved to config - RESTART KLIPPER macht sie aktiv", "success");
+        // Dateistand neu lesen: die Tabelle zeigt dann "geschrieben,
+        // Neustart ausstehend" statt weiter den Pfeil samt APPLY.
+        return refreshShaperFileValues();
       })
       .catch(function (err) {
         var detail = "";
@@ -6234,6 +6341,7 @@ function getTools() {
               shaperContent,
               false
             ));
+            refreshShaperFileValues();
 
             $acc.append(accordionSection(
               'accordion-dock',
