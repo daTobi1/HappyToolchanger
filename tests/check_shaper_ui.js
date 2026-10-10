@@ -117,7 +117,7 @@ check('ohne Messung -> none', shaperState(null, curOld, fileNew) === 'none');
 global.escapeHtml = (x) => String(x);
 var _toolShaper = { '5': curOld }, _shaperResults = { '5': neu }, _shaperCopied = {};
 var _toolAccelChips = { '5': 'lis2dw lis2dw_T5' }, _shaperFileValues = { '5': fileNew };
-var _shaperAccelChoice = {}, _shaperAccelMode = 'per_tool';
+var _shaperAccelChoice = {}, _shaperAccelMode = 'per_tool', _shaperAccelManual = null;
 eval(grab('shaperAccelDefault') + grab('shaperAccelChosen') + grab('shaperEffective') + grab('shaperEffectiveAll'));
 eval(grab('shaperToolHasChip') + grab('shaperChipShort') + grab('shaperAxisText') + grab('shaperResultsTable'));
 let html = shaperResultsTable([5]);
@@ -146,6 +146,18 @@ _shaperAccelMode = 'uniform';
 check('einheitlich: Minimum ueber alle Tools', shaperEffective('2').max_accel === 4600 && shaperEffective('1').max_accel === 4600);
 _shaperAccelMode = 'none';
 check('nicht uebernehmen: kein max_accel', shaperEffective('2').max_accel === undefined);
+_shaperAccelMode = 'manual'; _shaperAccelManual = 6000;
+check('eigener Wert: fuer alle Tools derselbe, Vorschlaege egal',
+      shaperEffective('1').max_accel === 6000 && shaperEffective('2').max_accel === 6000);
+_shaperAccelManual = null;
+check('eigener Wert leer: kein max_accel', shaperEffective('2').max_accel === undefined);
+_shaperAccelMode = 'manual'; _shaperAccelManual = 6000;
+_toolShaper = {}; _toolAccelChips = { '1': 'a', '2': 'b' }; _shaperFileValues = {};
+html = shaperResultsTable([1, 2]);
+check('eigener Wert: Eingabefeld fuer alle, keine Felder je Tool',
+      html.indexOf('shaper-accel-manual') >= 0 && html.indexOf('shaper-accel-input') < 0 &&
+      html.indexOf('value="6000"') >= 0, html.slice(-900));
+_shaperAccelMode = 'per_tool'; _shaperAccelManual = null;
 check('Shaper-Werte bleiben erhalten', shaperEffective('2').freq_x === 60);
 
 check('Config-Schluessel params_max_accel ohne Nachkommastellen',

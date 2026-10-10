@@ -286,7 +286,7 @@ ab), `tool_accel_cap` / `effective_accel` (Slicer-Wunsch gegen
 `_configure_toolhead_for_tool`, `M204`-Ueberlagerung bei `klippy:ready`,
 Sicherung der Ergebnisse je Tool. JS dazu: `shaperState`
 (neu / geschrieben / aktiv, auch fuer `max_accel`), `shaperEffective`
-(Modus je Tool / einheitlich / nicht uebernehmen).
+(Modus je Tool / einheitlich Minimum / einheitlich eigener Wert / nicht uebernehmen).
 
 ## `check_nozzle_locator_fit.py`
 
