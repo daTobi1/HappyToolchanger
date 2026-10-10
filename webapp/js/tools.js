@@ -2794,8 +2794,9 @@ function shaperResultsTable(sortedTools) {
       var n = shaperAxisText(neu, a);
       var cp = !neu ? shaperAxisText(copy, a) : null;
       var html = '<span class="text-secondary">' + c + '</span>';
-      if (state === 'active') {
-        // Klipper laeuft damit - kein Pfeil, nichts mehr zu tun
+      if (state === 'active' || (n && n === c)) {
+        // Klipper laeuft damit - kein Pfeil; ist nur max_accel neu, zeigt
+        // das die eigene Spalte
         html = '<span class="text-success">' + c + '</span>';
       } else if (state === 'written') {
         html += ' &rarr; <span class="text-success">' + (n || cp) +

@@ -161,5 +161,14 @@ check('max_accel fehlt in Datei -> new',
 check('max_accel in Klipper aktiv -> active',
       shaperState(neuA, { type_x: '3hump_ei', freq_x: 103, max_accel: 4600 }, fileA) === 'active');
 
+// Shaper schon aktiv, nur max_accel neu: kein "94.0 Hz -> 94.0 Hz"
+_toolShaper = { '0': { type_x: '3hump_ei', freq_x: 94.0, type_y: 'mzv', freq_y: 41.6 } };
+_shaperResults = { '0': { type_x: '3hump_ei', freq_x: 94.0, type_y: 'mzv', freq_y: 41.6, max_accel_x: 5900, max_accel_y: 5100 } };
+_shaperCopied = {}; _shaperAccelChoice = {}; _shaperAccelMode = 'per_tool';
+_toolAccelChips = { '0': 'lis2dw lis2dw_T0' }; _shaperFileValues = {};
+html = shaperResultsTable([0]);
+check('Shaper-Zellen ohne Pfeil, wenn Klipper die Werte schon faehrt',
+      (html.match(/&rarr;/g) || []).length === 1 && html.indexOf('shaper-accel-input') >= 0, html.slice(0, 400));
+
 console.log(failed ? failed + ' Befund(e)' : 'sauber');
 process.exit(failed ? 1 : 0);
