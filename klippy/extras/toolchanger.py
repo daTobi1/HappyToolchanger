@@ -87,6 +87,13 @@ class Toolchanger:
                                             self._handle_connect)
         self.printer.register_event_handler("klippy:shutdown",
                                             self._handle_shutdown)
+        # max_accel je Tool (params_max_accel): der letzte Wunsch des
+        # Slicers (M204) wird gemerkt und gegen den Deckel des montierten
+        # Tools verrechnet - siehe _apply_tool_limits / cmd_M204.
+        self._requested_accel = None
+        self._prev_m204 = None
+        self.printer.register_event_handler('klippy:ready',
+                                            self._handle_ready_accel_cap)
         self.gcode.register_command("INITIALIZE_TOOLCHANGER",
                                     self.cmd_INITIALIZE_TOOLCHANGER,
                                     desc=self.cmd_INITIALIZE_TOOLCHANGER_help)
@@ -585,6 +592,57 @@ class Toolchanger:
             elif not tool:
                 tpe.set_active_probe(None)
         self._apply_tool_input_shaper(tool)
+        self._apply_tool_limits(tool)
+
+    # --- max_accel je Tool ---------------------------------------------
+    # Klipper (toolhead.cmd_M204) setzt die Beschleunigung ungeklemmt, ein
+    # SET_VELOCITY_LIMIT beim Wechsel waere mit dem naechsten M204 des
+    # Slicers wieder weg. Deshalb wird M204 hier uebernommen: der Wunsch
+    # des Slicers wird gemerkt und gegen params_max_accel des montierten
+    # Tools verrechnet - beim M204 selbst und bei jedem Toolwechsel.
+    def _handle_ready_accel_cap(self):
+        # Erst bei klippy:ready: toolhead registriert M204 nach den Extras,
+        # und ein gcode_macro mit rename_existing haengt sich bei
+        # klippy:connect davor. Danach steht fest, wer der Vorgaenger ist.
+        prev = self.gcode.register_command('M204', None)
+        if prev is None:
+            return
+        self._prev_m204 = prev
+        self.gcode.register_command('M204', self.cmd_M204,
+                                    desc="Set max acceleration, capped by "
+                                         "params_max_accel of the active tool")
+
+    def cmd_M204(self, gcmd):
+        accel = gcmd.get_float('S', None, above=0.)
+        if accel is None:
+            p = gcmd.get_float('P', None, above=0.)
+            t = gcmd.get_float('T', None, above=0.)
+            if p is None or t is None:
+                return self._prev_m204(gcmd)
+            accel = min(p, t)
+        self._requested_accel = accel
+        cap = tool_accel_cap(getattr(self.active_tool, 'params', None) or {})
+        eff = effective_accel(accel, cap)
+        if eff == accel:
+            return self._prev_m204(gcmd)
+        return self._prev_m204(self.gcode.create_gcode_command(
+            'M204', 'M204 S%.1f' % eff, {'S': '%.1f' % eff}))
+
+    def _apply_tool_limits(self, tool):
+        """Deckel des Tools anwenden - und beim Wechsel auf ein Tool ohne
+        Deckel den Slicer-Wunsch wiederherstellen, damit ein starker Kopf
+        nicht mit dem Limit des vorigen weiterfaehrt."""
+        cap = tool_accel_cap(getattr(tool, 'params', None) or {}) if tool else None
+        eff = effective_accel(self._requested_accel, cap)
+        if eff is None:
+            return
+        try:
+            self.gcode.run_script_from_command(
+                "SET_VELOCITY_LIMIT ACCEL=%.1f" % eff)
+        except Exception as e:
+            self.gcode.respond_info(
+                "max_accel for %s not applied: %s"
+                % (tool.name if tool else 'no tool', e))
 
     def _apply_tool_input_shaper(self, tool):
         """Input shaper des Tools aktiv schalten (params_input_shaper_*).
@@ -871,6 +929,29 @@ def input_shaper_command_params(params):
         if damping is not None:
             out['DAMPING_RATIO_' + ax] = str(damping)
     return out
+
+
+def tool_accel_cap(params):
+    """params_max_accel eines Tools als Zahl, None = kein Deckel."""
+    value = params.get('params_max_accel')
+    if value is None:
+        return None
+    try:
+        cap = float(value)
+    except (TypeError, ValueError):
+        return None
+    return cap if cap > 0. else None
+
+
+def effective_accel(requested, cap):
+    """Was der Toolhead bekommt: der Slicer-Wunsch, hoechstens der Deckel.
+    Ohne Wunsch (noch kein M204 seit dem Start) gilt der Deckel selbst,
+    ohne Deckel der Wunsch, ohne beides nichts (None)."""
+    if requested is None:
+        return cap
+    if cap is None:
+        return requested
+    return min(requested, cap)
 
 
 def get_params_dict(config):

@@ -63,6 +63,8 @@ Every toolhead resonates differently, so shaper type and frequency live per tool
 
 Measuring: Offset UI → *Input Shaper Calibration*, or `CALIBRATE_TOOL_SHAPER TOOLS=1,2,3 AXES=x,y X=130 Y=115 HEIGHT=20`. Each tool is picked up, moved to the point and measured with its own accelerometer: `params_accel_chip` in `[tool Tn]` if set, otherwise the chip on the same MCU as the tool's extruder (or a chip named `..._T<n>`). A `[resonance_tester]` section is required by Klipper (its `accel_chip` and `probe_points` are only placeholders here). Results are kept in `.offset_shaper_results.json`; *APPLY INPUT SHAPER* writes them into `T<n>.cfg`, adding missing keys. A tool without an accelerometer can take over the values of another tool in the UI. Defaults: `[offset] shaper_x / shaper_y` (bed centre), `shaper_height` (20), `shaper_max_smoothing`.
 
+The calibration also yields the acceleration above which the chosen shaper smooths corners; the UI offers it as `params_max_accel` per tool (minimum of X and Y, editable; or one uniform minimum across all tools). The toolchanger takes over `M204`: the slicer's request is capped at the mounted tool's `params_max_accel`, at every `M204` and at every tool change. A tool without the parameter runs with the slicer's request again.
+
 ## License
 
 Based on [klipper-toolchanger-easy](https://github.com/jwellman80/klipper-toolchanger-easy) and [Eddy-NG](https://github.com/Cartographer3D/eddy-ng).

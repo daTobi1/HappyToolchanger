@@ -281,8 +281,12 @@ Python (per ast geschnitten, ohne Klipper): `shaper_params_from_tool_params`,
 `pick_accel_chip` (params_accel_chip vor MCU-Treffer vor Namenstreffer, T1
 trifft nicht T10, unbekannter Chipname liefert None statt eines stillen
 Ersatzes), `input_shaper_command_params` (nur Achsen mit Frequenz, 0 schaltet
-ab) und die Aufrufstellen: Hook in `_configure_toolhead_for_tool`,
-Sicherung der Ergebnisse je Tool.
+ab), `tool_accel_cap` / `effective_accel` (Slicer-Wunsch gegen
+`params_max_accel`) und die Aufrufstellen: Hook in
+`_configure_toolhead_for_tool`, `M204`-Ueberlagerung bei `klippy:ready`,
+Sicherung der Ergebnisse je Tool. JS dazu: `shaperState`
+(neu / geschrieben / aktiv, auch fuer `max_accel`), `shaperEffective`
+(Modus je Tool / einheitlich / nicht uebernehmen).
 
 ## `check_nozzle_locator_fit.py`
 

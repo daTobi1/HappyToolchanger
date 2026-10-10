@@ -117,6 +117,8 @@ check('ohne Messung -> none', shaperState(null, curOld, fileNew) === 'none');
 global.escapeHtml = (x) => String(x);
 var _toolShaper = { '5': curOld }, _shaperResults = { '5': neu }, _shaperCopied = {};
 var _toolAccelChips = { '5': 'lis2dw lis2dw_T5' }, _shaperFileValues = { '5': fileNew };
+var _shaperAccelChoice = {}, _shaperAccelMode = 'per_tool';
+eval(grab('shaperAccelDefault') + grab('shaperAccelChosen') + grab('shaperEffective') + grab('shaperEffectiveAll'));
 eval(grab('shaperToolHasChip') + grab('shaperChipShort') + grab('shaperAxisText') + grab('shaperResultsTable'));
 let html = shaperResultsTable([5]);
 check('geschrieben: Hinweis auf Neustart statt APPLY-Button',
@@ -127,6 +129,37 @@ check('noch nicht geschrieben: APPLY-Button da', html.indexOf('apply-shaper-btn'
 _shaperFileValues = {};
 html = shaperResultsTable([5]);
 check('Dateistand unbekannt: APPLY-Button da', html.indexOf('apply-shaper-btn') >= 0);
+
+// --- max_accel: Vorschlag, Modus, Config-Schluessel, Zustand -----------------
+check('Vorschlag = Minimum von X und Y', shaperAccelDefault({ max_accel_x: 7000, max_accel_y: 4600 }) === 4600);
+check('nur eine Achse gemessen -> deren Wert', shaperAccelDefault({ max_accel_x: 7000 }) === 7000);
+check('ohne max_accel -> null', shaperAccelDefault({ type_x: 'mzv' }) === null);
+
+_shaperResults = { '1': { type_x: 'mzv', freq_x: 50, max_accel_x: 7000, max_accel_y: 4600 },
+                   '2': { type_x: 'zv', freq_x: 60, max_accel_x: 9000, max_accel_y: 8000 } };
+_shaperCopied = {};
+_shaperAccelChoice = {}; _shaperAccelMode = 'per_tool';
+check('je Tool: eigener Vorschlag', shaperEffective('2').max_accel === 8000);
+_shaperAccelChoice = { '2': 6500 };
+check('je Tool: Eingabe des Nutzers gewinnt', shaperEffective('2').max_accel === 6500);
+_shaperAccelMode = 'uniform';
+check('einheitlich: Minimum ueber alle Tools', shaperEffective('2').max_accel === 4600 && shaperEffective('1').max_accel === 4600);
+_shaperAccelMode = 'none';
+check('nicht uebernehmen: kein max_accel', shaperEffective('2').max_accel === undefined);
+check('Shaper-Werte bleiben erhalten', shaperEffective('2').freq_x === 60);
+
+check('Config-Schluessel params_max_accel ohne Nachkommastellen',
+      JSON.stringify(shaperConfigChanges({ type_x: 'zv', freq_x: 55.0, max_accel: 6500 })[2]) ===
+      JSON.stringify({ key: 'params_max_accel', to: '6500' }));
+check('ohne max_accel kein Schluessel', shaperConfigChanges({ type_x: 'zv', freq_x: 55.0 }).length === 2);
+
+const neuA = { type_x: '3hump_ei', freq_x: 103.0, max_accel: 4600 };
+const fileA = { params_input_shaper_type_x: "'3hump_ei'", params_input_shaper_freq_x: '103.0', params_max_accel: '4600' };
+check('max_accel in Datei -> written', shaperState(neuA, curOld, fileA) === 'written');
+check('max_accel fehlt in Datei -> new',
+      shaperState(neuA, curOld, { params_input_shaper_type_x: "'3hump_ei'", params_input_shaper_freq_x: '103.0' }) === 'new');
+check('max_accel in Klipper aktiv -> active',
+      shaperState(neuA, { type_x: '3hump_ei', freq_x: 103, max_accel: 4600 }, fileA) === 'active');
 
 console.log(failed ? failed + ' Befund(e)' : 'sauber');
 process.exit(failed ? 1 : 0);

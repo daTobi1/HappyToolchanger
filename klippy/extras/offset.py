@@ -35,6 +35,15 @@ def shaper_params_from_tool_params(params):
                 out[name] = float(value)
             except (TypeError, ValueError):
                 continue
+    # Deckel fuer die Beschleunigung, gehoert zum Shaper-Ergebnis dazu
+    cap = params.get('params_max_accel')
+    if cap is not None:
+        try:
+            cap = float(cap)
+            if cap > 0.:
+                out['max_accel'] = cap
+        except (TypeError, ValueError):
+            pass
     return out
 
 

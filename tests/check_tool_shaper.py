@@ -156,6 +156,24 @@ if input_shaper_command_params:
           input_shaper_command_params(
               {'params_input_shaper_freq_x': 0}) == {'SHAPER_FREQ_X': '0'})
 
+# --- max_accel je Tool (params_max_accel) -----------------------------------
+tool_accel_cap = load_function(TC_SRC, 'tool_accel_cap', ns)
+effective_accel = load_function(TC_SRC, 'effective_accel', ns)
+if tool_accel_cap:
+    check('params_max_accel wird Zahl', tool_accel_cap({'params_max_accel': 4600}) == 4600.0)
+    check('params_max_accel als Text', tool_accel_cap({'params_max_accel': '4600'}) == 4600.0)
+    check('ohne params_max_accel -> None', tool_accel_cap({'params_park_x': 1}) is None)
+    check('0 oder negativ -> None (kein Deckel)', tool_accel_cap({'params_max_accel': 0}) is None)
+if effective_accel:
+    check('Slicer will mehr als der Kopf darf -> Deckel', effective_accel(8000, 4600) == 4600)
+    check('Slicer will weniger -> Slicer', effective_accel(3000, 4600) == 3000)
+    check('noch kein M204 -> Deckel', effective_accel(None, 4600) == 4600)
+    check('Tool ohne Deckel -> Slicer-Wunsch', effective_accel(8000, None) == 8000)
+    check('weder noch -> None (nichts setzen)', effective_accel(None, None) is None)
+if shaper_params_from_tool_params:
+    check('tool_shaper liefert max_accel mit',
+          shaper_params_from_tool_params({'params_max_accel': 4600}) == {'max_accel': 4600.0})
+
 # --- Aufrufstellen am Quelltext --------------------------------------------
 configure_src = function_source_method(TC_SRC, '_configure_toolhead_for_tool')
 check('toolchanger wendet den Shaper in _configure_toolhead_for_tool an',
@@ -163,6 +181,13 @@ check('toolchanger wendet den Shaper in _configure_toolhead_for_tool an',
       '_apply_tool_input_shaper' in configure_src)
 check('CALIBRATE_TOOL_SHAPER ist registriert',
       "register_command('CALIBRATE_TOOL_SHAPER'" in OFFSET_SRC)
+check('toolchanger setzt den Deckel in _configure_toolhead_for_tool',
+      configure_src is not None and '_apply_tool_limits' in configure_src)
+check('M204 wird bei klippy:ready uebernommen (Vorgaenger = toolhead)',
+      "register_command('M204', None)" in TC_SRC)
+m204_src = function_source_method(TC_SRC, 'cmd_M204') or ''
+check('M204-Ueberlagerung merkt sich den Slicer-Wunsch und ruft den Vorgaenger',
+      '_requested_accel' in m204_src and 'effective_accel' in m204_src)
 tune_src = function_source_method(OFFSET_SRC, '_shaper_tune_tool') or ''
 check('Ergebnisse werden je Tool gesichert (nicht erst am Ende)',
       '_save_shaper_results()' in tune_src)

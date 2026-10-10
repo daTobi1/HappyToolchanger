@@ -35,6 +35,8 @@ let _shaperCopied = {};      // { "0": {from: "1", type_x, ...} } -- Kopien fuer
 let _toolShaper = {};        // aktuell konfigurierte params_input_shaper_* je Tool
 let _toolAccelChips = {};    // { "0": null, "1": "adxl345 adxl1345_T1" } -- Chip je Tool, null = keiner
 let _shaperFileValues = {};  // { "5": {params_input_shaper_type_x: "'mzv'", ...} } -- Stand der T<n>.cfg, fuer "geschrieben, Neustart ausstehend"
+let _shaperAccelChoice = {}; // { "5": 4600 } -- vom Nutzer editierter max_accel je Tool (nur im Browser)
+let _shaperAccelMode = 'per_tool'; // 'per_tool' | 'uniform' | 'none' -- wie max_accel uebernommen wird
 let _shaperDefaults = null;  // [offset] shaper_x / shaper_y / shaper_height / shaper_max_smoothing
 let _resonanceTesterPresent = false; // ohne [resonance_tester] gibt es keinen Resonanztest
 let _dockResults = {};       // { "0": {params_park_x, params_park_y, params_park_z} }
@@ -2646,15 +2648,19 @@ function shaperState(neu, cur, fileVals) {
     var fa = parseFloat(a), fb = parseFloat(b);
     return !Number.isNaN(fa) && !Number.isNaN(fb) && Math.abs(fa - fb) < 0.05;
   };
+  var wantAccel = typeof neu.max_accel === 'number' && neu.max_accel > 0;
+  var sameAccel = function (a) {
+    return !wantAccel || (parseFloat(a) > 0 && Math.abs(parseFloat(a) - neu.max_accel) < 0.5);
+  };
   var runtimeMatches = !!cur && axes.every(function (a) {
     return sameFreq(neu['freq_' + a], cur['freq_' + a]) &&
            (!neu['type_' + a] || sameType(neu['type_' + a], cur['type_' + a]));
-  });
+  }) && sameAccel(cur.max_accel);
   if (runtimeMatches) return 'active';
   var fileMatches = !!fileVals && axes.every(function (a) {
     return sameFreq(neu['freq_' + a], fileVals['params_input_shaper_freq_' + a]) &&
            (!neu['type_' + a] || sameType(neu['type_' + a], fileVals['params_input_shaper_type_' + a]));
-  });
+  }) && sameAccel(fileVals.params_max_accel);
   return fileMatches ? 'written' : 'new';
 }
 
@@ -2697,7 +2703,60 @@ function shaperConfigChanges(v) {
     changes.push({ key: 'params_input_shaper_freq_' + a,
                    to: v['freq_' + a].toFixed(1) });
   });
+  // Deckel fuer die Beschleunigung: der Toolchanger klemmt M204 des
+  // Slicers beim montierten Tool darauf. Ganze Zahl, wie Klipper sie meldet.
+  if (v && typeof v.max_accel === 'number' && v.max_accel > 0) {
+    changes.push({ key: 'params_max_accel', to: String(Math.round(v.max_accel)) });
+  }
   return changes;
+}
+
+// Klippers Vorschlag je Achse ist die Beschleunigung, ab der der Shaper
+// die Ecken verschleift. Der Kopf faehrt immer beide Achsen - das Minimum
+// ist der Deckel.
+function shaperAccelDefault(v) {
+  var vals = ['x', 'y'].map(function (a) { return v ? v['max_accel_' + a] : null; })
+    .filter(function (x) { return typeof x === 'number' && x > 0; });
+  return vals.length ? Math.min.apply(null, vals) : null;
+}
+
+function shaperAccelChosen(k) {
+  var c = _shaperAccelChoice[k];
+  if (typeof c === 'number' && c > 0) return c;
+  return shaperAccelDefault(_shaperResults[k] || _shaperCopied[k]);
+}
+
+// Ergebnis eines Tools samt dem max_accel, der nach Modus geschrieben wird:
+//   per_tool - eigener Vorschlag (oder Eingabe des Nutzers)
+//   uniform  - Minimum ueber alle Tools mit Ergebnis, damit alle Koepfe
+//              gleich beschleunigen und sich Flaechen nicht unterscheiden
+//   none     - max_accel nicht anfassen
+function shaperEffective(k) {
+  var base = _shaperResults[k] || _shaperCopied[k];
+  if (!base) return null;
+  var out = {};
+  Object.keys(base).forEach(function (key) { out[key] = base[key]; });
+  delete out.max_accel;
+  if (_shaperAccelMode === 'per_tool') {
+    var own = shaperAccelChosen(k);
+    if (own) out.max_accel = own;
+  } else if (_shaperAccelMode === 'uniform') {
+    var all = Object.keys(_shaperResults).concat(Object.keys(_shaperCopied))
+      .map(shaperAccelChosen)
+      .filter(function (x) { return typeof x === 'number' && x > 0; });
+    if (all.length) out.max_accel = Math.min.apply(null, all);
+  }
+  return out;
+}
+
+function shaperEffectiveAll() {
+  var out = {};
+  Object.keys(_shaperResults).concat(Object.keys(_shaperCopied)).forEach(function (k) {
+    if (out[k]) return;
+    var v = shaperEffective(k);
+    if (v) out[k] = v;
+  });
+  return out;
 }
 
 function shaperAxisText(v, a) {
@@ -2727,7 +2786,8 @@ function shaperResultsTable(sortedTools) {
     var copy = _shaperCopied[k];
     var hasChip = shaperToolHasChip(t);
     if (!cur && !neu && !copy && hasChip) return '';
-    var state = shaperState(neu || copy, cur, _shaperFileValues[k]);
+    var eff = shaperEffective(k);
+    var state = shaperState(eff, cur, _shaperFileValues[k]);
 
     var cell = function (a) {
       var c = shaperAxisText(cur, a) || '-';
@@ -2790,19 +2850,55 @@ function shaperResultsTable(sortedTools) {
           : '<div class="small text-secondary">erst ein Tool messen, dann hier &uuml;bernehmen</div>');
     }
 
+    // max_accel: aktuell (Klipper) -> gewaehlt (editierbar je Tool)
+    var accelCur = (cur && typeof cur.max_accel === 'number') ? String(Math.round(cur.max_accel)) : '-';
+    var accelCell;
+    if (!eff || _shaperAccelMode === 'none') {
+      accelCell = '<span class="text-secondary">' + accelCur + '</span>';
+    } else if (state === 'active') {
+      accelCell = '<span class="text-success">' + accelCur + '</span>';
+    } else {
+      var sug = neu ? ('X ' + (neu.max_accel_x || '-') + ' / Y ' + (neu.max_accel_y || '-')) : '';
+      accelCell = '<span class="text-secondary">' + accelCur + '</span> &rarr; ' +
+        (_shaperAccelMode === 'uniform' || !neu
+          ? '<span class="text-success">' + (eff.max_accel ? Math.round(eff.max_accel) : '-') + '</span>'
+          : '<input type="number" class="form-control form-control-sm d-inline-block text-end shaper-accel-input" ' +
+              'style="width:90px;" step="100" min="100" data-tool="' + t + '" value="' +
+              (eff.max_accel ? Math.round(eff.max_accel) : '') + '" title="Vorschlag: ' + escapeHtml(sug) + '">') +
+        (sug ? '<div class="small text-secondary">' + escapeHtml(sug) + '</div>' : '');
+    }
+
     return '<tr>' +
       '<td class="px-2 py-1 fw-bold align-top">T' + t + info + copyCtl + '</td>' +
       cell('x') + cell('y') +
+      '<td class="px-2 py-1 text-end text-nowrap align-top">' + accelCell + '</td>' +
     '</tr>';
   }).join('');
 
-  var hasNew = Object.keys(shaperApplyValues(_shaperResults, _shaperCopied,
+  var effAll = shaperEffectiveAll();
+  var hasNew = Object.keys(shaperApplyValues(effAll, {},
                                              _shaperFileValues, _toolShaper)).length > 0;
   var written = sortedTools.filter(function (t) {
     var k = String(t);
-    return shaperState(_shaperResults[k] || _shaperCopied[k], _toolShaper[k],
-                       _shaperFileValues[k]) === 'written';
+    return shaperState(effAll[k], _toolShaper[k], _shaperFileValues[k]) === 'written';
   });
+  var anyAccel = Object.keys(effAll).some(function (k) { return shaperAccelDefault(_shaperResults[k]); });
+  var modeSel = anyAccel
+    ? '<div class="d-flex align-items-center gap-2 small text-secondary pt-2">' +
+        '<span>max_accel &uuml;bernehmen:</span>' +
+        '<select class="form-select form-select-sm w-auto" id="shaper-accel-mode">' +
+          '<option value="per_tool"' + (_shaperAccelMode === 'per_tool' ? ' selected' : '') + '>je Tool (eigener Deckel)</option>' +
+          '<option value="uniform"' + (_shaperAccelMode === 'uniform' ? ' selected' : '') + '>einheitlich: Minimum aller Tools</option>' +
+          '<option value="none"' + (_shaperAccelMode === 'none' ? ' selected' : '') + '>nicht &uuml;bernehmen</option>' +
+        '</select>' +
+      '</div>' +
+      '<div class="small text-secondary">' +
+        'Der Toolchanger klemmt <code>M204</code> des Slicers auf den Deckel des montierten Tools. ' +
+        'Je Tool holt aus jedem Kopf das Maximum; einheitlich laesst alle Koepfe gleich beschleunigen, ' +
+        'falls sich Flaechen verschiedener Tools sonst unterscheiden. Au&szlig;enw&auml;nde ' +
+        'druckt der Slicer ohnehin unterhalb dieser Werte.' +
+      '</div>'
+    : '';
   var applyBtn = hasNew
     ? '<div class="pt-2">' +
         '<button class="btn btn-success w-100" id="apply-shaper-btn">' +
@@ -2823,9 +2919,11 @@ function shaperResultsTable(sortedTools) {
         '<th class="px-2 py-1 text-secondary">Tool</th>' +
         '<th class="px-2 py-1 text-end text-secondary">X</th>' +
         '<th class="px-2 py-1 text-end text-secondary">Y</th>' +
+        '<th class="px-2 py-1 text-end text-secondary">max_accel</th>' +
       '</tr></thead>' +
       '<tbody>' + rows + '</tbody>' +
     '</table>' +
+    modeSel +
     applyBtn +
   '</div>';
 }
@@ -2848,6 +2946,10 @@ function shaperResonanceTesterHint(sortedTools) {
 
 function shaperCalibrationSection(toolNumbers, enabled) {
   var sortedTools = toolNumbers.slice().sort(function (a, b) { return a - b; });
+  try {
+    var m = localStorage.getItem('offset_shaper_accel_mode');
+    if (m === 'per_tool' || m === 'uniform' || m === 'none') _shaperAccelMode = m;
+  } catch (_) {}
   var ready = enabled && _resonanceTesterPresent;
   var btnClass = ready ? 'btn-primary' : 'btn-secondary';
   var disabledAttr = ready ? '' : 'disabled';
@@ -2954,6 +3056,7 @@ function refreshShaperFileValues() {
       requests.push({ tool: k, key: 'params_input_shaper_type_' + a, section: 'tool T' + k });
       requests.push({ tool: k, key: 'params_input_shaper_freq_' + a, section: 'tool T' + k });
     });
+    requests.push({ tool: k, key: 'params_max_accel', section: 'tool T' + k });
   });
   if (!requests.length) {
     _shaperFileValues = {};
@@ -3027,6 +3130,20 @@ $(document).on("click", ".shaper-copy-btn", function () {
   });
   _shaperCopied[t] = copy;
   refreshShaperFileValues();
+});
+
+$(document).on("change", ".shaper-accel-input", function () {
+  var k = String($(this).data("tool"));
+  var v = parseFloat($(this).val());
+  if (Number.isNaN(v) || v <= 0) delete _shaperAccelChoice[k];
+  else _shaperAccelChoice[k] = v;
+  refreshShaperTable();
+});
+
+$(document).on("change", "#shaper-accel-mode", function () {
+  _shaperAccelMode = String($(this).val());
+  try { localStorage.setItem('offset_shaper_accel_mode', _shaperAccelMode); } catch (_) {}
+  refreshShaperTable();
 });
 
 $(document).on("click", ".shaper-copy-clear", function (e) {
@@ -3181,7 +3298,7 @@ function updateToolShaperValues(toolValues) {
 $(document).on("click", "#apply-shaper-btn", function () {
   var $btn = $(this);
   var btnHtml = '<i class="bi bi-check-circle"></i> APPLY INPUT SHAPER TO CONFIG';
-  var toolValues = shaperApplyValues(_shaperResults, _shaperCopied,
+  var toolValues = shaperApplyValues(shaperEffectiveAll(), {},
                                      _shaperFileValues, _toolShaper);
   var requests = [];
   var pending = [];
@@ -3217,9 +3334,9 @@ $(document).on("click", "#apply-shaper-btn", function () {
 
     var note = '"Current" is read from the config file; "-" means the option ' +
       'does not exist yet and will be added. The toolchanger applies ' +
-      '<code>params_input_shaper_*</code> at every tool change - after a ' +
-      'RESTART the new values are live for every tool. No <code>SAVE_CONFIG</code>, ' +
-      'which cannot write options of an included file.';
+      '<code>params_input_shaper_*</code> and <code>params_max_accel</code> ' +
+      'at every tool change - after a RESTART the new values are live for every tool. ' +
+      'No <code>SAVE_CONFIG</code>, which cannot write options of an included file.';
 
     return confirmDialog({
       title: "Apply input shaper values?",
