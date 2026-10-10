@@ -10,6 +10,60 @@ from . import toolchanger
 from . import nozzle_locator_fit as fit
 
 
+# ─── Input shaper per tool ──────────────────────────────────────────────
+SHAPER_AXES = ('x', 'y')
+SHAPER_PARAM_KEYS = ('type', 'freq', 'damping_ratio')
+# Klipper modules that provide an accelerometer (start_internal_client)
+ACCEL_MODULES = ('adxl345', 'lis2dw', 'mpu9250', 'icm20948')
+
+
+def shaper_params_from_tool_params(params):
+    """params_input_shaper_<key>_<axis> of a tool -> {'type_x': 'mzv', ...}.
+
+    Only what is configured; a tool without shaper params yields {}."""
+    out = {}
+    for axis in SHAPER_AXES:
+        for key in SHAPER_PARAM_KEYS:
+            value = params.get('params_input_shaper_%s_%s' % (key, axis))
+            if value is None:
+                continue
+            name = '%s_%s' % (key, axis)
+            if key == 'type':
+                out[name] = str(value)
+                continue
+            try:
+                out[name] = float(value)
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def pick_accel_chip(tool_nr, tool_params, tool_mcu, chips):
+    """Which accelerometer measures this tool. chips: [(object name, mcu)].
+
+    1. params_accel_chip in [tool Tn] (full object name or chip name) -
+       an unknown name yields None, never a silently different chip.
+    2. The chip on the same MCU as the tool's extruder: the chip sits on
+       the toolboard, so that is the chip that moves with this nozzle.
+    3. A chip whose name carries T<n> (T1 does not match T10)."""
+    wanted = tool_params.get('params_accel_chip')
+    if wanted:
+        wanted = str(wanted).strip()
+        for name, _mcu in chips:
+            if name == wanted or name.split()[-1] == wanted:
+                return name
+        return None
+    if tool_mcu:
+        for name, mcu in chips:
+            if mcu and mcu == tool_mcu:
+                return name
+    rx = re.compile(r'(?:^|[^a-z0-9])t%d(?:$|[^0-9])' % tool_nr)
+    for name, _mcu in chips:
+        if rx.search(name.split()[-1].lower()):
+            return name
+    return None
+
+
 class Offset:
     def __init__(self, config):
         self.printer       = config.get_printer()
@@ -87,6 +141,18 @@ class Offset:
                                            minval=0, maxval=100)
         self.pid_tool = config.getint('pid_tool', None)
         self.pid_results = {}
+        # Per-tool input shaper. The accelerometer sits on the tool, so
+        # every tool is measured with its own chip; the result belongs to
+        # params_input_shaper_* of [tool Tn] and is applied at each change.
+        # Test point defaults to the bed centre (shaper_x/y override it),
+        # the UI offers it per run.
+        self.shaper_height = config.getfloat('shaper_height', 20.0,
+                                             minval=0.)
+        self.shaper_x = config.getfloat('shaper_x', None)
+        self.shaper_y = config.getfloat('shaper_y', None)
+        self.shaper_max_smoothing = config.getfloat('shaper_max_smoothing',
+                                                    None, minval=0.05)
+        self.shaper_results = {}
         self.dock_results = {}
         self.dock_state = None
         self._dock_saved_origin = None
@@ -187,8 +253,39 @@ class Offset:
         self.gcode.register_command('CALIBRATE_TOOL_PID',
                                     self.cmd_CALIBRATE_TOOL_PID,
                                     desc=self.cmd_CALIBRATE_TOOL_PID_help)
+        self.gcode.register_command('CALIBRATE_TOOL_SHAPER',
+                                    self.cmd_CALIBRATE_TOOL_SHAPER,
+                                    desc=self.cmd_CALIBRATE_TOOL_SHAPER_help)
 
     PID_STATE_FILE = '.offset_pid_results.json'
+    SHAPER_STATE_FILE = '.offset_shaper_results.json'
+
+    def _save_shaper_results(self):
+        """Like the PID results: a run over several tools takes minutes,
+        a RESTART (the webapp offers one) rebuilds every object, and
+        SAVE_CONFIG cannot write params_input_shaper_* into an included
+        T<n>.cfg. Without this file a finished run is simply gone."""
+        try:
+            path = self._get_state_file_path(self.SHAPER_STATE_FILE)
+            with open(path, 'w') as f:
+                json.dump(self.shaper_results, f, indent=2)
+        except Exception as e:
+            self.gcode.respond_info(
+                "Warning: could not save input shaper results: %s" % e)
+
+    def _load_shaper_results(self):
+        try:
+            path = self._get_state_file_path(self.SHAPER_STATE_FILE)
+            if os.path.exists(path):
+                with open(path, 'r') as f:
+                    self.shaper_results = json.load(f)
+                if self.shaper_results:
+                    self.gcode.respond_info(
+                        "Loaded input shaper results for %d tools from %s"
+                        % (len(self.shaper_results), os.path.basename(path)))
+        except Exception as e:
+            self.gcode.respond_info(
+                "Warning: could not load input shaper results: %s" % e)
 
     def _get_state_file_path(self, name='.offset_probe_results.json'):
         config_file = self.printer.get_start_args().get('config_file', '')
@@ -254,6 +351,7 @@ class Offset:
     def handle_connect(self):
         self._load_probe_results()
         self._load_pid_results()
+        self._load_shaper_results()
         self._load_dock_results()
         self._load_xy_results()
         if self.config_file_path:
@@ -358,6 +456,13 @@ class Offset:
                 'tool': self.pid_tool,
             },
             'tool_pid': self._current_tool_pid(),
+            'shaper_results': self.shaper_results,
+            'tool_shaper': self._current_tool_shaper(),
+            'tool_accel_chips': self._tool_accel_chips(),
+            'shaper_defaults': self._shaper_defaults(),
+            'resonance_tester_present':
+                self.printer.lookup_object('resonance_tester', None)
+                is not None,
         }
 
     def cmd_MOVE_TO_ZSWITCH(self, gcmd):
@@ -1511,6 +1616,279 @@ class Offset:
         self.gcode.respond_info(
             "T%d PID: pid_Kp=%.3f pid_Ki=%.3f pid_Kd=%.3f"
             % (tool_nr, values['pid_kp'], values['pid_ki'], values['pid_kd']))
+
+    # ------------------------------------------------------------------
+    # Input shaper per tool
+    #
+    # SHAPER_CALIBRATE measures with the chips of [resonance_tester] at its
+    # probe_points and stages the result for [input_shaper] in printer.cfg.
+    # None of that fits a toolchanger: the chip sits on the tool, the point
+    # is chosen per run, and the values belong to [tool Tn]. So the test is
+    # driven through the resonance tester's own test routine and the result
+    # is kept here for the webapp to write into T<n>.cfg.
+    # ------------------------------------------------------------------
+    def _accel_chips(self):
+        """[(object name, mcu name)] of every accelerometer Klipper loaded."""
+        chips = []
+        for module in ACCEL_MODULES:
+            try:
+                objs = self.printer.lookup_objects(module=module)
+            except Exception:
+                continue
+            for name, obj in objs:
+                if not hasattr(obj, 'start_internal_client'):
+                    continue
+                mcu_name = None
+                try:
+                    mcu = getattr(obj, 'mcu', None)
+                    if mcu is not None:
+                        mcu_name = mcu.get_name()
+                except Exception:
+                    pass
+                chips.append((name, mcu_name))
+        return chips
+
+    def _tool_mcu_name(self, tool_nr):
+        """MCU the tool's extruder stepper lives on ('EBBT1'), or None."""
+        tool = self.printer.lookup_object('tool T%d' % tool_nr, None)
+        if tool is None:
+            return None
+        extruder = getattr(tool, 'extruder', None)
+        extruder_name = getattr(tool, 'extruder_name', None)
+        if extruder is None and extruder_name:
+            extruder = self.printer.lookup_object(extruder_name, None)
+        try:
+            return extruder.extruder_stepper.stepper.get_mcu().get_name()
+        except Exception:
+            pass
+        # Fallback: the step_pin's "mcu:" prefix straight from the config
+        try:
+            configfile = self.printer.lookup_object('configfile')
+            settings = configfile.get_status(
+                self.printer.get_reactor().monotonic())['settings']
+            step_pin = settings.get(extruder_name.lower(), {}).get(
+                'step_pin', '')
+            if ':' in step_pin:
+                return step_pin.split(':')[0].strip().lstrip('!^~')
+        except Exception:
+            pass
+        return None
+
+    def _tool_accel_chip(self, tool_nr):
+        tool = self.printer.lookup_object('tool T%d' % tool_nr, None)
+        params = (getattr(tool, 'params', None) or {}) if tool else {}
+        return pick_accel_chip(tool_nr, params, self._tool_mcu_name(tool_nr),
+                               self._accel_chips())
+
+    def _tool_accel_chips(self):
+        out = {}
+        for tn in self.toolchanger.tool_numbers:
+            try:
+                out[str(tn)] = self._tool_accel_chip(tn)
+            except Exception:
+                out[str(tn)] = None
+        return out
+
+    def _current_tool_shaper(self):
+        """params_input_shaper_* as configured per tool, for current vs new."""
+        out = {}
+        for tn in self.toolchanger.tool_numbers:
+            tool = self.printer.lookup_object('tool T%d' % tn, None)
+            if tool is None:
+                continue
+            p = shaper_params_from_tool_params(
+                getattr(tool, 'params', None) or {})
+            if p:
+                out[str(tn)] = p
+        return out
+
+    def _shaper_defaults(self):
+        x, y = self.shaper_x, self.shaper_y
+        if x is None or y is None:
+            try:
+                toolhead = self.printer.lookup_object('toolhead')
+                st = toolhead.get_status(
+                    self.printer.get_reactor().monotonic())
+                axmin, axmax = st['axis_minimum'], st['axis_maximum']
+                if x is None:
+                    x = (max(0., axmin[0]) + axmax[0]) / 2.
+                if y is None:
+                    y = (max(0., axmin[1]) + axmax[1]) / 2.
+            except Exception:
+                pass
+        return {'x': x, 'y': y, 'height': self.shaper_height,
+                'max_smoothing': self.shaper_max_smoothing}
+
+    cmd_CALIBRATE_TOOL_SHAPER_help = (
+        "Input shaper calibration per tool: each tool is picked up, moved "
+        "to X/Y at HEIGHT and its own accelerometer measures the "
+        "resonances (AXES=x,y). TOOLS=1,2,3 several in sequence, TOOL=<n> "
+        "one. Needs a [resonance_tester] section; the chip comes from "
+        "params_accel_chip of [tool Tn] or the chip on the tool's MCU. "
+        "Results are kept for the webapp - persist them with APPLY INPUT "
+        "SHAPER, they belong to params_input_shaper_* in T<n>.cfg. "
+        "RETURN=0 keeps the last tool mounted.")
+
+    def cmd_CALIBRATE_TOOL_SHAPER(self, gcmd):
+        if not self.is_homed():
+            raise gcmd.error("Must home first")
+        rt = self.printer.lookup_object('resonance_tester', None)
+        if rt is None:
+            raise gcmd.error(
+                "No [resonance_tester] section - add one to printer.cfg "
+                "(accel_chip + probe_points); the chip per tool is chosen "
+                "here, the point per run")
+
+        available = sorted(self.toolchanger.tool_numbers)
+        tools_param = gcmd.get('TOOLS', None)
+        if tools_param is not None:
+            try:
+                tools = [int(x.strip()) for x in tools_param.split(',')
+                         if x.strip()]
+            except ValueError:
+                raise gcmd.error(
+                    "TOOLS must be comma-separated integers, e.g. TOOLS=1,2")
+        else:
+            single = gcmd.get_int('TOOL', None)
+            tools = [single if single is not None
+                     else self._active_tool_number(gcmd)]
+        for tn in tools:
+            if tn not in available:
+                raise gcmd.error("Tool T%d not configured" % tn)
+        if not tools:
+            raise gcmd.error("No tools selected")
+
+        axes = [a.strip() for a in gcmd.get('AXES', 'x,y').lower().split(',')
+                if a.strip()]
+        for a in axes:
+            if a not in SHAPER_AXES:
+                raise gcmd.error("AXES must be x, y or x,y")
+        if not axes:
+            raise gcmd.error("No axes selected")
+
+        d = self._shaper_defaults()
+        x = gcmd.get_float('X', d['x'])
+        y = gcmd.get_float('Y', d['y'])
+        if x is None or y is None:
+            raise gcmd.error("Pass X= and Y= (no bed centre known)")
+        height = gcmd.get_float('HEIGHT', self.shaper_height, minval=0.)
+        max_smoothing = gcmd.get_float('MAX_SMOOTHING',
+                                       self.shaper_max_smoothing, minval=0.05)
+
+        # Resolve every chip before anything moves: a tool without an
+        # accelerometer should fail the run up front, not after the first
+        # tools were already measured.
+        chips = {}
+        for tn in tools:
+            chip = self._tool_accel_chip(tn)
+            if chip is None:
+                raise gcmd.error(
+                    "T%d has no accelerometer - set params_accel_chip in "
+                    "[tool T%d] or put a chip on the tool's MCU" % (tn, tn))
+            chips[tn] = chip
+
+        self.gcode.respond_info(
+            "=== Input shaper: %s at X%.1f Y%.1f Z%.1f, axes %s ==="
+            % (", ".join("T%d" % t for t in tools), x, y, height,
+               ",".join(axes)))
+
+        for tn in tools:
+            self._shaper_tune_tool(tn, chips[tn], axes, (x, y, height),
+                                   max_smoothing, rt, gcmd)
+
+        self.gcode.respond_info(
+            "=== Input shaper calibration complete === Persist with APPLY "
+            "INPUT SHAPER in the webapp: the values belong to "
+            "params_input_shaper_* in T<n>.cfg, SAVE_CONFIG cannot write "
+            "them. The mounted tool runs with its new values until the "
+            "next tool change.")
+        self._return_to_ref_tool(self.last_ref_tool, gcmd)
+
+    def _stop_crash_detection(self):
+        # Only where the probe macros exist - a foreign config may not
+        # have them, and a missing command would abort the run.
+        handlers = getattr(self.gcode, 'ready_gcode_handlers', {})
+        if 'STOP_TOOL_PROBE_CRASH_DETECTION' in handlers:
+            self.gcode.run_script_from_command(
+                "STOP_TOOL_PROBE_CRASH_DETECTION")
+
+    def _shaper_tune_tool(self, tool_nr, chip_name, axes, point,
+                          max_smoothing, rt, gcmd):
+        from . import resonance_tester, shaper_calibrate
+        chip = self.printer.lookup_object(chip_name)
+        x, y, z = point
+
+        if self._active_tool_number(gcmd) != tool_nr:
+            self.gcode.run_script_from_command(
+                "SELECT_TOOL T=%d RESTORE_AXIS=XYZ" % tool_nr)
+        self._stop_crash_detection()
+
+        toolhead = self.printer.lookup_object('toolhead')
+        self._move_z(max(z, self.probe_offset_z_hop))
+        self.gcode_move.cmd_G1(
+            self.gcode.create_gcode_command(
+                "G0", "G0",
+                {'X': x, 'Y': y,
+                 'F': self.probe_offset_travel_speed * 60}))
+        toolhead.wait_moves()
+
+        self.gcode.respond_info("--- T%d (%s) ---" % (tool_nr, chip_name))
+
+        helper = shaper_calibrate.ShaperCalibrate(self.printer)
+        test_axes = [resonance_tester.TestAxis(a) for a in axes]
+        name_suffix = time.strftime("%Y%m%d_%H%M%S") + "_T%d" % tool_nr
+        # The resonance tester's own routine: moves to the point, runs the
+        # sweep per axis with exactly this chip, restores velocity limits
+        # and re-enables the shaper afterwards.
+        calibration_data = rt._run_test(
+            gcmd, test_axes, helper, name_suffix,
+            accel_chips=[chip], test_point=(x, y, z))
+
+        input_shaper = self.printer.lookup_object('input_shaper', None)
+        systime = self.printer.get_reactor().monotonic()
+        scv = toolhead.get_status(systime)['square_corner_velocity']
+        max_freq = rt._get_max_calibration_freq()
+
+        # Merge per axis: a run over X alone keeps the previous Y result
+        result = dict(self.shaper_results.get(str(tool_nr), {}))
+        result.update({'chip': chip_name, 'point': [x, y, z],
+                       'max_smoothing': max_smoothing,
+                       'time': time.strftime("%Y-%m-%d %H:%M")})
+        summary = []
+        for axis in test_axes:
+            an = axis.get_name()
+            self.gcode.respond_info(
+                "Calculating the best input shaper parameters for %s axis"
+                % an)
+            calibration_data[axis].normalize_to_frequencies()
+            best, all_shapers = helper.find_best_shaper(
+                calibration_data[axis], max_smoothing=max_smoothing,
+                scv=scv, max_freq=max_freq, logger=self.gcode.respond_info)
+            result['type_' + an] = best.name
+            result['freq_' + an] = round(best.freq, 1)
+            result['vibr_' + an] = round(best.vibrs * 100., 1)
+            result['smoothing_' + an] = round(best.smoothing, 3)
+            result['max_accel_' + an] = round(best.max_accel / 100.) * 100.
+            summary.append("%s %s %.1f Hz" % (an.upper(), best.name,
+                                               best.freq))
+            if input_shaper is not None:
+                helper.apply_params(input_shaper, an, best.name, best.freq)
+            try:
+                csv_name = rt.save_calibration_data(
+                    'calibration_data', name_suffix, helper, axis,
+                    calibration_data[axis], all_shapers, max_freq=max_freq)
+                self.gcode.respond_info(
+                    "Shaper calibration data written to %s file" % csv_name)
+            except Exception as e:
+                self.gcode.respond_info(
+                    "Calibration data not written: %s" % e)
+
+        self.shaper_results[str(tool_nr)] = result
+        # After every tool, not at the end - an abort must not take the
+        # tools already measured with it.
+        self._save_shaper_results()
+        self.gcode.respond_info(
+            "T%d input shaper: %s" % (tool_nr, " / ".join(summary)))
 
     # ------------------------------------------------------------------
     # Dock calibration

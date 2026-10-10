@@ -30,6 +30,12 @@ let _eddyTapDeviations = {};   // { "0": { deviation: 0.01, probe: "..." } } —
 let _pidResults = {};        // { "0": {pid_kp, pid_ki, pid_kd, temp, height, fan} }
 let _pidDefaults = null;     // [offset] pid_temp / pid_height / pid_fan_speed / pid_tool
 let _toolPid = {};           // aktuell in Klipper aktive PID-Werte je Tool
+let _shaperResults = {};     // { "1": {type_x, freq_x, vibr_x, ..., chip, point} } aus CALIBRATE_TOOL_SHAPER
+let _shaperCopied = {};      // { "0": {from: "1", type_x, ...} } -- Kopien fuer Tools ohne Accelerometer, nur im Browser
+let _toolShaper = {};        // aktuell konfigurierte params_input_shaper_* je Tool
+let _toolAccelChips = {};    // { "0": null, "1": "adxl345 adxl1345_T1" } -- Chip je Tool, null = keiner
+let _shaperDefaults = null;  // [offset] shaper_x / shaper_y / shaper_height / shaper_max_smoothing
+let _resonanceTesterPresent = false; // ohne [resonance_tester] gibt es keinen Resonanztest
 let _dockResults = {};       // { "0": {params_park_x, params_park_y, params_park_z} }
 let _dockDefaults = null;    // [offset] dock_*
 let _toolParkPositions = {}; // aktuell konfigurierte Dock-Positionen je Tool
@@ -744,7 +750,11 @@ function replaceInConfigSection(content, sectionName, key, value) {
   // Klipper normalisiert Optionsnamen (ConfigParser), die Configs hier
   // nicht: T0 schreibt pid_Kp, die uebrigen pid_kp. Case-sensitiv wuerde
   // das fuer einen Teil der Tools still nichts tun.
-  var keyRx = new RegExp('^(\s*' + key + '\s*[:=]\s*).*$', 'i');
+  // '\\s', nicht '\s': in einem JS-String ist '\s' nur ein 's'. Mit dem
+  // alten Muster verlor jede Uebernahme das Leerzeichen hinter dem
+  // Doppelpunkt (Klipper liest "key:wert" trotzdem, deshalb fiel es nie
+  // auf), und eingerueckte Schluessel wurden gar nicht gefunden.
+  var keyRx = new RegExp('^(\\s*' + key + '\\s*[:=]\\s*).*$', 'i');
   var inSection = false;
 
   for (var i = 0; i < lines.length; i++) {
@@ -790,7 +800,7 @@ function readConfigValue(content, sectionName, key) {
   var sectionRx = sectionName
     ? new RegExp('^\\s*\\[\\s*' + sectionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\]')
     : null;
-  var keyRx = new RegExp('^\s*' + key + '\s*[:=]\s*([^#]*)', 'i');
+  var keyRx = new RegExp('^\\s*' + key + '\\s*[:=]\\s*([^#]*)', 'i');
   var inSection = !sectionRx;
 
   for (var i = 0; i < lines.length; i++) {
@@ -1195,6 +1205,11 @@ function fetchOffsetStatus() {
       _pidResults = (st?.pid_results || {});
       _pidDefaults = (st?.pid_defaults || null);
       _toolPid = (st?.tool_pid || {});
+      _shaperResults = (st?.shaper_results || {});
+      _toolShaper = (st?.tool_shaper || {});
+      _toolAccelChips = (st?.tool_accel_chips || {});
+      _shaperDefaults = (st?.shaper_defaults || null);
+      _resonanceTesterPresent = !!(st?.resonance_tester_present);
       _dockResults = (st?.dock_results || {});
       _dockDefaults = (st?.dock_defaults || null);
       _toolParkPositions = (st?.tool_park_positions || {});
@@ -1234,6 +1249,10 @@ function fetchOffsetStatus() {
       _zSwitchResults = {};
       _pidResults = {};
       _toolPid = {};
+      _shaperResults = {};
+      _toolShaper = {};
+      _toolAccelChips = {};
+      _resonanceTesterPresent = false;
       _dockResults = {};
       _toolParkPositions = {};
       _xyResults = {};
@@ -1291,6 +1310,7 @@ function updateAllProbeResults() {
   return getOffsetSnapshot().then(function(offsetStatus) {
     var probeResults = offsetStatus.probe_results || {};
     updatePidResults(offsetStatus);
+    updateShaperResults(offsetStatus);
     updateDockResults(offsetStatus);
     updateXyResults(offsetStatus);
     pollXySparkline();
@@ -2545,6 +2565,580 @@ $(document).on("click", "#pid-cal-btn", function () {
             $c.html(pidResultsTable(tools));
           }
         });
+      });
+  });
+});
+
+// --------------------------
+// Input Shaper Calibration
+//
+// Jeder Kopf schwingt anders, deshalb stehen Shaper-Typ und -Frequenz je
+// [tool Tn] (params_input_shaper_*) und werden beim Toolwechsel vom
+// Toolchanger-Modul gesetzt. Gemessen wird mit dem Accelerometer des
+// jeweiligen Tools; ein Tool ohne Chip (T0 auf beiden Druckern) kann die
+// Werte eines anderen Tools uebernehmen.
+// --------------------------
+function shaperDefault(key, fallback) {
+  var v = _shaperDefaults ? _shaperDefaults[key] : null;
+  return (typeof v === 'number') ? v : fallback;
+}
+
+function shaperChipShort(name) {
+  if (!name) return null;
+  var parts = String(name).split(' ');
+  return parts[parts.length - 1];
+}
+
+function shaperToolHasChip(t) {
+  return !!_toolAccelChips[String(t)];
+}
+
+// Wie replaceInConfigSection, legt den Schluessel aber an, wenn er in der
+// Sektion fehlt: hinter dem letzten Eintrag der Sektion. Fremde Configs
+// haben params_input_shaper_* nicht - abbrechen hiesse, das Feature gaebe
+// es dort nicht. null nur, wenn die Sektion selbst fehlt.
+function setInConfigSection(content, sectionName, key, value) {
+  var replaced = replaceInConfigSection(content, sectionName, key, value);
+  if (replaced !== null) return replaced;
+  var lines = content.split('\n');
+  var escName = sectionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  var sectionRx = new RegExp('^\\s*\\[\\s*' + escName + '\\s*\\]');
+  var anySectionRx = /^\s*\[[^\]]+\]/;
+  var inSection = false;
+  var lastEntry = -1;
+  for (var i = 0; i < lines.length; i++) {
+    if (anySectionRx.test(lines[i])) {
+      if (inSection) break;
+      inSection = sectionRx.test(lines[i]);
+      if (inSection) lastEntry = i;
+      continue;
+    }
+    if (!inSection) continue;
+    // Eintraege und eingerueckte Fortsetzungen zaehlen, Leerzeilen und
+    // Kommentare nicht - sonst landet der neue Schluessel hinter einem
+    // Kommentarblock, der zur naechsten Sektion gehoert.
+    if (/^\s*[^#;\s]/.test(lines[i])) lastEntry = i;
+  }
+  if (lastEntry < 0) return null;
+  lines.splice(lastEntry + 1, 0, key + ': ' + value);
+  return lines.join('\n');
+}
+
+// Was APPLY schreibt: gemessene Werte je Tool, Kopien nur fuer Tools, die
+// keine eigene Messung haben. Eine Kopie darf eine Messung nie ersetzen.
+function shaperApplyValues(results, copied) {
+  var out = {};
+  var usable = function (v) {
+    return v && (typeof v.freq_x === 'number' || typeof v.freq_y === 'number');
+  };
+  Object.keys(results || {}).forEach(function (k) {
+    if (usable(results[k])) out[k] = results[k];
+  });
+  Object.keys(copied || {}).forEach(function (k) {
+    if (!out[k] && usable(copied[k])) out[k] = copied[k];
+  });
+  return out;
+}
+
+// Config-Schluessel fuer ein Ergebnis: nur die gemessenen Achsen. Der Typ
+// steht in der Config in Anfuehrungszeichen (ast.literal_eval im
+// Toolchanger), die Frequenz mit einer Nachkommastelle wie bei Klipper.
+function shaperConfigChanges(v) {
+  var changes = [];
+  ['x', 'y'].forEach(function (a) {
+    if (!v || typeof v['freq_' + a] !== 'number') return;
+    if (v['type_' + a]) {
+      changes.push({ key: 'params_input_shaper_type_' + a,
+                     to: "'" + v['type_' + a] + "'" });
+    }
+    changes.push({ key: 'params_input_shaper_freq_' + a,
+                   to: v['freq_' + a].toFixed(1) });
+  });
+  return changes;
+}
+
+function shaperAxisText(v, a) {
+  if (!v || typeof v['freq_' + a] !== 'number') return null;
+  return (v['type_' + a] ? escapeHtml(v['type_' + a]) + ' ' : '') +
+         v['freq_' + a].toFixed(1) + ' Hz';
+}
+
+function shaperResultsTable(sortedTools) {
+  var hasAny = sortedTools.some(function (t) {
+    var k = String(t);
+    return _toolShaper[k] || _shaperResults[k] || _shaperCopied[k] || !shaperToolHasChip(t);
+  });
+  if (!hasAny) return '';
+
+  // Quellen fuer "Werte von T<x> uebernehmen": Tools mit Messung oder
+  // mit konfigurierten Werten
+  var sources = sortedTools.filter(function (t) {
+    var k = String(t);
+    return _shaperResults[k] || _toolShaper[k];
+  });
+
+  var rows = sortedTools.map(function (t) {
+    var k = String(t);
+    var cur = _toolShaper[k];
+    var neu = _shaperResults[k];
+    var copy = _shaperCopied[k];
+    var hasChip = shaperToolHasChip(t);
+    if (!cur && !neu && !copy && hasChip) return '';
+
+    var cell = function (a) {
+      var c = shaperAxisText(cur, a) || '-';
+      var n = shaperAxisText(neu, a);
+      var cp = !neu ? shaperAxisText(copy, a) : null;
+      var html = '<span class="text-secondary">' + c + '</span>';
+      if (n) html += ' &rarr; <span class="text-success">' + n + '</span>';
+      else if (cp) html += ' &rarr; <span class="text-info">' + cp + '</span>';
+      return '<td class="px-2 py-1 text-end text-nowrap">' + html + '</td>';
+    };
+
+    var info = '';
+    if (neu) {
+      var bits = [];
+      ['x', 'y'].forEach(function (a) {
+        if (typeof neu['vibr_' + a] === 'number') {
+          bits.push(a.toUpperCase() + ': ' + neu['vibr_' + a].toFixed(1) +
+                    '% Rest, max_accel ' + (neu['max_accel_' + a] || 0));
+        }
+      });
+      info = '<div class="small text-secondary">' +
+        escapeHtml(shaperChipShort(neu.chip) || '') +
+        (neu.point ? ', X' + neu.point[0] + ' Y' + neu.point[1] + ' Z' + neu.point[2] : '') +
+        (bits.length ? '<br>' + bits.join('<br>') : '') +
+      '</div>';
+    } else if (copy) {
+      info = '<div class="small text-info">Kopie von T' + escapeHtml(copy.from) +
+        ' <a href="#" class="shaper-copy-clear link-secondary" data-tool="' + t + '">verwerfen</a></div>';
+    }
+
+    var copyCtl = '';
+    if (!hasChip) {
+      var opts = sources.filter(function (s) { return s !== t; }).map(function (s) {
+        return '<option value="' + s + '">T' + s + '</option>';
+      }).join('');
+      copyCtl = '<div class="small text-warning">kein Accelerometer</div>' +
+        (opts
+          ? '<div class="input-group input-group-sm mt-1" style="max-width:220px;">' +
+              '<span class="input-group-text">Werte von</span>' +
+              '<select class="form-select form-select-sm shaper-copy-src" data-tool="' + t + '">' + opts + '</select>' +
+              '<button class="btn btn-outline-info shaper-copy-btn" type="button" data-tool="' + t + '" ' +
+                'title="Werte des gewaehlten Tools fuer T' + t + ' uebernehmen">' +
+                '&uuml;bernehmen</button>' +
+            '</div>'
+          : '<div class="small text-secondary">erst ein Tool messen, dann hier &uuml;bernehmen</div>');
+    }
+
+    return '<tr>' +
+      '<td class="px-2 py-1 fw-bold align-top">T' + t + info + copyCtl + '</td>' +
+      cell('x') + cell('y') +
+    '</tr>';
+  }).join('');
+
+  var hasNew = Object.keys(shaperApplyValues(_shaperResults, _shaperCopied)).length > 0;
+  var applyBtn = hasNew
+    ? '<div class="pt-2">' +
+        '<button class="btn btn-success w-100" id="apply-shaper-btn">' +
+          '<i class="bi bi-check-circle"></i> APPLY INPUT SHAPER TO CONFIG' +
+        '</button>' +
+      '</div>'
+    : '';
+
+  return '<div class="border border-secondary-subtle rounded p-2 bg-dark">' +
+    '<span class="fs-6 fw-bold d-block mb-1">Input Shaper je Tool</span>' +
+    '<table class="table table-sm table-borderless mb-0" style="font-size:0.85rem;">' +
+      '<thead><tr>' +
+        '<th class="px-2 py-1 text-secondary">Tool</th>' +
+        '<th class="px-2 py-1 text-end text-secondary">X</th>' +
+        '<th class="px-2 py-1 text-end text-secondary">Y</th>' +
+      '</tr></thead>' +
+      '<tbody>' + rows + '</tbody>' +
+    '</table>' +
+    applyBtn +
+  '</div>';
+}
+
+function shaperResonanceTesterHint(sortedTools) {
+  var chip = null;
+  sortedTools.forEach(function (t) { if (!chip) chip = _toolAccelChips[String(t)]; });
+  var snippet = '[resonance_tester]\n' +
+    'accel_chip: ' + (chip || 'adxl345') + '\n' +
+    'probe_points: ' + shaperDefault('x', 100).toFixed(0) + ', ' +
+      shaperDefault('y', 100).toFixed(0) + ', ' + shaperDefault('height', 20).toFixed(0);
+  return '<div class="alert alert-warning py-2 px-3 small mb-2">' +
+    '<i class="bi bi-exclamation-triangle"></i> <strong>Kein <code>[resonance_tester]</code> in der Config.</strong> ' +
+    'Ohne diese Sektion gibt es in Klipper keinen Resonanztest. Einmal in die printer.cfg, ' +
+    'danach Klipper neu starten - Chip und Messpunkt werden hier je Lauf gewaehlt, ' +
+    'die Eintraege in der Sektion sind nur Pflichtfelder:' +
+    '<pre class="mb-0 mt-1" style="font-size:0.8rem;">' + escapeHtml(snippet) + '</pre>' +
+  '</div>';
+}
+
+function shaperCalibrationSection(toolNumbers, enabled) {
+  var sortedTools = toolNumbers.slice().sort(function (a, b) { return a - b; });
+  var ready = enabled && _resonanceTesterPresent;
+  var btnClass = ready ? 'btn-primary' : 'btn-secondary';
+  var disabledAttr = ready ? '' : 'disabled';
+
+  var toolsMarkup = sortedTools.map(function (t) {
+    var hasChip = shaperToolHasChip(t);
+    var chip = shaperChipShort(_toolAccelChips[String(t)]);
+    return '<div class="form-check form-check-inline me-3 mb-1" title="' +
+        (hasChip ? escapeHtml(chip) : 'kein Accelerometer - Werte unten von einem anderen Tool uebernehmen') + '">' +
+      '<input class="form-check-input shaper-tool-checkbox" type="checkbox" ' +
+        'id="shaper-tool-' + t + '" value="' + t + '"' +
+        (hasChip ? ' checked' : ' disabled') + '>' +
+      '<label class="form-check-label' + (hasChip ? '' : ' text-secondary') + '" for="shaper-tool-' + t + '">T' + t +
+        (hasChip ? '' : ' <i class="bi bi-slash-circle"></i>') + '</label>' +
+    '</div>';
+  }).join('');
+
+  var num = function (id, value, min, max, step, unit, placeholder) {
+    return '<div class="input-group input-group-sm">' +
+      '<input type="number" id="' + id + '" class="form-control form-control-sm" ' +
+        'min="' + min + '" max="' + max + '" step="' + step + '" value="' +
+        (value === null || value === undefined ? '' : value) + '"' +
+        (placeholder ? ' placeholder="' + placeholder + '"' : '') + '>' +
+      '<span class="input-group-text">' + unit + '</span>' +
+    '</div>';
+  };
+
+  var smoothing = shaperDefault('max_smoothing', null);
+
+  return '<div class="container p-0">' +
+    (enabled && !_resonanceTesterPresent ? shaperResonanceTesterHint(sortedTools) : '') +
+    '<div class="border border-secondary-subtle rounded p-2 bg-dark mb-2">' +
+      '<div class="row g-2">' +
+        '<div class="col-12">' +
+          '<div class="d-flex justify-content-between align-items-center mb-1">' +
+            '<span class="small text-secondary">Tools to measure</span>' +
+            '<div class="form-check mb-0">' +
+              '<input class="form-check-input" type="checkbox" id="shaper-select-all" checked>' +
+              '<label class="form-check-label" for="shaper-select-all">' +
+                '<small class="text-secondary">Select all</small></label>' +
+            '</div>' +
+          '</div>' +
+          '<div>' + toolsMarkup + '</div>' +
+        '</div>' +
+        '<div class="col-12">' +
+          '<span class="small text-secondary me-3">Axes</span>' +
+          '<div class="form-check form-check-inline">' +
+            '<input class="form-check-input shaper-axis-checkbox" type="checkbox" id="shaper-axis-x" value="x" checked>' +
+            '<label class="form-check-label" for="shaper-axis-x">X</label></div>' +
+          '<div class="form-check form-check-inline">' +
+            '<input class="form-check-input shaper-axis-checkbox" type="checkbox" id="shaper-axis-y" value="y" checked>' +
+            '<label class="form-check-label" for="shaper-axis-y">Y</label></div>' +
+        '</div>' +
+        '<div class="col-4">' +
+          '<label class="form-label small text-secondary mb-1">Point X</label>' +
+          num('shaper-x', shaperDefault('x', 100).toFixed(1), 0, 2000, 1, 'mm') +
+        '</div>' +
+        '<div class="col-4">' +
+          '<label class="form-label small text-secondary mb-1">Point Y</label>' +
+          num('shaper-y', shaperDefault('y', 100).toFixed(1), 0, 2000, 1, 'mm') +
+        '</div>' +
+        '<div class="col-4">' +
+          '<label class="form-label small text-secondary mb-1">Height</label>' +
+          num('shaper-height', shaperDefault('height', 20), 0, 500, 1, 'mm') +
+        '</div>' +
+        '<div class="col-6">' +
+          '<label class="form-label small text-secondary mb-1">Max smoothing</label>' +
+          num('shaper-smoothing', smoothing, 0.05, 1, 0.01, '', 'Klipper default') +
+        '</div>' +
+      '</div>' +
+      '<div class="small text-secondary mt-2">' +
+        'Jedes Tool wird aufgenommen, zum Punkt gefahren und mit seinem eigenen ' +
+        'Accelerometer vermessen. Vorschlag: Bettmitte, 20 mm hoch - ' +
+        'woanders messen, wenn der Druck meist an einer anderen Stelle liegt. ' +
+        'Vorgaben aus <code>[offset] shaper_x / shaper_y / shaper_height / shaper_max_smoothing</code>.' +
+      '</div>' +
+    '</div>' +
+    '<button class="btn ' + btnClass + ' w-100 mb-2" id="shaper-cal-btn" ' + disabledAttr + '>' +
+      'CALIBRATE INPUT SHAPER' +
+    '</button>' +
+    '<div id="shaper-results-container">' + shaperResultsTable(sortedTools) + '</div>' +
+  '</div>';
+}
+
+function shaperAllTools() {
+  var tools = Object.keys(_toolAccelChips).map(Number);
+  if (!tools.length) tools = Object.keys(_toolShaper).map(Number);
+  return tools.sort(function (a, b) { return a - b; });
+}
+
+function refreshShaperTable() {
+  var $c = $('#shaper-results-container');
+  if ($c.length) $c.html(shaperResultsTable(shaperAllTools()));
+}
+
+// Ein Lauf ueber mehrere Tools dauert laenger als die HTTP-Anfrage lebt -
+// wie bei PID aus dem Polling nachziehen.
+function updateShaperResults(offsetStatus) {
+  var changed = false;
+  var res = offsetStatus.shaper_results || {};
+  if (JSON.stringify(res) !== JSON.stringify(_shaperResults)) {
+    _shaperResults = res;
+    changed = true;
+  }
+  var cur = offsetStatus.tool_shaper || {};
+  if (JSON.stringify(cur) !== JSON.stringify(_toolShaper)) {
+    _toolShaper = cur;
+    changed = true;
+  }
+  var chips = offsetStatus.tool_accel_chips || {};
+  if (JSON.stringify(chips) !== JSON.stringify(_toolAccelChips)) {
+    _toolAccelChips = chips;
+    changed = true;
+  }
+  if (changed) refreshShaperTable();
+}
+
+function syncShaperSelectAllState() {
+  var $all = $(".shaper-tool-checkbox:not(:disabled)");
+  var $checked = $(".shaper-tool-checkbox:checked");
+  $("#shaper-select-all").prop("checked", $all.length > 0 && $all.length === $checked.length);
+}
+
+$(document).on("change", "#shaper-select-all", function () {
+  $(".shaper-tool-checkbox:not(:disabled)").prop("checked", $(this).prop("checked"));
+});
+
+$(document).on("change", ".shaper-tool-checkbox", function () {
+  syncShaperSelectAllState();
+});
+
+// Werte von T<x> uebernehmen (Tool ohne Accelerometer)
+$(document).on("click", ".shaper-copy-btn", function () {
+  var t = String($(this).data("tool"));
+  var src = String($(".shaper-copy-src[data-tool='" + t + "']").val() || "");
+  var v = _shaperResults[src] || _toolShaper[src];
+  if (!src || !v) {
+    if (typeof showToast === 'function') showToast("Keine Werte bei T" + src, "warning");
+    return;
+  }
+  var copy = { from: src };
+  ['type_x', 'freq_x', 'type_y', 'freq_y'].forEach(function (k) {
+    if (v[k] !== undefined) copy[k] = v[k];
+  });
+  _shaperCopied[t] = copy;
+  refreshShaperTable();
+});
+
+$(document).on("click", ".shaper-copy-clear", function (e) {
+  e.preventDefault();
+  delete _shaperCopied[String($(this).data("tool"))];
+  refreshShaperTable();
+});
+
+// Input shaper calibration click
+$(document).on("click", "#shaper-cal-btn", function () {
+  var $btn = $(this);
+  var tools = $(".shaper-tool-checkbox:checked")
+    .map(function () { return parseInt(this.value, 10); })
+    .get()
+    .filter(function (v) { return !Number.isNaN(v); });
+  var axes = $(".shaper-axis-checkbox:checked")
+    .map(function () { return this.value; }).get();
+  var x = parseFloat($("#shaper-x").val());
+  var y = parseFloat($("#shaper-y").val());
+  var height = parseFloat($("#shaper-height").val());
+  var smoothing = parseFloat($("#shaper-smoothing").val());
+
+  if (!tools.length) {
+    if (typeof showToast === 'function') showToast("Kein Tool ausgewaehlt", "warning");
+    return;
+  }
+  if (!axes.length) {
+    if (typeof showToast === 'function') showToast("Keine Achse ausgewaehlt", "warning");
+    return;
+  }
+  if (Number.isNaN(x) || Number.isNaN(y)) {
+    if (typeof showToast === 'function') showToast("Messpunkt X/Y angeben", "warning");
+    return;
+  }
+  if (Number.isNaN(height)) height = 20;
+
+  var script = 'CALIBRATE_TOOL_SHAPER TOOLS=' + tools.join(',') +
+               ' AXES=' + axes.join(',') +
+               ' X=' + x.toFixed(1) + ' Y=' + y.toFixed(1) + ' HEIGHT=' + height.toFixed(1) +
+               (Number.isNaN(smoothing) ? '' : ' MAX_SMOOTHING=' + smoothing);
+
+  var curRow = tools.map(function (tn) {
+    var k = String(tn);
+    var cur = _toolShaper[k];
+    return '<tr><td class="px-1 py-0 text-secondary">T' + escapeHtml(tn) +
+      ' <span class="text-secondary">(' + escapeHtml(shaperChipShort(_toolAccelChips[k]) || '?') + ')</span></td>' +
+      '<td class="px-1 py-0">' + (cur
+        ? 'X ' + (shaperAxisText(cur, 'x') || '-') + ' &nbsp;Y ' + (shaperAxisText(cur, 'y') || '-')
+        : '<span class="text-secondary">noch nicht gemessen</span>') + '</td></tr>';
+  }).join('');
+
+  var body =
+    '<div class="border border-secondary-subtle rounded p-2 mb-2 bg-dark">' +
+      '<table class="table table-sm table-borderless mb-0" style="font-size:0.85rem;"><tbody>' +
+        '<tr><td class="px-1 py-0 text-secondary">Tools</td>' +
+            '<td class="px-1 py-0 fw-bold">' +
+            tools.map(function (t) { return 'T' + t; }).join(', ') + '</td></tr>' +
+        '<tr><td class="px-1 py-0 text-secondary">Axes</td>' +
+            '<td class="px-1 py-0 fw-bold">' + escapeHtml(axes.join(', ').toUpperCase()) + '</td></tr>' +
+        '<tr><td class="px-1 py-0 text-secondary">Point</td>' +
+            '<td class="px-1 py-0">X' + escapeHtml(x.toFixed(1)) + ' Y' + escapeHtml(y.toFixed(1)) +
+            ', ' + escapeHtml(height.toFixed(1)) + ' mm hoch</td></tr>' +
+        '<tr><td class="px-1 py-0 text-secondary">Max smoothing</td>' +
+            '<td class="px-1 py-0">' + (Number.isNaN(smoothing) ? 'Klipper default' : escapeHtml(smoothing)) + '</td></tr>' +
+      '</tbody></table>' +
+      '<div class="small text-secondary mt-1">Aktuelle Werte</div>' +
+      '<table class="table table-sm table-borderless mb-0" style="font-size:0.85rem;"><tbody>' +
+        curRow +
+      '</tbody></table>' +
+    '</div>' +
+    '<div class="small text-secondary mb-2">Command: <code>' + escapeHtml(script) + '</code></div>' +
+    '<div class="small text-warning">' +
+      '<i class="bi bi-exclamation-triangle"></i> Jedes Tool wird aufgenommen und der Drucker ' +
+      'schuettelt es kraeftig durch - das ist laut und dauert etwa eine Minute je Tool und Achse. ' +
+      'Nichts darf im Weg stehen, ' + escapeHtml(tools.length) + ' Tool(s) gewaehlt.' +
+    '</div>' +
+    '<div class="small text-secondary mt-1">' +
+      'Nothing is written yet - the result appears in the table for review. ' +
+      'Persist it with APPLY INPUT SHAPER, never with <code>SAVE_CONFIG</code>: ' +
+      'the values belong to <code>params_input_shaper_*</code> in the included ' +
+      '<code>T&lt;n&gt;.cfg</code>, which SAVE_CONFIG cannot write.' +
+    '</div>';
+
+  confirmDialog({
+    title: "Start input shaper calibration?",
+    body: body,
+    okLabel: "OK — start",
+    okClass: "btn-primary"
+  }).then(function (ok) {
+    if (!ok) return;
+
+    $btn.prop("disabled", true).text("Measuring...");
+    if (typeof showToast === 'function') showToast("Input shaper calibration started...", "info");
+
+    sendGcodeWithRecovery(script, "Input shaper calibration failed", function (attempt) {
+      $btn.text(attempt === 1 ? "Measuring..." : "Home/QGL...");
+    })
+      .then(function (r) {
+        if (typeof showToast !== 'function') return r;
+        if (r.ok) {
+          showToast("Input shaper calibration done", "success");
+        } else if (r.transport) {
+          // Verbindung weg, der Drucker misst weiter - kein Fehler, und
+          // kein Folgeschritt: die Tabelle zieht das Polling nach.
+          showToast("Verbindung zum Lauf verloren - er laeuft weiter. "
+                    + "Fortschritt in der Konsole.", "warning");
+        }
+        return r;
+      })
+      .then(function () {
+        $btn.prop("disabled", false).text("CALIBRATE INPUT SHAPER");
+        fetchOffsetStatus().then(refreshShaperTable);
+      });
+  });
+});
+
+// Schreibt params_input_shaper_type_x/freq_x/type_y/freq_y in [tool Tn]
+// der T<n>.cfg - fehlende Schluessel werden angelegt. Die Daempfung
+// (damping_ratio) bleibt unberuehrt, SHAPER_CALIBRATE liefert keine.
+function updateToolShaperValues(toolValues) {
+  var tools = Object.keys(toolValues);
+  var missing = [];
+
+  function processNext(idx) {
+    if (idx >= tools.length) {
+      reportMissingKeys(missing);
+      return Promise.resolve();
+    }
+    var t = tools[idx];
+    var changes = shaperConfigChanges(toolValues[t]);
+    var filePath = "toolchanger/tools/T" + t + ".cfg";
+    var section = "tool T" + t;
+    return updateConfigFile(filePath, function (content) {
+      var updated = content;
+      var ok = true;
+      changes.forEach(function (c) {
+        var next = setInConfigSection(updated, section, c.key, c.to);
+        if (next === null) {
+          ok = false;
+          missing.push({file: filePath, section: section, key: c.key});
+        } else {
+          updated = next;
+        }
+      });
+      if (!ok) return null;
+      return updated;
+    }).then(function () { return processNext(idx + 1); });
+  }
+  return processNext(0);
+}
+
+$(document).on("click", "#apply-shaper-btn", function () {
+  var $btn = $(this);
+  var btnHtml = '<i class="bi bi-check-circle"></i> APPLY INPUT SHAPER TO CONFIG';
+  var toolValues = shaperApplyValues(_shaperResults, _shaperCopied);
+  var requests = [];
+  var pending = [];
+
+  Object.keys(toolValues).sort(function (a, b) { return a - b; }).forEach(function (k) {
+    var changes = shaperConfigChanges(toolValues[k]);
+    if (!changes.length) return;
+    pending.push({ tool: k, changes: changes, from: toolValues[k].from });
+    changes.forEach(function (c) {
+      requests.push({ tool: k, key: c.key, section: "tool T" + k });
+    });
+  });
+
+  if (!pending.length) {
+    if (typeof showToast === 'function') showToast("No input shaper values to apply", "warning");
+    return;
+  }
+
+  $btn.prop("disabled", true).text("Loading...");
+  fetchToolConfigValues(requests).then(function (cur) {
+    $btn.prop("disabled", false).html(btnHtml);
+
+    var entries = pending.map(function (p) {
+      return {
+        tool: p.tool + (p.from ? ' (Kopie von T' + p.from + ')' : ''),
+        file: "toolchanger/tools/T" + p.tool + ".cfg",
+        section: "tool T" + p.tool,
+        changes: p.changes.map(function (c) {
+          return { key: c.key, from: cur[p.tool + "|" + c.key], to: c.to };
+        })
+      };
+    });
+
+    var note = '"Current" is read from the config file; "-" means the option ' +
+      'does not exist yet and will be added. The toolchanger applies ' +
+      '<code>params_input_shaper_*</code> at every tool change - after a ' +
+      'RESTART the new values are live for every tool. No <code>SAVE_CONFIG</code>, ' +
+      'which cannot write options of an included file.';
+
+    return confirmDialog({
+      title: "Apply input shaper values?",
+      body: offsetChangeListHtml(entries, note),
+      okLabel: "OK — apply",
+      okClass: "btn-success"
+    });
+  }).then(function (ok) {
+    if (!ok) return;
+
+    $btn.prop("disabled", true).text("Applying...");
+    updateToolShaperValues(toolValues)
+      .then(function () {
+        if (typeof showToast === 'function') showToast("Input shaper values saved to config", "success");
+      })
+      .catch(function (err) {
+        var detail = "";
+        try { detail = (err.responseJSON || err).message || ""; } catch (_) {}
+        // Eine fehlgeschlagene Uebernahme sieht sonst aus wie eine erfolgreiche.
+        alertDialog("Apply input shaper failed", escapeHtml(detail || "Unbekannter Fehler"));
+      })
+      .finally(function () {
+        $btn.prop("disabled", false).html(btnHtml);
       });
   });
 });
@@ -5619,6 +6213,25 @@ function getTools() {
               'Extruder PID Calibration',
               pidStatus,
               pidContent,
+              false
+            ));
+
+            var shaperContent = shaperCalibrationSection(tool_numbers, _offsetPresent);
+            var shaperStatus = !_offsetPresent
+              ? '<span class="text-warning">offset module not found</span>'
+              : !_resonanceTesterPresent
+                ? '<span class="text-warning">[resonance_tester] fehlt</span>'
+                : (Object.keys(_shaperResults).length
+                    ? '<span class="text-success">Neu: ' +
+                      Object.keys(_shaperResults).map(function(k){ return 'T'+k; }).join(', ') +
+                      '</span>'
+                    : '<span class="text-secondary">Bereit</span>');
+
+            $acc.append(accordionSection(
+              'accordion-shaper',
+              'Input Shaper Calibration',
+              shaperStatus,
+              shaperContent,
               false
             ));
 

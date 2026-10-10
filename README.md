@@ -57,6 +57,12 @@ Tools can reference an external Z probe (Eddy, Cartographer) via the `z_probe` c
 
 `[htc_heater_fan]` replaces `[heater_fan]` for hotend fans: separate speeds for the active tool, parked tools and cool-down, an optional ramp-up with chamber temperature, and `SET_HEATER_FAN` to change speeds at runtime. Pure Klipper extra, survives Klipper updates. See `docs/htc_heater_fan.md`.
 
+## Input shaper per tool
+
+Every toolhead resonates differently, so shaper type and frequency live per tool as `params_input_shaper_type_x / freq_x / damping_ratio_x` (and `_y`) in `[tool Tn]`. The toolchanger module applies them with `SET_INPUT_SHAPER` at every tool change; `[input_shaper]` in printer.cfg stays empty.
+
+Measuring: Offset UI → *Input Shaper Calibration*, or `CALIBRATE_TOOL_SHAPER TOOLS=1,2,3 AXES=x,y X=130 Y=115 HEIGHT=20`. Each tool is picked up, moved to the point and measured with its own accelerometer: `params_accel_chip` in `[tool Tn]` if set, otherwise the chip on the same MCU as the tool's extruder (or a chip named `..._T<n>`). A `[resonance_tester]` section is required by Klipper (its `accel_chip` and `probe_points` are only placeholders here). Results are kept in `.offset_shaper_results.json`; *APPLY INPUT SHAPER* writes them into `T<n>.cfg`, adding missing keys. A tool without an accelerometer can take over the values of another tool in the UI. Defaults: `[offset] shaper_x / shaper_y` (bed centre), `shaper_height` (20), `shaper_max_smoothing`.
+
 ## License
 
 Based on [klipper-toolchanger-easy](https://github.com/jwellman80/klipper-toolchanger-easy) and [Eddy-NG](https://github.com/Cartographer3D/eddy-ng).

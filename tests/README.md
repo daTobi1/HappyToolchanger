@@ -257,6 +257,33 @@ echten Lauf und das Entlade-Makro selbst (`UNLOAD_ONE_FILAMENT` heizt und
 entlädt ein Tool im Dock und endet mit `TURN_OFF_HEATERS`). Bewusst **nicht** im XY-Eddy-Lauf: dort steht
 die 53-mm-Halterung auf dem Bett, und ein Reinigungsmakro fährt tief.
 
+## `check_shaper_ui.js` und `check_tool_shaper.py`
+
+Input-Shaper-Kalibrierung je Tool (Offset-UI, `CALIBRATE_TOOL_SHAPER`,
+Anwendung der `params_input_shaper_*` beim Toolwechsel).
+
+```bash
+node tests/check_shaper_ui.js
+scp tests/check_tool_shaper.py klippy/extras/offset.py klippy/extras/toolchanger.py biqu@<IP>:/tmp/
+ssh biqu@<IP> 'cd /tmp && python3 check_tool_shaper.py'
+```
+
+JS: `setInConfigSection` ersetzt vorhandene Schluessel und legt fehlende
+hinter dem letzten Eintrag der Sektion an (fremde Configs haben die
+`params_input_shaper_*` nicht); `shaperApplyValues` laesst Kopien (Tool ohne
+Accelerometer) nie eine Messung ueberschreiben; `shaperConfigChanges`
+schreibt nur die gemessenen Achsen, den Typ in Anfuehrungszeichen.
+Der Test hat den `'\s'`-statt-`'\\s'`-Fehler in `replaceInConfigSection`
+aufgedeckt (Leerzeichen hinter dem Doppelpunkt ging bei jeder Uebernahme
+verloren).
+
+Python (per ast geschnitten, ohne Klipper): `shaper_params_from_tool_params`,
+`pick_accel_chip` (params_accel_chip vor MCU-Treffer vor Namenstreffer, T1
+trifft nicht T10, unbekannter Chipname liefert None statt eines stillen
+Ersatzes), `input_shaper_command_params` (nur Achsen mit Frequenz, 0 schaltet
+ab) und die Aufrufstellen: Hook in `_configure_toolhead_for_tool`,
+Sicherung der Ergebnisse je Tool.
+
 ## `check_nozzle_locator_fit.py`
 
 Prüft die Fit-Mathematik der XY-Offset-Ortung. Braucht **keine

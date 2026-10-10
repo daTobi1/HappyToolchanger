@@ -584,6 +584,36 @@ class Toolchanger:
                     tpe.set_active_probe(tp)
             elif not tool:
                 tpe.set_active_probe(None)
+        self._apply_tool_input_shaper(tool)
+
+    def _apply_tool_input_shaper(self, tool):
+        """Input shaper des Tools aktiv schalten (params_input_shaper_*).
+
+        Jeder Kopf schwingt anders, die Werte stehen deshalb je [tool Tn].
+        Ohne diese Stelle liest sie niemand: [input_shaper] in der
+        printer.cfg kennt nur einen Satz. Ein Fehler hier (Tippfehler im
+        Shaper-Namen) bricht den Wechsel nicht ab - das Tool sitzt schon
+        im Kopf, der Druck soll weiterlaufen; gemeldet wird er trotzdem."""
+        if tool is None:
+            return
+        params = input_shaper_command_params(getattr(tool, 'params', None) or {})
+        if not params:
+            return
+        input_shaper = self.printer.lookup_object('input_shaper', None)
+        if input_shaper is None:
+            if not getattr(self, '_warned_no_input_shaper', False):
+                self._warned_no_input_shaper = True
+                self.gcode.respond_info(
+                    "%s has params_input_shaper_* but there is no "
+                    "[input_shaper] section - not applied" % tool.name)
+            return
+        try:
+            gcmd = self.gcode.create_gcode_command(
+                "SET_INPUT_SHAPER", "SET_INPUT_SHAPER", params)
+            input_shaper.cmd_SET_INPUT_SHAPER(gcmd)
+        except Exception as e:
+            self.gcode.respond_info(
+                "Input shaper for %s not applied: %s" % (tool.name, e))
 
     def _position_to_xyz(self, position, axis):
         if len(position) < 3:
@@ -819,6 +849,29 @@ class ToolGcodeTransform:
         if not self.tool:
             return base_pos
         return [base_pos[0] - self.tool.gcode_x_offset, base_pos[1] - self.tool.gcode_y_offset, base_pos[2] - self.tool.gcode_z_offset] + base_pos[3:]
+
+def input_shaper_command_params(params):
+    """SET_INPUT_SHAPER-Parameter aus den params_input_shaper_* eines Tools.
+
+    Nur Achsen mit einer Frequenz werden angefasst; fehlt sie, bleibt der
+    Shaper dieser Achse, wie er ist. Frequenz 0 schaltet die Achse ab -
+    das ist Klippers eigene Semantik und wird bewusst durchgereicht.
+    Werte gehen als Text, so wie sie auch aus einer GCode-Zeile kaemen."""
+    out = {}
+    for axis in ('x', 'y'):
+        freq = params.get('params_input_shaper_freq_%s' % axis)
+        if freq is None:
+            continue
+        ax = axis.upper()
+        out['SHAPER_FREQ_' + ax] = str(freq)
+        shaper_type = params.get('params_input_shaper_type_%s' % axis)
+        if shaper_type is not None:
+            out['SHAPER_TYPE_' + ax] = str(shaper_type)
+        damping = params.get('params_input_shaper_damping_ratio_%s' % axis)
+        if damping is not None:
+            out['DAMPING_RATIO_' + ax] = str(damping)
+    return out
+
 
 def get_params_dict(config):
     result = {}

@@ -28,7 +28,7 @@ function check(name, cond, extra) {
 let snapshot = {};
 let toggles = [];
 global.getOffsetSnapshot = () => Promise.resolve(snapshot);
-global.updatePidResults = global.updateDockResults = global.updateXyResults = () => {};
+global.updatePidResults = global.updateShaperResults = global.updateDockResults = global.updateXyResults = () => {};
 global.pollXySparkline = () => {};
 global.updateProbeResults = () => {};
 global.probeCalResultsTable = () => '';
