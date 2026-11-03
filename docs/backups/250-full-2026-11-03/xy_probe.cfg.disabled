@@ -1,0 +1,83 @@
+# Vorlage der XY-Sonde. Serial-Pfad und Halterungsmasse hier EINMALIG
+# eintragen. Diese Datei wird nie von Klipper geladen -- die Webapp kopiert
+# ihren Inhalt beim Aktivieren nach xy_probe.cfg.
+#
+# Die Sonde haengt per USB und traegt die Standard-Klipper-Firmware (nicht
+# die von eddy-ng). Den Pfad einmal ermitteln, waehrend sie steckt:
+#   ls /dev/serial/by-id/
+# Immer den by-id-Pfad eintragen, nie /dev/ttyACM0 -- der wandert, sobald
+# ein anderes USB-Geraet frueher erkannt wird.
+[mcu xyprobe]
+serial: /dev/serial/by-id/usb-Klipper_rp2040_504434041088E21C-if00
+restart_method: command
+
+# Beide Temperaturen nach der offiziellen BTT-Vorlage. Die Spulentemperatur
+# gehoert zu jeder Messung -- die Zeitdrift des Scheitels liegt bei ~19 um/K.
+[temperature_sensor xyprobe_mcu]
+sensor_type: temperature_mcu
+sensor_mcu: xyprobe
+min_temp: 0
+max_temp: 100
+
+[temperature_sensor xyprobe_coil]
+sensor_type: Generic 3950
+sensor_pin: xyprobe:gpio26
+min_temp: 0
+max_temp: 100
+
+[nozzle_locator]
+i2c_mcu: xyprobe
+i2c_bus: i2c0f
+
+# Anfahrposition: der Kopf faehrt hierhin, die Sonde kommt danach darunter.
+# park_x/park_y weglassen = Bettmitte aus den Achsgrenzen. park_z ist die
+# Freihoehe zum Unterschieben und die Fahrhoehe aller Verfahrwege. Der
+# Assistent schreibt geaenderte Werte hierher zurueck.
+park_x: 125.0
+park_y: 130.0
+park_z: 60.0
+search_span: 30
+holder_top_z: 53
+min_gap: 0.2
+fine_gap: 0.4
+
+sweep_span: 8
+sweep_step: 1
+dwell_time: 0.5
+# Kontinuierlicher Scan: der Kopf faehrt mit scan_speed (mm/s) durch das
+# Fenster, der Sensor laeuft mit (~80 Samples je mm bei 5 mm/s). 0 = alter
+# Punktmodus (anfahren, dwell_time verweilen, mitteln). sweep_step ist im
+# Scanmodus die Korbbreite der Grobsuche und des Status.
+scan_speed: 5
+# Sekunden, um die der LDC1612 VOR seinem Zeitstempel misst. Der
+# bidirektionale Sweep hebt den Fehler auf; wer ihn kennt (Hin-Rueck-
+# Differenz bei zwei Geschwindigkeiten, NOZZLE_LOCATE SPEED=), traegt ihn
+# hier ein.
+#sample_latency: 0.0
+# Mindestzahl Samples je Scan-Fenster; darueber wird gebremst statt
+# abgebrochen (400 Hz * 8 mm / 200 = 16 mm/s Obergrenze fuer die Feinmessung).
+min_samples: 200
+# Basislinie am Druckerrand: auf park_z steht die Duese noch 7 mm ueber der
+# Spule (+1.400 Hz). Der Kopf faehrt in X zur weiter entfernten Achsgrenze,
+# um diesen Rand nach innen, liest, kommt zurueck. 0 = an Ort und Stelle.
+baseline_edge_margin: 10
+# Aufwaermzeit des Sensors vor der ersten Messung von CALIBRATE_XY_OFFSETS
+# (Sekunden). Der erste Lauf nach dem Sensorstart lag 80 um daneben, nach
+# ~1 min Dauerbetrieb ist die Spule stabil. WARMUP= am Kommando ueberschreibt.
+warmup_time: 60
+# Spulenstrom des LDC1612 (0-31). Einmal mit der Duese auf Messhoehe
+# NOZZLE_LOCATOR_CALIBRATE_DRIVE fahren; SAVE_CONFIG traegt den Wert in den
+# Autosave-Block ein (erst wenn die Halterung vom Bett ist -- der Neustart
+# loescht das Homing). Hier auskommentiert lassen. Getrennt vom
+# reg_drive_current der Eddy-NG-Sonde ([probe_eddy_ng ...], eigener Chip).
+#reg_drive_current: 15
+runs: 3
+runs_tolerance: 0.05
+xy_iterations: 1
+
+min_amplitude: 2000
+# Zielamplitude fuer Z_MODE=amplitude (Default seit 2026-09-05): bei 0,4 mm
+# Spalt liefern die Duesen 8.600-16.000 Hz (250er, Lauf 12); 12.000 legt das
+# schwaechste Tool nahe min_gap, die staerkeren etwas hoeher.
+target_amplitude: 12000
+max_offset: 8.0

@@ -1,0 +1,122 @@
+{
+  "5": {
+    "chip": "lis2dw lis2dw_T5",
+    "point": [
+      175.0,
+      165.0,
+      20.0
+    ],
+    "max_smoothing": null,
+    "time": "2026-10-10 22:02",
+    "type_x": "3hump_ei",
+    "freq_x": 103.0,
+    "vibr_x": 0.0,
+    "smoothing_x": 0.085,
+    "max_accel_x": 7000.0,
+    "type_y": "mzv",
+    "freq_y": 39.6,
+    "vibr_y": 0.0,
+    "smoothing_y": 0.13,
+    "max_accel_y": 4600.0
+  },
+  "0": {
+    "chip": "lis2dw lis2dw_T0",
+    "point": [
+      175.0,
+      165.0,
+      20.0
+    ],
+    "max_smoothing": null,
+    "time": "2026-10-10 22:16",
+    "type_x": "3hump_ei",
+    "freq_x": 94.0,
+    "vibr_x": 0.0,
+    "smoothing_x": 0.102,
+    "max_accel_x": 5900.0,
+    "type_y": "mzv",
+    "freq_y": 41.6,
+    "vibr_y": 0.3,
+    "smoothing_y": 0.118,
+    "max_accel_y": 5100.0
+  },
+  "1": {
+    "chip": "adxl345 adxl345_T1",
+    "point": [
+      175.0,
+      165.0,
+      20.0
+    ],
+    "max_smoothing": null,
+    "time": "2026-10-10 22:22",
+    "type_x": "3hump_ei",
+    "freq_x": 102.4,
+    "vibr_x": 0.0,
+    "smoothing_x": 0.086,
+    "max_accel_x": 7000.0,
+    "type_y": "mzv",
+    "freq_y": 42.8,
+    "vibr_y": 0.8,
+    "smoothing_y": 0.111,
+    "max_accel_y": 5400.0
+  },
+  "2": {
+    "chip": "adxl345 adxl345_T2",
+    "point": [
+      175.0,
+      165.0,
+      20.0
+    ],
+    "max_smoothing": null,
+    "time": "2026-10-10 22:27",
+    "type_x": "2hump_ei",
+    "freq_x": 84.4,
+    "vibr_x": 0.0,
+    "smoothing_x": 0.079,
+    "max_accel_x": 7500.0,
+    "type_y": "mzv",
+    "freq_y": 40.0,
+    "vibr_y": 0.0,
+    "smoothing_y": 0.127,
+    "max_accel_y": 4700.0
+  },
+  "3": {
+    "chip": "adxl345 adxl345_T3",
+    "point": [
+      175.0,
+      165.0,
+      20.0
+    ],
+    "max_smoothing": null,
+    "time": "2026-10-10 22:37",
+    "type_x": "3hump_ei",
+    "freq_x": 112.0,
+    "vibr_x": 0.3,
+    "smoothing_x": 0.072,
+    "max_accel_x": 8300.0,
+    "type_y": "mzv",
+    "freq_y": 40.0,
+    "vibr_y": 0.1,
+    "smoothing_y": 0.127,
+    "max_accel_y": 4700.0
+  },
+  "4": {
+    "chip": "adxl345 adxl345_T4",
+    "point": [
+      175.0,
+      165.0,
+      20.0
+    ],
+    "max_smoothing": null,
+    "time": "2026-10-10 22:43",
+    "type_x": "2hump_ei",
+    "freq_x": 86.4,
+    "vibr_x": 0.0,
+    "smoothing_x": 0.076,
+    "max_accel_x": 7900.0,
+    "type_y": "mzv",
+    "freq_y": 40.8,
+    "vibr_y": 0.0,
+    "smoothing_y": 0.122,
+    "max_accel_y": 4900.0
+  }
+}

@@ -1,0 +1,154 @@
+# THIS IS NOT AN EXHAUSTIVE LIST!
+# use this file to override values in the other configs. 
+# any value that is available in the configs can be overriden here
+# just add the section ie: [tool_probe T0] and the value that is being overridden.  
+
+# this file must be the last file to be included since values will be stored in the order they are
+# received.  Klipper will take the last value and store that for the macros. 
+
+[rounded_path]
+resolution: 0.2 # the length of a circle approximation segments.
+replace_g0: False # Use at your own risk
+
+[force_move]
+enable_force_move: True
+
+[toolchanger]
+params_dropoff_path: [{'y':9.5 ,'z':4}, {'y':9.5, 'z':2}, {'y':0, 'z':2}, {'y':0, 'z':0, 'f':0.5}, {'z':-10, 'y':0}, {'z':-10, 'y':16}]
+params_pickup_path: [{'z':-10, 'y':16}, {'z':-10, 'y':0}, {'z':0, 'y':0, 'f':0.5, 'verify':1}, {'z':2, 'y':0}, {'z':2, 'y':9.5}, {'y':9.5 ,'z':4}]
+params_safe_y: 120
+# Getrennt einstellbar (Tobi, 2026-09-05): Abheben vor dem Absetzen und
+# Schwebehoehe bei der Rueckkehr ueber der Druckhoehe, beide in mm. Je Tool
+# ueberschreibbar (params_... in [tool Tn]).
+params_dropoff_lift_z: 5.0
+params_return_hover_z: 5.0
+params_close_y: 30
+params_fast_speed: 25000 # Go as fast as we can
+params_path_speed: 1800 # 20mm/s for the actual change
+require_tool_present: True # can set to False if using Beacon/Cartographer/Eddy for Z probe.
+before_change_gcode:
+  _TOOLCHANGER_TOOL_BEFORE_CHANGE
+after_change_gcode:
+  _TOOLCHANGER_TOOL_AFTER_CHANGE
+dropoff_gcode:
+  {% set x = tool.params_park_x|float %}
+  {% set y = tool.params_park_y|float %}
+  {% set z = tool.params_park_z|float %}
+  {% set fast = tool.params_fast_speed|float %}
+  {% set path = tool.params_dropoff_path %}
+  {% set max_z = printer.configfile.config["stepper_z"]["position_max"]|float %}
+  {% set cur_z = printer.toolhead.position[2]|float %}
+  RESPOND TYPE=echo MSG='Dropping off {tool.name}'
+  G90
+  # Abheben, bevor es ueber das Druckteil zur Sicherheitslinie geht (params_dropoff_lift_z)
+  {% set lift = tool.params_dropoff_lift_z|default(1.0)|float %}
+  G0 Z{ [cur_z + lift, max_z]|min } F{fast}
+  ROUNDED_G0 Y={tool.params_safe_y} D=20 F={fast}
+  ROUNDED_G0 X={x} D=150 F={fast}
+  ROUNDED_G0 Z={z + path[0]['z']|float} D=20 F={fast}
+  ROUNDED_G0 Y={y + path[0]['y']|float} D=0 F={fast}
+  {% for pos in path %}
+    {% set speed = tool.params_path_speed|float * (pos.get('f', 1.0)|float) %}
+    G0 {% if 'x' in pos %}X{x + pos['x']|float}{% endif %} {% if 'y' in pos %}Y{y + pos['y']|float}{% endif %} {% if 'z' in pos %}Z{z + pos['z']|float }{% endif %} F{speed}
+  {% endfor %}
+  {% if pickup_tool is none %}
+    G0 Y{tool.params_safe_y} F{fast}
+  {% endif %}
+pickup_gcode:
+  {% set x = tool.params_park_x|float %}
+  {% set y = tool.params_park_y|float %}
+  {% set z = tool.params_park_z|float %}
+  {% set fast = tool.params_fast_speed|float %}
+  {% set path = tool.params_pickup_path %}
+  RESPOND TYPE=echo MSG='Picking up {tool.name}'
+  G90
+  {% if dropoff_tool is none and pickup_tool is not none %}
+    ROUNDED_G0 Y={tool.params_safe_y} D=20 F={fast}
+  {% else %}
+    ROUNDED_G0 Y={tool.params_close_y} F={fast} D=5
+  {% endif %}
+  ROUNDED_G0 X={x} Z={z + path[0]['z']|float} F={fast} D=5
+  ROUNDED_G0 Y={y + path[0]['y']|float} F={fast} D=0
+  {% if tool.extruder %}
+    M109 T{tool.tool_number} S{printer[tool.extruder].target|int}
+  {% endif %}
+  {% for pos in path %}
+    {% set speed = tool.params_path_speed|float * (pos.get('f', 1.0)|float) %}
+    G0 {% if 'x' in pos %}X{x + pos['x']|float}{% endif %} {% if 'y' in pos %}Y{y + pos['y']|float}{% endif %} {% if 'z' in pos %}Z{z + pos['z']|float }{% endif %} F{speed}
+    {% if 'verify' in pos %}
+      VERIFY_TOOL_DETECTED T={tool.tool_number}
+    {% endif %}
+  {% endfor %}
+  ROUNDED_G0 Y={tool.params_safe_y} F={fast} D=20
+  # Rueckkehr params_return_hover_z ueber der Druckhoehe nach X/Y, erst am Ziel absenken
+  {% set max_z = printer.configfile.config["stepper_z"]["position_max"]|float %}
+  {% set hover = tool.params_return_hover_z|default(5.0)|float %}
+  {% if 'Z' in restore_position %}
+    ROUNDED_G0 Z={ [restore_position.Z|float + hover, max_z]|min } F={fast} D=150
+  {% endif %}
+  {% if 'X' in restore_position %}
+    ROUNDED_G0 X={restore_position.X} F={fast} D=1000
+  {% endif %}
+  {% if 'Y' in restore_position %}
+    ROUNDED_G0 Y={restore_position.Y} F={fast} D=0
+  {% endif %}
+  {% if 'Z' in restore_position %}
+    ROUNDED_G0 Z={restore_position.Z} F={fast} D=0
+  {% endif %}
+  ROUNDED_G0 D=0
+
+# this section must be completed
+[gcode_macro homing_override_config]
+variable_sensorless_x: False
+variable_sensorless_y: False
+# Abstand, den der Kopf nach dem Homing vom Endstop zurueckfaehrt.
+# ACHTUNG: Diese Sektion ueberschreibt die gleichnamige in
+# readonly-configs/homing.cfg - dort stehende Werte greifen NICHT.
+#
+# Ist der Rebound kleiner als der groesste positive gcode-Offset der Tools,
+# schiebt der Tool-Offset die Kinematik ueber position_max und JEDER Move
+# scheitert mit "Move out of range". Gemessen 2026-08-24 mit T4 (y=+2.58):
+# gehomed auf Y=330 = position_max, 330 + 2.58 = 332.58 > 330.
+#
+# Y musste frueher auf 0 stehen, weil der Rebound direkt hinter dem
+# Y-Homing lief und das X-Homing danach seinen Trigger verfehlte. Der
+# Rebound sitzt jetzt hinter dem X-Homing (siehe readonly-configs/
+# homing.cfg), damit geht beides.
+# Groesste positive Offsets: y=+2.58 (T4), x=+0.37 (T4).
+# tests/check_homing_rebound.py prueft das nach jeder Kalibrierung.
+variable_homing_rebound_y: 5
+variable_homing_rebound_x: 5
+variable_stepper_driver: "tmc2209"
+variable_homing_current: 1.0
+
+# M109 macro is overridden to allow some deadband on the temp
+# default is +- 1 degree.  So if the set temp is 250 the the default
+# deadband will be 249-251.  You can adjust this here:
+
+[gcode_macro SET_TEMPERATURE_WITH_DEADBAND]
+variable_default_deadband: 4.0
+gcode:
+
+# these values need to be set to match the location of your Calibration Switch
+# [gcode_macro _CALIBRATION_SWITCH]
+# variable_x: 227.471875
+# variable_y: 353.703125
+# variable_z: 5.00
+# gcode:
+
+#[tools_calibrate]
+#pin:   #pin that your calibration probe is connected to.
+#travel_speed: 20  # mms to travel sideways for XY probing
+#spread: 7  # mms to travel down from top for XY probing
+#lower_z: 1.0  # The speed (in mm/sec) to move tools down onto the probe
+#speed: 2  # The speed (in mm/sec) to retract between probes
+#lift_speed: 4  # Z Lift after probing done, should be greater than any Z variance between tools
+#final_lift_z: 6 
+#sample_retract_dist:2
+#samples_tolerance:0.05
+#samples:5
+#samples_result: median # median, average
+# Settings for nozzle probe calibration - optional.
+#probe: probe # name of the nozzle probe to use
+#trigger_to_bottom_z: 0.25 # Offset from probe trigger to vertical motion bottoms out. 
+# decrease if the nozzle is too high, increase if too low.

@@ -1,0 +1,908 @@
+[gcode_macro INITIALISIERUNG_NOZZLEKALIBRIERUNG]
+description: Entläd alle Druckköpfe und Reinigt nacheinander alle verfügbaren Nozzles (T0–T4)
+gcode:
+ UNLOAD_ALL_FILAMENT
+ CLEAN_ALL_NOZZLES
+
+[gcode_macro CLEAN_ALL_NOZZLES]
+description: Reinigt nacheinander alle verfügbaren Nozzles (T0–T4)
+gcode:
+  {% set tools = [0, 1, 2, 3] %}   # Anpassen, falls du weniger/mehr Tools hast
+
+  {% if not printer.toolhead.homed_axes %}
+    G28
+  {% endif %}
+
+  G90
+
+  {% for t in tools %}
+    M118 Starte Reinigung für Tool T{t}
+
+    T{t}
+    RESPOND PREFIX="CLEAN" MSG="Reinige Nozzle von T{t}"
+
+    CLEAN_NOZZLE
+
+    G4 P300
+  {% endfor %}
+
+  M118 Alle Nozzles fertig gereinigt!
+
+[delayed_gcode STOP_NEVERMORE]
+gcode:
+  SET_PIN PIN=nevermore VALUE=0.00
+  M118 Nevermore-Filter gestoppt
+
+# ============================================================================
+#  NOTFALL Z-HOMING (wenn Tool ohne Eddy-Probe geladen ist)
+# ============================================================================
+
+[gcode_macro EMERGENCY_HOME_Z]
+description: Notfall-Homing: Z ueber Switch referenzieren, auf T0 wechseln, richtig homen.
+  Funktioniert mit JEDEM geladenen Tool.
+gcode:
+  {% set tool_nr = printer.toolchanger.tool_number|default(-1)|int %}
+
+  {% if tool_nr == 0 %}
+    M118 T0 ist bereits geladen - normales Homing!
+    G28
+  {% elif tool_nr < 0 %}
+    M118 FEHLER: Kein Tool geladen! Bitte zuerst manuell ein Tool aufnehmen.
+  {% else %}
+    M118 ============================================
+    M118 NOTFALL-HOMING: T{tool_nr} aktiv (kein Probe)
+    M118 ============================================
+
+    # 1) Alles homen — Z geht ueber PG10 Switch (homing_override)
+    M118 Schritt 1/4: Homing ueber Z-Switch...
+    G28
+
+    # 2) Auf T0 wechseln (Toolchanger faehrt selbst auf Dock-Hoehe)
+    M118 Schritt 2/4: Wechsle auf T0...
+    T0
+
+    # 3) Nochmal Z homen — jetzt mit T0 (korrekter Switch-Offset fuer T0)
+    M118 Schritt 3/4: Re-Homing mit T0 am Switch...
+    G28 Z
+
+    # 4) PROBE_EDDY_NG_TAP fuer praezises Z
+    M118 Schritt 4/4: Eddy TAP fuer praezises Z...
+    G90
+    G0 X125 Y99 Z10 F5000
+    PROBE_EDDY_NG_TAP
+    G0 Z10 F3000
+
+    M118 ============================================
+    M118 NOTFALL-HOMING abgeschlossen! Z ist praezise.
+    M118 Fuer volle Kalibrierung: HOMING_ROUTINE ausfuehren
+    M118 ============================================
+  {% endif %}
+
+# ============================================================================
+#  Z-SWITCH KALIBRIERUNG (position_endstop bestimmen)
+# ============================================================================
+
+[gcode_macro CALIBRATE_Z_SWITCH]
+description: Kalibriert position_endstop fuer den Z-Switch.
+  Misst Differenz zwischen Switch-Trigger und Bett via Eddy TAP.
+  T0 MUSS geladen sein.
+gcode:
+  {% set tool_nr = printer.toolchanger.tool_number|default(-1)|int %}
+  {% if tool_nr != 0 %}
+    M118 FEHLER: T0 muss geladen sein! Aktuell: T{tool_nr}
+  {% else %}
+    M118 === Z-SWITCH KALIBRIERUNG ===
+    M118 Schritt 1: Homing + QGL...
+    G28
+    QUAD_GANTRY_LEVEL
+
+    M118 Schritt 2: Eddy TAP als Referenz (Bett = Z0)...
+    G90
+    G0 X125 Y99 Z10 F5000
+    PROBE_EDDY_NG_TAP
+
+    # Z-Position nach TAP merken
+    SET_GCODE_VARIABLE MACRO=_CALIBRATE_Z_SWITCH_STEP2 VARIABLE=z_ref VALUE={printer.toolhead.position.z}
+
+    M118 Schritt 3: Z-Switch anfahren und homen...
+    G0 Z10 F3000
+    G0 X29.85 Y0.98 F3000
+    G28 Z
+    G0 Z10 F3000
+
+    M118 Schritt 4: Erneuter Eddy TAP zur Korrekturmessung...
+    G0 X125 Y99 F5000
+    PROBE_EDDY_NG_TAP
+
+    # Korrektur berechnen
+    _CALIBRATE_Z_SWITCH_STEP2
+  {% endif %}
+
+[gcode_macro _CALIBRATE_Z_SWITCH_STEP2]
+variable_z_ref: 0.0
+gcode:
+  {% set z_after = printer.toolhead.position.z %}
+  {% set z_ref = printer["gcode_macro _CALIBRATE_Z_SWITCH_STEP2"].z_ref %}
+  {% set current_endstop = printer.configfile.settings['stepper_z'].position_endstop|float %}
+
+  {% set target_z = 10.0 %}
+  {% set correction = z_after - target_z %}
+  {% set new_endstop = current_endstop + correction %}
+
+  M118 ============================================
+  M118 === Z-SWITCH KALIBRIERUNG ERGEBNIS ===
+  M118 ============================================
+  M118 Aktuell: position_endstop = {current_endstop}
+  M118 Z nach TAP-Korrektur: {'%.4f'|format(z_after)} (erwartet: {target_z})
+  M118 Abweichung: {'%.4f'|format(correction)} mm
+  M118 NEUER position_endstop: {'%.4f'|format(new_endstop)}
+  M118 ---
+  {% if correction|abs < 0.01 %}
+    M118 Kalibrierung ist korrekt! Keine Aenderung noetig.
+  {% else %}
+    M118 Zum Uebernehmen:
+    M118   position_endstop in printer.cfg auf {'%.4f'|format(new_endstop)} setzen
+  {% endif %}
+  M118 ============================================
+
+# ============================================================================
+
+[gcode_macro UNSAFE_LOWER_BED]
+description: Lower the bed 100mm without homing
+gcode:
+  G90
+  SET_KINEMATIC_POSITION Z=100
+  G0 Z0 F600
+  M84
+
+[gcode_macro UNSAFE_UPPER_BED]
+description: Lower the bed 100mm without homing
+gcode:
+  G90
+  SET_KINEMATIC_POSITION Z=-100
+  G0 Z0 F600
+  M84
+
+[gcode_macro _TOOLCHANGER_TOOL_BEFORE_CHANGE]
+gcode:
+  SET_TMC_CURRENT STEPPER=stepper_z CURRENT=1.20
+  SET_TMC_CURRENT STEPPER=stepper_z1 CURRENT=1.20
+  SET_TMC_CURRENT STEPPER=stepper_z2 CURRENT=1.20
+  SET_TMC_CURRENT STEPPER=stepper_z3 CURRENT=1.20
+
+[gcode_macro TOOLCHANGE_DEMO]
+description: [SAMPLES=<int>]
+  Run random tool changes.
+  SAMPLES= Number of changes to run, default is 20.
+gcode:
+    {% set t = params.SAMPLES|default(20)|int %}
+    {% for n in range(t) %}
+      T{ printer.toolchanger.tool_numbers | random }
+    {% endfor %}
+
+[gcode_macro _TOOLCHANGER_TOOL_AFTER_CHANGE]
+gcode:
+  SET_TMC_CURRENT STEPPER=stepper_z CURRENT={printer.configfile.settings['tmc2209 stepper_z'].run_current|float}
+  SET_TMC_CURRENT STEPPER=stepper_z1 CURRENT={printer.configfile.settings['tmc2209 stepper_z1'].run_current|float}
+  SET_TMC_CURRENT STEPPER=stepper_z2 CURRENT={printer.configfile.settings['tmc2209 stepper_z2'].run_current|float}
+  SET_TMC_CURRENT STEPPER=stepper_z3 CURRENT={printer.configfile.settings['tmc2209 stepper_z3'].run_current|float}
+
+[gcode_macro WRITE_TOOL_OFFSETS]
+description: "Gibt formatierten Tooloffset als Kommentarzeilen aus, z.B. zum Kopieren in die printer.cfg"
+gcode:
+    {% set tool = params.TOOL|default(1)|int %}
+    {% set x_offset = params.X_OFFSET|default(0.0)|float %}
+    {% set y_offset = params.Y_OFFSET|default(0.0)|float %}
+    {% set z_offset = params.Z_OFFSET|default(0.0)|float %}
+    RESPOND PREFIX="info" MSG="#*# [tool T{tool}]"
+    RESPOND PREFIX="info" MSG="#*# gcode_x_offset = { '%.6f'|format(x_offset) }"
+    RESPOND PREFIX="info" MSG="#*# gcode_y_offset = { '%.6f'|format(y_offset) }"
+    RESPOND PREFIX="info" MSG="#*# gcode_z_offset = { '%.6f'|format(z_offset) }"
+
+[gcode_macro CLEAN_NOZZLE]
+description: Brush clean for any active tool (single brush, centered wipe) + 2nd wipe at cool temp + pre-clean retract
+
+# --- Bürstenposition (Mitte der Bürste / Eintauchpunkt) ---
+variable_start_x:        236.00     # Bürstenmitte X
+variable_start_y:        -2.00      # Bürstenmitte Y
+variable_start_z:        -1.0        # Düse in Borsten eingetaucht
+variable_raise_distance: 5.0        # Sicher über Bürste
+
+# --- Wischparameter ---
+variable_wipe_dist_x:    30         # Gesamt-Wischweg in X (wird symmetrisch ±dist_x/2 benutzt)
+variable_wipe_dist_y:    10         # Gesamt-Wischweg in Y (symmetrisch ±dist_y/2)
+variable_wipe_times:     6
+variable_wipe_speed:     200        # mm/s
+
+# --- Temperatur ---
+variable_clean_temp:      260
+variable_temp_offset:       0
+variable_temp_min:         120
+variable_temp_max:         260
+
+# --- Cooldown-Wipe ---
+variable_cool_enable:       1       # 1 = aktiv, 0 = aus
+variable_cool_temp:       200       # Abkühl-Temperatur für zweiten Wipe
+variable_cool_wait_band:    3       # +/- Band fürs Warten (z.B. 180±3)
+
+# --- Retract vor dem Reinigen ---
+variable_retract_enable:  1        # 1 = aktiv, 0 = aus
+variable_retract_length:  5.0      # mm Filament-Retract
+variable_retract_speed:   35        # mm/s
+
+gcode:
+  {% set heater = printer.toolhead.extruder %}
+  {% set h = printer[heater] %}
+
+  # --- Parameter einlesen / Defaults ---
+  {% set center_x = params.START_X|default(start_x)|float %}
+  {% set center_y = params.START_Y|default(start_y)|float %}
+  {% set z_press  = params.START_Z|default(start_z)|float %}
+  {% set dist_x   = params.DIST_X|default(wipe_dist_x)|float %}
+  {% set dist_y   = params.DIST_Y|default(wipe_dist_y)|float %}
+  {% set times    = params.TIMES|default(wipe_times)|int %}
+  {% set speed    = (params.SPEED|default(wipe_speed)|float) * 60.0 %}
+
+  # --- Retract-Parameter ---
+  {% set retract_enable = params.RETRACT_ENABLE|default(retract_enable)|int %}
+  {% set retract_len    = params.RETRACT|default(retract_length)|float %}
+  {% set retract_speed  = (params.RETRACT_SPEED|default(retract_speed)|float) * 60.0 %}
+
+  # --- symmetrische Wischwege berechnen ---
+  {% set span_x = dist_x if dist_x >= 0 else -dist_x %}
+  {% set span_y = dist_y if dist_y >= 0 else -dist_y %}
+  {% set x_start = center_x - (span_x / 2.0) %}
+  {% set x_end   = center_x + (span_x / 2.0) %}
+  {% set y_start = center_y - (span_y / 2.0) %}
+  {% set y_end   = center_y + (span_y / 2.0) %}
+
+  # --- Temperaturberechnung mit Clamping (Clean-Temp) ---
+  {% set temp_base = params.TEMP|default(clean_temp)|float %}
+  {% set temp_off  = params.TEMP_OFFSET|default(temp_offset)|float %}
+  {% set t_raw     = temp_base + temp_off %}
+  {% set t_min     = temp_min|float %}
+  {% set t_max     = temp_max|float %}
+  {% set target_t  = (t_raw if t_raw >= t_min else t_min) if t_raw <= t_max else t_max %}
+
+  {% set z_hop      = params.RAISE|default(raise_distance)|float %}
+  {% set old_target = h.target|float %}
+  {% set homed      = printer.toolhead.homed_axes|string %}
+  {% set z_safe     = z_hop %}
+
+  # --- Cooldown-Parameter ---
+  {% set cool_enable = params.COOL_ENABLE|default(cool_enable)|int %}
+  {% set cool_temp   = params.COOL_TEMP|default(cool_temp)|float %}
+  {% set cool_band   = params.COOL_BAND|default(cool_wait_band)|float %}
+  {% if cool_temp < t_min %}{% set cool_temp = t_min %}{% endif %}
+  {% if cool_temp > t_max %}{% set cool_temp = t_max %}{% endif %}
+
+  # --- Homing / Z anheben ---
+  {% if "xyz" not in homed %}
+    G28
+  {% else %}
+    G91
+    G0 Z{z_safe} F1800
+    G90
+  {% endif %}
+
+  RESPOND TYPE=echo MSG="CLEAN_NOZZLE on {heater} @ {target_t|int}°C, cycles {times}"
+
+  # --- Auf Reinigungstemperatur heizen ---
+  SET_HEATER_TEMPERATURE HEATER={heater} TARGET={target_t}
+  G1 X{center_x} Y{center_y} F12000
+  TEMPERATURE_WAIT SENSOR={heater} MINIMUM={target_t-2} MAXIMUM={target_t+10}
+
+  ; ---------- Retract vor dem Reinigen ----------
+  {% if retract_enable == 1 and retract_len > 0 %}
+    RESPOND TYPE=echo MSG="Pre-clean retract {retract_len}mm"
+    M83
+    G1 E-{retract_len} F{retract_speed}
+    M82
+  {% endif %}
+
+  ; In Bürste eintauchen
+  G1 Z{z_press} F1500
+
+  ; ---------- WIPE PASS 1 (Clean Temp) ----------
+  ; X-Wischen symmetrisch um Bürstenmitte
+  G1 X{x_start} Y{center_y} F{speed}
+  {% for i in range(times) %}
+    G1 X{x_end}   Y{center_y} F{speed}
+    G1 X{x_start} Y{center_y} F{speed}
+  {% endfor %}
+
+  ; Y-Wischen symmetrisch um Bürstenmitte
+  G1 X{center_x} Y{y_start} F12000
+  {% for i in range(times) %}
+    G1 X{center_x} Y{y_end}   F{speed}
+    G1 X{center_x} Y{y_start} F{speed}
+  {% endfor %}
+
+  ; Sicher hoch und zurück zur Mitte der Bürste
+  G1 Z{z_safe} F1800
+  G1 X{center_x} Y{center_y} F12000
+
+  ; ---------- WIPE PASS 2 (Cooldown Temp) ----------
+  {% if cool_enable|int == 1 %}
+    RESPOND TYPE=echo MSG="Cooldown wipe @ {cool_temp|int}°C"
+
+    SET_HEATER_TEMPERATURE HEATER={heater} TARGET={cool_temp}
+
+    ; Warten bis Abkühltemp erreicht (Band)
+    TEMPERATURE_WAIT SENSOR={heater} MINIMUM={cool_temp-cool_band} MAXIMUM={cool_temp+cool_band}
+
+    ; Wieder eintauchen
+    G1 Z{z_press} F1500
+
+    ; X-Wischen (2. Durchgang)
+    G1 X{x_start} Y{center_y} F{speed}
+    {% for i in range(times) %}
+      G1 X{x_end}   Y{center_y} F{speed}
+      G1 X{x_start} Y{center_y} F{speed}
+    {% endfor %}
+
+    ; Y-Wischen (2. Durchgang)
+    G1 X{center_x} Y{y_start} F12000
+    {% for i in range(times) %}
+      G1 X{center_x} Y{y_end}   F{speed}
+      G1 X{center_x} Y{y_start} F{speed}
+    {% endfor %}
+
+    ; Sicher hoch und zurück
+    G1 Z{z_safe} F1800
+    G1 X{center_x} Y{center_y} F12000
+  {% endif %}
+
+  # --- Temperatur nach der Reinigung zurücksetzen ---
+  {% set user_set_temp = ('TEMP' in params) or ('TEMP_OFFSET' in params) %}
+
+  {% if user_set_temp %}
+    SET_HEATER_TEMPERATURE HEATER={heater} TARGET={old_target}
+  {% else %}
+    SET_HEATER_TEMPERATURE HEATER={heater} TARGET=0
+  {% endif %}
+[gcode_macro LOAD_FILAMENT]
+gcode:
+  M117 Loading
+  M104 S240
+  G90 ; Absolute pos
+  G1 X125 Y125 Z50 F1800 ; Move to center
+  M109 S260 ;Heat up the filament
+  M83                            ; set extruder to relative
+  G1 E50 F300                   ; extrude 5 cm
+  G1 E50 F300                   ; extrude 5 cm
+  G1 E-4 F1800                  ; retract some
+  M82                           ; set extruder to absolute
+  M400                          ; wait for buffer to clear
+  M104 S0                       ; Stop heating
+
+[gcode_macro UNLOAD_FILAMENT]
+gcode:
+  M117 Unloading
+  M109 S260 ;Heat up the filament
+  M83                           ; set extruder to relative
+  G1 E5 F500                   ; extrude 5 mm
+  G1 E-50 F1000                   ; retract 5 cm
+  G1 E-50 F1000                   ; retract 5 cm
+  M82                            ; set extruder to absolute
+  M400                          ; wait for buffer to clear
+  TURN_OFF_HEATERS
+  M117 Unloading done
+
+[gcode_macro UNLOAD_ONE_FILAMENT]
+gcode:
+  M117 Unloading {params.TOOL}
+  M109 T{params.TOOL} S240 ;Wait until heated
+  {% set start_extruder = printer.toolhead.extruder %}
+  {% set tool_name = printer.toolchanger.tool_names[params.TOOL|int] %}
+  {% set extruder = printer[tool_name].extruder %}
+  M109 T{params.TOOL} S240 ;Heat up the filament
+  ACTIVATE_EXTRUDER EXTRUDER={extruder}
+  M83                           ; set extruder to relative
+  G1 E5 F500                   ; extrude 5 mm
+  G1 E-50 F1000                   ; retract 5 cm
+  G1 E-50 F1000                   ; retract 5 cm
+  M82                            ; set extruder to absolute
+  M400                          ; wait for buffer to clear
+  TURN_OFF_HEATERS
+  ACTIVATE_EXTRUDER EXTRUDER={start_extruder}
+  M117 Unloading done
+
+[gcode_macro UNLOAD_ALL_FILAMENT]
+gcode:
+  {% set start_extruder = printer.toolhead.extruder %}
+  {% set tools = printer.toolchanger.tool_names %}
+  M117 Unloading
+  {% for tool in tools %}
+    M104 T{printer[tool].tool_number} S240 ;Heat up the filament
+  {% endfor %}
+  {% for tool in tools %}
+    M109 T{printer[tool].tool_number} S240 ;Wait until heated
+    ACTIVATE_EXTRUDER EXTRUDER={printer[tool].extruder}
+    M83                           ; set extruder to relative
+    G1 E5 F500                     ; extrude 5 mm
+    G1 E-50 F1000                   ; retract 5 cm
+    G1 E-50 F1000                   ; retract 5 cm
+  {% endfor %}
+  M400                          ; Finish all th emoves
+  M82                            ; set extruder to absolute
+  TURN_OFF_HEATERS
+  ACTIVATE_EXTRUDER EXTRUDER={start_extruder}
+  M117 Unloading done
+
+[gcode_macro CHANGE_NOZZLE]
+gcode:
+  M117 Nozzle change
+  M104 S240
+  G90 ; Absolute pos
+  G1 X125 Y0 Z100 F1800 ; Move to front
+  M109 S240 ;Heat up the filament
+  M83                            ; set extruder to relative
+  G1 E5 F250                   ; extrude 5 mm
+  G1 E-50 F1000                ; retract 5 cm
+  M82                            ; set extruder to absolute
+  M117 Ready to swap
+
+[gcode_macro SHOW_QGL_RESULT]
+description: Zeigt die letzten QGL-Ergebnisse an
+gcode:
+  {% set diff = printer["gcode_macro QUAD_GANTRY_LEVEL"].last_diff %}
+  {% set attempts = printer["gcode_macro QUAD_GANTRY_LEVEL"].last_attempts %}
+  {% set diff_rounded = (diff * 1000)|int / 1000 %}
+  {% set msg = "QGL in " ~ attempts ~ " Versuchen mit " ~ diff_rounded ~ " mm Differenz" %}
+  RESPOND PREFIX="info" MSG="{msg}"
+
+# ================================
+#  UNIVERSAL TEMPERATURE HELPERS
+# ================================
+
+[gcode_macro _HEAT_ACTIVE]
+description: Heat the active toolhead to target temperature
+gcode:
+  {% set heater = printer.toolhead.extruder %}
+  SET_HEATER_TEMPERATURE HEATER={heater} TARGET={params.T|default(200)|float}
+
+[gcode_macro _WAIT_ACTIVE]
+description: Wait until active toolhead reaches target temp
+gcode:
+  {% set heater = printer.toolhead.extruder %}
+  {% set t = params.T|default(200)|float %}
+  TEMPERATURE_WAIT SENSOR={heater} MINIMUM={t-2} MAXIMUM={t+10}
+
+[gcode_macro _COOL_ACTIVE]
+description: Cool down the active heater
+gcode:
+  {% set heater = printer.toolhead.extruder %}
+  SET_HEATER_TEMPERATURE HEATER={heater} TARGET=0
+
+[gcode_macro _AFTER_TOOL_PICKUP]
+description: Actions after picking up a tool
+gcode:
+  M118 Tool picked up → Cleaning nozzle...
+  CLEAN_NOZZLE
+  M118 Tool ready
+
+[gcode_macro _BEFORE_TOOL_DROPOFF]
+description: Actions before dropping a tool
+gcode:
+  M118 Parking tool → Cooling down...
+  _COOL_ACTIVE
+
+# ── HTC KlipperScreen Extruder-Makros ─────────────────────────────────
+[gcode_macro HTC_EXTRUDE]
+description: Extrudiert für ein bestimmtes Tool (ohne Dock)
+gcode:
+    {% set tool = params.T|default(0)|int %}
+    {% set length = params.E|default(10)|float %}
+    {% set speed = params.F|default(300)|int %}
+    {% if tool == 0 %}
+      ACTIVATE_EXTRUDER EXTRUDER=extruder
+    {% else %}
+      ACTIVATE_EXTRUDER EXTRUDER=extruder{tool}
+    {% endif %}
+    M83
+    G1 E{length} F{speed}
+
+[gcode_macro HTC_RETRACT]
+description: Retract für ein bestimmtes Tool (ohne Dock)
+gcode:
+    {% set tool = params.T|default(0)|int %}
+    {% set length = params.E|default(10)|float %}
+    {% set speed = params.F|default(300)|int %}
+    {% if tool == 0 %}
+      ACTIVATE_EXTRUDER EXTRUDER=extruder
+    {% else %}
+      ACTIVATE_EXTRUDER EXTRUDER=extruder{tool}
+    {% endif %}
+    M83
+    G1 E-{length} F{speed}
+
+[gcode_macro HTC_LOAD_FILAMENT]
+description: Filament laden für ein bestimmtes Tool (ohne Dock)
+gcode:
+    {% set tool = params.T|default(0)|int %}
+    {% if tool == 0 %}
+      ACTIVATE_EXTRUDER EXTRUDER=extruder
+    {% else %}
+      ACTIVATE_EXTRUDER EXTRUDER=extruder{tool}
+    {% endif %}
+    LOAD_FILAMENT
+
+[gcode_macro HTC_UNLOAD_FILAMENT]
+description: Filament entladen für ein bestimmtes Tool (ohne Dock)
+gcode:
+    {% set tool = params.T|default(0)|int %}
+    {% if tool == 0 %}
+      ACTIVATE_EXTRUDER EXTRUDER=extruder
+    {% else %}
+      ACTIVATE_EXTRUDER EXTRUDER=extruder{tool}
+    {% endif %}
+    UNLOAD_FILAMENT
+
+[gcode_macro PRIME_LINE]
+description: Prime line similar to original slicer prime (per tool slot) in front of the bed
+gcode:
+  {% set x_min = 0.0 %}   # -5
+  {% set x_max = 250.0 %} # 260
+
+  # Bettgrenzen (nur für Orientierung)
+  {% set bed_x_min = 0.0 %}
+  {% set bed_x_max = 200.0 %}
+  {% set bed_y_min = 0.0 %}
+  {% set bed_y_max = 230.0 %}
+
+  # Primeline vorne im Bett, aber mit genug Abstand,
+  # damit selbst T3 mit stark negativem Y-Offset nicht unter Y-Min kommt
+  {% set prime_y = bed_y_min + 15.0 %}
+
+  # Aktives Tool – dafür wird die Linie gesetzt
+  {% set tn = printer.toolchanger.tool_number|int %}
+
+  # X-Slots grob angelehnt an den ursprünglichen Slicer:
+  {% if tn == 0 %}
+    {% set x0 = 10.0 %}
+  {% elif tn == 1 %}
+    {% set x0 = 90.0 %}
+  {% elif tn == 2 %}
+    {% set x0 = 150.0 %}
+  {% elif tn == 3 %}
+    {% set x0 = 210.0 %}
+  {% else %}
+    # Fallback für z.B. T4/T5
+    {% set x0 = 30.0 %}
+  {% endif %}
+
+  # Ziel-Linienlänge ~40 mm (wie beim ursprünglichen Purge)
+  {% set line_len = 40.0 %}
+  {% set wipe_len = 6.0 %}
+  {% set clear_len = 2.0 %}
+
+  # Safety-Clamps gegen mechanische Grenzen
+  {% if x0 < x_min + 5.0 %}
+    {% set x0 = x_min + 5.0 %}
+  {% endif %}
+  {% if x0 + line_len > x_max - 5.0 %}
+    {% set x0 = (x_max - 5.0) - line_len %}
+  {% endif %}
+
+  {% set x1 = x0 + line_len %}
+
+  M118 PRIME_LINE: Tool T{tn} Y={prime_y} X{x0}..{x1}
+
+  G90
+  G0 Z5 F6000
+  G0 X{x0} Y{prime_y} F10000
+  G0 Z0.3 F3000
+
+  ; relative Extrusion für die eigentliche Primeline (~40 mm mit Material)
+  G91
+  G1 X{line_len} E20 F1500   ; purge über 40 mm, ähnlich wie Orca/Bambu
+  ; kleiner Wisch nach vorne/hinten
+  G1 X{wipe_len} F3000
+  G1 X-{wipe_len} F3000
+  ; 2 mm weiter, damit der naechste Toolkopf beim Zurueckkehren nicht auf der Purgeline landet
+  G1 X{clear_len} F3000
+  G0 Z1.0 F3000
+  G90
+  G92 E0
+
+[gcode_macro TOOL_ACTIVATE]
+description: Ensure tool is hot & primed on first use (runtime fallback)
+variable_primed_tools: ""
+gcode:
+  {% set tn = printer.toolchanger.tool_number|int %}
+  {% set primed = printer["gcode_macro TOOL_ACTIVATE"].primed_tools.split(",") %}
+
+  {% if tn|string not in primed %}
+    M118 TOOL_ACTIVATE: Erstnutzung von T{tn}
+
+    # Zieltemperatur ermitteln:
+    # 1) Wenn PRINT_START im aktuellen Job Tn_TEMP übergeben bekam -> nimm die
+    # 2) sonst -> nimm das aktuelle Target des aktiven Extruders (falls schon gesetzt)
+    {% set key = "T%d_TEMP" % tn %}
+    {% set ttemp = 0.0 %}
+    {% if printer["gcode_macro PRINT_START"] is defined and key in printer["gcode_macro PRINT_START"].params %}
+      {% set ttemp = printer["gcode_macro PRINT_START"].params[key]|float %}
+    {% else %}
+      {% set ttemp = printer[printer.toolhead.extruder].target|float %}
+    {% endif %}
+
+    {% if ttemp > 0 %}
+      M109 S{ttemp}
+      CLEAN_NOZZLE
+      PRIME_LINE TOOL={tn}
+    {% else %}
+      M118 TOOL_ACTIVATE: Keine Temp fuer T{tn} bekannt (ttemp=0) -> skip heat/prime
+    {% endif %}
+
+    # Tool als "primed" merken (sauber ohne führendes Komma)
+    {% if printer["gcode_macro TOOL_ACTIVATE"].primed_tools|length == 0 %}
+      SET_GCODE_VARIABLE MACRO=TOOL_ACTIVATE VARIABLE=primed_tools VALUE="{tn}"
+    {% else %}
+      SET_GCODE_VARIABLE MACRO=TOOL_ACTIVATE VARIABLE=primed_tools VALUE="{printer['gcode_macro TOOL_ACTIVATE'].primed_tools},{tn}"
+    {% endif %}
+  {% endif %}
+
+
+[gcode_macro PRINT_START]
+description: SAFE start: init -> mount T0 -> home/QGL/mesh -> preheat used tools -> clean/prime other tools -> finally init tool
+gcode:
+  {% set init_tool   = params.TOOL|default(0)|int %}
+  {% set bed_temp    = params.BED_TEMP|default(60)|float %}
+  {% set tool_temp   = params.TOOL_TEMP|default(0)|float %}
+  {% set prime       = params.PRIME|default(1)|int %}
+  {% set clean       = params.CLEAN|default(0)|int %}
+  {% set retract_mm  = params.RETRACT_MM|default(2.0)|float %}
+  {% set clean_temp  = params.CLEAN_TEMP|default(260)|float %}
+
+  # --- Optimierungs-Parameter ---
+  {% set preheat                     = params.PREHEAT|default(1)|int %}
+  {% set preheat_cap                 = params.PREHEAT_CAP|default(200)|float %}
+  {% set t0_cooldown_after_home      = params.T0_COOLDOWN_AFTER_HOME|default(1)|int %}
+
+  M117 PRINT_START...
+  M118 PRINT_START: Bed={bed_temp}C Init-Tool=T{init_tool} @ {tool_temp}C PRIME={prime} CLEAN={clean} PREHEAT={preheat} CAP={preheat_cap}
+
+  # --------------------------------------------------------------------------
+  # 0) Toolchanger init + GARANTIERT T0 mounten (Probe ist nur auf T0!)
+  # --------------------------------------------------------------------------
+  INITIALIZE_TOOLCHANGER
+  ENSURE_TOOL_MOUNTED
+
+  {% if printer.toolchanger is defined %}
+    {% if printer.toolchanger.tool_number|int != 0 %}
+      T0
+    {% endif %}
+  {% else %}
+    T0
+  {% endif %}
+
+  # --------------------------------------------------------------------------
+  # 1) Liste der genutzten Tools aus Orca Tn_TEMP (früh bauen für Preheat)
+  # --------------------------------------------------------------------------
+  {% set used = [] %}
+  {% for tn in range(0, 6) %}
+    {% set key = "T%d_TEMP" % tn %}
+    {% if key in params %}
+      {% set ttemp = params[key]|float %}
+      {% if ttemp > 0 %}
+        {% set _ = used.append([tn, ttemp]) %}
+      {% endif %}
+    {% endif %}
+  {% endfor %}
+
+  # Fallback: mindestens Init-Tool behandeln, falls Orca nichts sendet
+  {% if used|length == 0 %}
+    {% set used = [[init_tool, tool_temp]] %}
+  {% endif %}
+
+  # --------------------------------------------------------------------------
+  # 2) Bett / Umgebung
+  # --------------------------------------------------------------------------
+  M140 S{bed_temp}
+  SET_PIN PIN=nevermore VALUE=1.00
+
+  # --------------------------------------------------------------------------
+  # 2b) PREHEAT (no-wait, capped)
+  # --------------------------------------------------------------------------
+  {% if preheat != 0 %}
+    M118 PREHEAT: set M104 for used tools (no-wait), capped at {preheat_cap}C
+    {% for item in used %}
+      {% set tn = item[0]|int %}
+      {% set ttemp = item[1]|float %}
+      {% if ttemp > 0 %}
+        {% set target = ttemp %}
+        {% if preheat_cap > 0 and target > preheat_cap %}
+          {% set target = preheat_cap %}
+        {% endif %}
+        M104 T{tn} S{target}
+      {% endif %}
+    {% endfor %}
+  {% endif %}
+
+  # --------------------------------------------------------------------------
+  # 3) Homing / QGL / Mesh NUR mit T0
+  # --------------------------------------------------------------------------
+  M109 S150
+  M190 S{bed_temp}
+  HOMING_ROUTINE CLEAN={clean} CLEAN_TEMP={tool_temp if tool_temp > 0 else clean_temp}
+
+  # Sinnvolle "Sicherheits-/UI"-Dinge
+  EXCLUDE_OBJECT_DEFINE
+  BED_MESH_CLEAR
+
+  # Optional: T0 nach Homing nicht weiterheizen lassen
+  {% if t0_cooldown_after_home != 0 %}
+    M109 S0
+  {% endif %}
+
+  # --------------------------------------------------------------------------
+  # 4) Jetzt erst: andere verwendete Tools (außer T0 und außer Init-Tool) clean/prime
+  # --------------------------------------------------------------------------
+  {% for item in used %}
+    {% set tn = item[0]|int %}
+    {% set ttemp = item[1]|float %}
+    {% if tn != 0 and tn != init_tool %}
+      M118 Start Clean/Prime: T{tn} @ {ttemp}C
+      T{tn}
+      M109 S{ttemp}
+      {% if clean != 0 %}
+        CLEAN_NOZZLE TEMP={ttemp} COOL_ENABLE=0
+      {% endif %}
+      {% if prime != 0 %}
+        PRIME_LINE TOOL={tn}
+      {% endif %}
+    {% endif %}
+  {% endfor %}
+
+  # --------------------------------------------------------------------------
+  # 5) Init-Tool zuletzt: auf Drucktemp, optional Retract, Prime
+  # --------------------------------------------------------------------------
+  M118 Aktives Druck-Tool: T{init_tool} @ {tool_temp}C
+  T{init_tool}
+
+  {% if tool_temp > 0 %}
+    # Falls Preheat aktiv war und gedeckelt ist, hier ggf. noch von Cap -> Endtemp hochheizen
+    M109 S{tool_temp}
+    {% if clean != 0 %}
+      CLEAN_NOZZLE TEMP={tool_temp} COOL_ENABLE=0
+    {% endif %}
+    M83
+    G1 E-{retract_mm} F1800
+    M82
+  {% endif %}
+
+  G90
+  G0 Z5 F6000
+
+  {% if prime != 0 %}
+    M118 PRIME_LINE (Init-Tool)
+    PRIME_LINE TOOL={init_tool}
+  {% endif %}
+
+  M117 Druck startet...
+
+[gcode_macro PRINT_END]
+gcode:
+  M117 Beende Druck – kühle ab
+
+  #####################################################################
+  # ⬇️ Druckkopf sichern
+  #####################################################################
+  G91                        ; relative Bewegung
+  G1 E-3 F300                ; leicht zurückziehen
+  G1 X-2 Y-2 F1000           ; vom Objekt wegfahren
+  G1 Z10 F3000               ; Düse 10 mm anheben
+  G90                        ; zurück zu absolut
+
+  #####################################################################
+  # 🔥 Heizelemente & Lüfter ausschalten
+  #####################################################################
+  M104 S0                    ; Hotend aus
+  M140 S0                    ; Heizbett aus
+  M106 S0                    ; Bauteillüfter aus
+  M107                       ; sonstige Lüfter aus (Part-/Board-Lüfter etc.)
+
+  #####################################################################
+  # 📏 Z-Offset & Tap-Offset zurücksetzen (Eddy Duo)
+  #####################################################################
+  BED_MESH_CLEAR
+  TURN_OFF_HEATERS           ; alle Heizer sicher aus
+
+  #####################################################################
+  # 💨 Nevermore-Filter 180 Sekunden nachlaufen lassen
+  #####################################################################
+  SET_PIN PIN=nevermore VALUE=1.00
+  UPDATE_DELAYED_GCODE ID=STOP_NEVERMORE DURATION=180
+
+  #####################################################################
+  # 🛠️ Tool zurück auf T0
+  #####################################################################
+  T0                         ; Immer zurück auf Tool 0
+  PROBE_EDDY_NG_SET_TAP_OFFSET VALUE=0
+
+  M117 Druck abgeschlossen – Nevermore läuft noch 180s
+
+
+# ── Tap-Probe Aktivierung/Deaktivierung ──────────────────────────────────
+[gcode_macro _TAP_PROBE_ACTIVATE]
+description: Heizt die Duese vors Tappen auf MIN_TEMP und merkt sich das alte Ziel
+# saved: {"extruder1": 0.0, ...} - Ziel vor dem Anheben, je Heizer.
+# Nur belegt solange wir wirklich angehoben haben; _TAP_PROBE_DEACTIVATE
+# setzt zurueck und raeumt den Eintrag weg.
+# Solltemperatur fuer den Tap. Als Variable statt als Jinja-Default,
+# damit die Offset-UI sie ueber
+# printer["gcode_macro _TAP_PROBE_ACTIVATE"].min_temp lesen und per
+# SET_GCODE_VARIABLE aendern kann.
+variable_min_temp: 150
+# PID-Welle: nach M109 S150 sind 149C normal. Ohne Toleranz loest
+# das einen kompletten Heiz- und Zuruecksetz-Zyklus je Tool aus.
+variable_temp_tolerance: 3
+variable_saved: {}
+gcode:
+    {% set heater = params.HEATER|default('extruder')|string %}
+    {% set min_temp = params.MIN_TEMP|default(min_temp)|float %}
+    {% set temp = printer[heater].temperature|float %}
+    {% set target = printer[heater].target|float %}
+    # Ziel unter der Tap-Temperatur (typisch 0 zwischen grobem und feinem
+    # QGL-Durchgang): Ziel auf min_temp setzen, damit die Duese waehrend des
+    # Tappens nicht abkuehlt und der Hotend-Luefter nicht in "abkuehlen"
+    # faellt. Gewartet wird nur, wenn sie wirklich noch kalt ist. Beim
+    # Drucken (Ziel >= min_temp) passiert nichts.
+    {% if target < min_temp %}
+        {% if heater not in saved %}
+            {% set s = dict(saved) %}
+            {% set dummy = s.update({heater: target}) %}
+            SET_GCODE_VARIABLE MACRO=_TAP_PROBE_ACTIVATE VARIABLE=saved VALUE="{s}"
+        {% endif %}
+        SET_HEATER_TEMPERATURE HEATER={heater} TARGET={min_temp}
+        {% if temp < (min_temp - temp_tolerance|float) %}
+            M118 TAP: {heater} zu kalt ({temp|int}C < {min_temp|int}C), heize auf {min_temp|int}C
+            TEMPERATURE_WAIT SENSOR={heater} MINIMUM={min_temp}
+        {% else %}
+            M118 TAP: {heater} haelt {min_temp|int}C (Ziel war {target|int}C)
+        {% endif %}
+    {% endif %}
+
+[gcode_macro _TAP_PROBE_DEACTIVATE]
+description: Setzt das Heizerziel zurueck, das _TAP_PROBE_ACTIVATE angehoben hat
+gcode:
+    {% set heater = params.HEATER|default('extruder')|string %}
+    {% set saved = printer["gcode_macro _TAP_PROBE_ACTIVATE"].saved %}
+    {% if heater in saved %}
+        M118 TAP: {heater} zurueck auf {saved[heater]|int}C
+        SET_HEATER_TEMPERATURE HEATER={heater} TARGET={saved[heater]}
+        {% set s = dict(saved) %}
+        {% set dummy = s.pop(heater) %}
+        SET_GCODE_VARIABLE MACRO=_TAP_PROBE_ACTIVATE VARIABLE=saved VALUE="{s}"
+    {% endif %}
+
+# ── Dock Mount/Unmount Makros ──────────────────────────────────────────
+[gcode_macro DOCK_UNMOUNT]
+description: Nach Tool-Pickup: Y dann X zur Bettmitte, dann Z=20
+gcode:
+  {% set axmin = printer.toolhead.axis_minimum %}
+  {% set axmax = printer.toolhead.axis_maximum %}
+  {% set mid_x = (([0, axmin.x]|max + axmax.x) / 2.0) %}
+  {% set mid_y = (([0, axmin.y]|max + axmax.y) / 2.0) %}
+  G90
+  G1 Y{ '%.1f' % mid_y } F6000
+  G1 X{ '%.1f' % mid_x } F6000
+  G1 Z20 F3000
+
+[gcode_macro DOCK_MOUNT]
+description: Vor Tool-Dropoff: Y dann X zur Bettmitte, Z auf params_park_z, X auf params_park_x
+gcode:
+  {% set axmin = printer.toolhead.axis_minimum %}
+  {% set axmax = printer.toolhead.axis_maximum %}
+  {% set mid_x = (([0, axmin.x]|max + axmax.x) / 2.0) %}
+  {% set mid_y = (([0, axmin.y]|max + axmax.y) / 2.0) %}
+  {% set tn = printer.toolchanger.tool_number|int %}
+  {% set tool = printer['tool T' ~ tn|string] %}
+  {% set park_x = tool.params_park_x|float %}
+  {% set park_z = tool.params_park_z|float %}
+  G90
+  G1 Y{ '%.1f' % mid_y } F6000
+  G1 X{ '%.1f' % mid_x } F6000
+  G1 Z{ '%.3f' % park_z } F3000
+  G1 X{ '%.1f' % park_x } F6000

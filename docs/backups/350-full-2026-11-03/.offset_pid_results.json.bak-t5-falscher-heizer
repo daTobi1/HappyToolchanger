@@ -1,0 +1,56 @@
+{
+  "0": {
+    "pid_kp": 43.019,
+    "pid_ki": 15.933,
+    "pid_kd": 29.038,
+    "temp": 200.0,
+    "height": 10.0,
+    "fan": 100,
+    "extruder": "extruder"
+  },
+  "1": {
+    "pid_kp": 32.576,
+    "pid_ki": 7.212,
+    "pid_kd": 36.784,
+    "temp": 200.0,
+    "height": 10.0,
+    "fan": 100,
+    "extruder": "extruder1"
+  },
+  "2": {
+    "pid_kp": 66.93,
+    "pid_ki": 6.741,
+    "pid_kd": 166.123,
+    "temp": 200.0,
+    "height": 10.0,
+    "fan": 100,
+    "extruder": "extruder2"
+  },
+  "3": {
+    "pid_kp": 36.028,
+    "pid_ki": 11.398,
+    "pid_kd": 28.47,
+    "temp": 200.0,
+    "height": 10.0,
+    "fan": 100,
+    "extruder": "extruder3"
+  },
+  "4": {
+    "pid_kp": 30.035,
+    "pid_ki": 3.989,
+    "pid_kd": 56.538,
+    "temp": 200.0,
+    "height": 10.0,
+    "fan": 100,
+    "extruder": "extruder4"
+  },
+  "5": {
+    "pid_kp": 42.005,
+    "pid_ki": 14.739,
+    "pid_kd": 29.929,
+    "temp": 200.0,
+    "height": 10.0,
+    "fan": 100,
+    "extruder": "extruder"
+  }
+}
