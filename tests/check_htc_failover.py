@@ -131,7 +131,9 @@ class FakeReactor:
 
 
 class FakeTemplate:
-    def __init__(self):
+    def __init__(self, world=None, default=None):
+        self.world = world
+        self.default = default
         self.runs = []
 
     def create_template_context(self):
@@ -139,14 +141,25 @@ class FakeTemplate:
 
     def run_gcode_from_command(self, context):
         self.runs.append(context)
+        # Ein nicht konfiguriertes Template rendert seinen Standard (runout_gcode:
+        # PAUSE) -- den spielt die Maschine wie jeden anderen Befehl nach.
+        if self.world is not None and self.default:
+            self.world.gcode.run_script_from_command(self.default)
 
 
 class FakeGcodeMacro:
-    def __init__(self, template):
-        self.template = template
+    """Ein Template je Option; world.template ist endless_spool_gcode,
+    world.runout_template ist runout_gcode (unkonfiguriert = Standard)."""
+
+    def __init__(self, world):
+        self.world = world
+        self.templates = {}
 
     def load_template(self, config, option, default=None):
-        return self.template
+        configured = option in self.world.options
+        template = FakeTemplate(self.world, None if configured else default)
+        self.templates[option] = template
+        return template
 
 
 class FakeHeater:
@@ -232,10 +245,10 @@ class World:
         self.reactor = FakeReactor(self)
         self.wait_hook = None
         self.gcode = FakeGcode(self)
-        self.template = FakeTemplate()
+        self.gcode_macro = FakeGcodeMacro(self)
         self.objects = {
             'gcode': self.gcode,
-            'gcode_macro': FakeGcodeMacro(self.template),
+            'gcode_macro': self.gcode_macro,
             'pause_resume': FakePauseResume(),
             'print_stats': FakePrintStats(),
             'save_variables': FakeSaveVariables(),
@@ -249,6 +262,14 @@ class World:
         if with_ktc:
             self.objects['toolchanger'] = FakeToolchanger(
                 ['extruder', 'extruder1', 'hotend_c', 'extruder3'])
+
+    @property
+    def template(self):
+        return self.gcode_macro.templates['endless_spool_gcode']
+
+    @property
+    def runout_template(self):
+        return self.gcode_macro.templates['runout_gcode']
 
     # --- Config ---
     def get_printer(self):
@@ -393,12 +414,56 @@ def main():
        "verweigertes RESUME wird gemeldet", str(world.gcode.raw))
     ok(htc.ttg_map[0] == 2, "das Tool haengt trotzdem -- Zuordnung bleibt")
 
-    # --- kein Ersatz: nur pausieren ---
+    # --- kein Ersatz: nur pausieren (runout_gcode, Standard PAUSE) ---
     world, htc = make(options={'endless_spool_groups': '0, 1, 2, 3'})
     htc.handle_runout(0)
     ok(tool_scripts(world) == ['PAUSE'], "ohne Ersatz nur PAUSE",
        str(tool_scripts(world)))
-    ok(len(world.gcode.raw) == 1, "und eine Fehlermeldung")
+    ok(len(world.gcode.raw) == 1 and 'no replacement in group 0' in world.gcode.raw[0],
+       "und eine Fehlermeldung mit dem Grund", str(world.gcode.raw))
+    ok(len(world.runout_template.runs) == 1
+       and world.runout_template.runs[0].get('reason') == 'no_replacement',
+       "runout_gcode kennt den Grund", str(world.runout_template.runs))
+
+    # --- Endless Spool aus: Druck sofort anhalten, runout_gcode laufen lassen ---
+    world, htc = make(options={'endless_spool_enabled': '0'})
+    htc.handle_runout(0)
+    ok(world.objects['pause_resume'].pause_commands == 1,
+       "ohne Endless Spool muss der Druck sofort angehalten werden")
+    ok(tool_scripts(world) == ['PAUSE'] and world.objects['pause_resume'].is_paused,
+       "ohne Endless Spool: PAUSE, kein Wechsel", str(tool_scripts(world)))
+    ok(htc.ttg_map == [0, 1, 2, 3] and htc.gate_status[0] == 0,
+       "Zuordnung bleibt, Gate ist leer", str(htc.ttg_map))
+    ok(len(world.gcode.raw) == 1 and 'Endless Spool is off' in world.gcode.raw[0]
+       and 'RESUME' in world.gcode.raw[0],
+       "Meldung nennt Endless Spool als Grund und sagt, wie es weitergeht",
+       str(world.gcode.raw))
+    runs = world.runout_template.runs
+    ok(len(runs) == 1 and runs[0].get('printer') == 'PRINTER'
+       and runs[0].get('tool') == 0 and runs[0].get('gate') == 0
+       and runs[0].get('reason') == 'endless_spool_off'
+       and runs[0].get('extruder') == 'extruder',
+       "runout_gcode laeuft mit Standardkontext plus tool/gate/reason/extruder",
+       str(runs))
+    ok(world.template.runs == [], "endless_spool_gcode laeuft dabei nicht")
+
+    # Endless Spool aus, eigenes runout_gcode: das laeuft statt PAUSE
+    world, htc = make(options={'endless_spool_enabled': '0',
+                               'runout_gcode': 'M117 leer'})
+    htc.handle_runout(0)
+    ok(tool_scripts(world) == [] and len(world.runout_template.runs) == 1,
+       "eigenes runout_gcode ersetzt das Standard-PAUSE",
+       str(tool_scripts(world)))
+    ok(world.objects['pause_resume'].pause_commands == 1,
+       "der Druck wird trotzdem sofort angehalten (send_pause_command)")
+
+    # Endless Spool aus, Runout am inaktiven Tool: nichts anhalten
+    world, htc = make(options={'endless_spool_enabled': '0'})
+    htc.handle_runout(2)
+    ok(tool_scripts(world) == [] and world.runout_template.runs == []
+       and world.objects['pause_resume'].pause_commands == 0
+       and htc.gate_status[2] == 0,
+       "ohne Endless Spool pausiert nur das aktive Tool", str(tool_scripts(world)))
 
     # --- Ersatz-Gate laut Status leer: nicht nehmen ---
     world, htc = make()

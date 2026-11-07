@@ -72,6 +72,12 @@ class HappyToolchanger:
         gcode_macro = self.printer.load_object(config, 'gcode_macro')
         self.failover_template = gcode_macro.load_template(
             config, 'endless_spool_gcode', '')
+        # Runout am aktiven Tool, den Endless Spool nicht auffaengt (aus oder
+        # keine Ersatzspule in der Gruppe): der Druck wird angehalten, dann
+        # laeuft dieses GCode -- wie runout_gcode bei filament_switch_sensor.
+        # Standard PAUSE: das PAUSE-Makro parkt den Kopf.
+        self.runout_template = gcode_macro.load_template(
+            config, 'runout_gcode', 'PAUSE')
 
         # Gate metadata defaults from config
         self.default_gate_colors = self._parse_list(config.get('gate_colors', ''), self.num_tools, '')
@@ -492,15 +498,35 @@ class HappyToolchanger:
         next_gate = self.endless_spool.find_next_gate(gate, self.gate_status)
 
         if next_gate < 0:
-            self.gcode.run_script_from_command("PAUSE")
-            self.statistics.record_error()
-            self._save_state()
-            self.gcode.respond_raw(
-                "!! HTC: Filament runout on T%d (gate %d) - no replacement in group %d!"
-                % (tool, gate, self.endless_spool.groups[gate]))
+            self._run_runout_gcode(tool, gate)
             return None
 
         return self._begin_failover(tool, gate, next_gate)
+
+    def _run_runout_gcode(self, tool, gate):
+        """Runout am aktiven Tool ohne Ersatz: melden, Status sichern,
+        runout_gcode (Standard PAUSE) laufen lassen."""
+        self.statistics.record_error()
+        self._save_state()
+        group = self.endless_spool.groups[gate]
+        if not self.endless_spool.enabled:
+            reason = 'endless_spool_off'
+            why = "Endless Spool is off"
+        else:
+            reason = 'no_replacement'
+            why = "no replacement in group %d" % group
+        # Erst melden, dann handeln: faellt runout_gcode auf die Nase, steht
+        # der Grund trotzdem in der Konsole.
+        self.gcode.respond_raw(
+            "!! HTC: Filament runout on T%d (gate %d) - %s. "
+            "Print paused, load filament and RESUME." % (tool, gate, why))
+        # Eigener Kontext auf Basis des Standardkontexts (siehe
+        # _finish_failover): render(context) ersetzt ihn sonst.
+        context = self.runout_template.create_template_context()
+        context.update({
+            'tool': tool, 'gate': gate, 'group': group, 'reason': reason,
+            'extruder': self._extruder_name_for_gate(gate)})
+        self.runout_template.run_gcode_from_command(context)
 
     def _extruder_name_for_gate(self, gate):
         # KTC kennt den Extruder je Tool; ohne KTC gilt Klippers Namensschema.

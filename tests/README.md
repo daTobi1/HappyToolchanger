@@ -29,7 +29,9 @@ prueft das Abzaehlen des Restfilaments (sensor_runout_distance), dass beim
 Heizwarten der GCode-Mutex frei ist (Abbruch/Fortsetzen von Hand moeglich),
 die Reihenfolge des Wechsels (PAUSE, Ersatz heizen, wechseln, warten,
 altes Hotend aus, RESUME), dass ein gescheiterter Wechsel pausiert bleibt und
-die Tool-Gate-Zuordnung nicht anfasst, und dass `M104`/`M109 T<n>` danach das
+die Tool-Gate-Zuordnung nicht anfasst, dass ein Runout ohne Endless Spool (aus
+oder keine Ersatzspule) den Druck sofort anhaelt und `runout_gcode` (Standard
+PAUSE) mit tool/gate/reason laufen laesst, und dass `M104`/`M109 T<n>` danach das
 Ersatz-Hotend treffen. Was er **nicht** zeigt: dass KTC, die PAUSE/RESUME-Makros
 und die Hardware zusammen funktionieren -- das zeigt nur ein echter Runout.
 
